@@ -1,0 +1,54 @@
+#!/bin/bash
+# arc-gate-bypass — the real fire exit for the interactive SOP gate.
+#
+# Deliberately NOT sourced by .bashrc/.zshrc, and does not depend on `arc`
+# or `arc-sop` working at all. Run this directly (double-click the desktop
+# launcher, or `bash ~/.local/bin/arc-gate-bypass` from anywhere -- including
+# a TTY, SSH session, or Claude Code's own non-interactive shell) and it
+# disables the gate for every new shell from that point on, regardless of
+# what state the gate loop itself is in.
+# deliberately no `set -e` -- this script must never die silently on a
+# non-critical command failing (e.g. `tty` when not attached to one). Every
+# step below degrades gracefully instead of aborting.
+mkdir -p "$HOME/.config/arc" 2>/dev/null
+
+# Owner check -- only the enrolled uid can bypass, same rule as
+# `arc sop gate bypass`. Keyed on uid (not username) so a future rename
+# doesn't lock the real owner out. Deliberately does NOT self-enroll if the
+# owner file is missing -- that would let whoever runs this fire-exit
+# script FIRST become the owner, which defeats the whole point. No file =
+# refuse, not "assume it's fine".
+# Agent check -- comes before the owner-uid check on purpose: an agent
+# sharing the owner's uid (Claude Code has no separate account on this
+# machine) must never bypass this gate, only a human typing directly can --
+# 2026-07-30, same rule and same day as the matching check in
+# `arc sop gate bypass`. Matching uid alone is not sufficient here.
+AGENT_DETECTED=""
+[[ -n "$CLAUDE_CODE_SESSION_ID" ]] && AGENT_DETECTED="claude (CLAUDE_CODE_SESSION_ID)"
+[[ -n "$CLAUDE_CODE_BRIDGE_SESSION_ID" ]] && AGENT_DETECTED="claude (CLAUDE_CODE_BRIDGE_SESSION_ID)"
+[[ -n "$KIMI_SESSION_ID" ]] && AGENT_DETECTED="kimi (KIMI_SESSION_ID)"
+[[ -n "$AGENT_ID" ]] && AGENT_DETECTED="$AGENT_ID (AGENT_ID)"
+if [[ -n "$AGENT_DETECTED" ]]; then
+  echo "REFUSED -- agent bypass is never allowed, regardless of uid. Detected: $AGENT_DETECTED" >&2
+  exit 1
+fi
+
+OWNER_FILE="$HOME/.config/arc/gate-owner-uid"
+if [[ -f "$OWNER_FILE" ]]; then
+  OWNER_UID=$(cat "$OWNER_FILE" 2>/dev/null)
+  if [[ "$OWNER_UID" =~ ^[0-9]+$ ]] && [[ "$(id -u)" != "$OWNER_UID" ]]; then
+    echo "REFUSED — only the enrolled owner (uid $OWNER_UID) can bypass the gate. You are: $(whoami) (uid $(id -u))" >&2
+    exit 1
+  fi
+fi
+
+TTY_NAME=$(tty 2>/dev/null)
+[[ "$TTY_NAME" == /dev/* ]] || TTY_NAME="none"
+
+if echo "bypassed $(date '+%Y-%m-%d %H:%M:%S') via arc-gate-bypass (pid $$, tty $TTY_NAME)" > "$HOME/.config/arc/gate-bypass" 2>/dev/null; then
+  echo "Gate bypass ACTIVE. New shells will not be gated."
+  echo "Re-enable enforcement later with: arc sop gate enable"
+else
+  echo "FAILED to write $HOME/.config/arc/gate-bypass -- check permissions/disk space." >&2
+  exit 1
+fi

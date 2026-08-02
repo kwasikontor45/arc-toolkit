@@ -1,0 +1,73 @@
+#!/bin/bash
+# arc-ip-sync — detect this machine's public IP drifting, and if it has,
+# update py-bite's AWS security group and fail2ban's ignoreip to match.
+# Standalone: no dependency on any other custom script, safe to delete
+# without affecting anything else.
+# (wazuh-server was torn down 2026-07-31 -- this script previously also
+# updated its security group and fail2ban ignoreip; that part is removed,
+# not just disabled, since the instance no longer exists.)
+set -euo pipefail
+
+# SOP gate bridge: same audit policy as interactive shells, non-blocking --
+# never gates automation, just logs it under the same DB the gate reads.
+{ command -v arc-sop >/dev/null 2>&1 && arc-sop ack-auto "arc-ip-sync" >/dev/null 2>&1; } || true
+
+STATE_FILE="$HOME/.config/arc/last-known-ip"
+LOG_FILE="$HOME/.local/state/arc-ip-sync.log"
+mkdir -p "$(dirname "$STATE_FILE")" "$(dirname "$LOG_FILE")"
+
+log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*" | tee -a "$LOG_FILE"; }
+
+CURRENT_IP=$(curl -s --max-time 10 https://api.ipify.org || true)
+if [[ ! "$CURRENT_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  log "ERROR: failed to detect current public IP, aborting"
+  exit 1
+fi
+
+LAST_IP=""
+[ -f "$STATE_FILE" ] && LAST_IP=$(cat "$STATE_FILE")
+
+if [ "$CURRENT_IP" = "$LAST_IP" ]; then
+  log "IP unchanged ($CURRENT_IP) — nothing to do"
+  exit 0
+fi
+
+log "IP changed: ${LAST_IP:-<none>} -> $CURRENT_IP — updating..."
+
+PYBITE_SG=$(aws ec2 describe-instances --instance-ids i-0555e364aad4b6296 \
+  --query "Reservations[0].Instances[0].SecurityGroups[0].GroupId" --output text 2>/dev/null)
+
+update_sg() {
+  local sg="$1" port="$2"
+  if [ -n "$LAST_IP" ]; then
+    aws ec2 revoke-security-group-ingress --group-id "$sg" --protocol tcp --port "$port" \
+      --cidr "${LAST_IP}/32" >/dev/null 2>&1 || true
+  fi
+  if aws ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port "$port" \
+      --cidr "${CURRENT_IP}/32" >/dev/null 2>&1; then
+    log "  $sg:$port -> allowed $CURRENT_IP"
+  else
+    log "  $sg:$port -> rule already present or update failed (verify manually)"
+  fi
+}
+
+[ -n "$PYBITE_SG" ] && update_sg "$PYBITE_SG" 22
+
+update_fail2ban() {
+  local host="$1"
+  if ssh -i "$HOME/.ssh/py-bite.pem" -o ConnectTimeout=10 -o BatchMode=yes "ubuntu@${host}" \
+      "sudo tee /etc/fail2ban/jail.d/ignoreip-sync.conf > /dev/null << 'EOF'
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1 ${CURRENT_IP}
+EOF
+sudo systemctl reload fail2ban" > /dev/null 2>&1; then
+    log "  fail2ban on $host -> ignoreip updated"
+  else
+    log "  fail2ban on $host -> FAILED (host may be stopped, or SG update above hasn't propagated yet — safe to retry)"
+  fi
+}
+
+update_fail2ban "34.225.113.167"
+
+echo "$CURRENT_IP" > "$STATE_FILE"
+log "sync complete — new IP: $CURRENT_IP"

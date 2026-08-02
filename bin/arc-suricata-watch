@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""arc-suricata-watch — tails Suricata's eve.json and fires a real desktop
+notification (via notify-send, so arc-pine picks it up for sound/voice same
+as everything else) for each new alert event. Runs as root (needed to read
+eve.json without changing Suricata's own file permissions), sends the actual
+notification into architect-of-chaos's session via the deterministic
+DBUS_SESSION_BUS_ADDRESS for uid 1000 -- standalone, no dependency on any
+other script, safe to stop/delete alone.
+"""
+
+import json
+import subprocess
+import time
+
+EVE_LOG = "/var/log/suricata/eve.json"
+TARGET_USER = "architect-of-chaos"
+TARGET_UID = 1000
+
+# Suricata/Emerging Threats severity: 1=high (real threat-shaped), 2=medium,
+# 3=informational (ET INFO -- protocol/traffic observations, not threats:
+# this is where the ipify.org lookup and workers.dev traffic noise comes
+# from, both this project's own legitimate tools). Only notify on 1/2 --
+# every alert (including INFO) still lands in eve.json for `arc logs
+# suricata`/`arc sec suricata` to review, this just stops interrupting you
+# for traffic that was never actually suspicious.
+MIN_NOTIFY_SEVERITY = 2
+
+SEV_URGENCY = {1: "critical", 2: "normal", 3: "low"}
+
+
+# Alerts are batched over this window and collapsed into one notification per
+# (signature, src, dst) group -- a burst like a 100-file `arc sync` run (one
+# ET FILE_SHARING alert per HTTP POST) used to fire 100 separate popups in
+# ~80 seconds, flooding/hanging the notification daemon. A single real,
+# isolated alert still surfaces within FLUSH_INTERVAL seconds -- no signature
+# is ever silenced, only de-duplicated within the window.
+FLUSH_INTERVAL = 8.0
+
+
+def notify(summary: str, body: str, urgency: str):
+    env = f"DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{TARGET_UID}/bus"
+    cmd = f"{env} notify-send -u {urgency} -i security-high 'arc-suricata' {json.dumps(summary + chr(10) + body)}"
+    subprocess.run(["su", TARGET_USER, "-c", cmd], check=False)
+
+
+def flush(pending):
+    for (sig, src, dst), entry in pending.items():
+        count = entry["count"]
+        urgency = SEV_URGENCY.get(entry["sev"], "normal")
+        prefix = f"x{count}  " if count > 1 else ""
+        notify("Suricata alert", f"{sig}\n{prefix}{src} -> {dst}", urgency)
+
+
+def main():
+    pending = {}
+    last_flush = time.time()
+    with open(EVE_LOG, "r") as f:
+        f.seek(0, 2)  # start at end -- don't replay history on (re)start
+        while True:
+            line = f.readline()
+            if line:
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    ev = None
+                if ev is not None and ev.get("event_type") == "alert":
+                    alert = ev.get("alert", {})
+                    sev = alert.get("severity", 3)
+                    if sev <= MIN_NOTIFY_SEVERITY:
+                        sig = alert.get("signature", "unknown signature")
+                        src = ev.get("src_ip", "?")
+                        dst = ev.get("dest_ip", "?")
+                        key = (sig, src, dst)
+                        entry = pending.setdefault(key, {"count": 0, "sev": sev})
+                        entry["count"] += 1
+            else:
+                time.sleep(0.5)
+
+            if pending and (time.time() - last_flush) >= FLUSH_INTERVAL:
+                flush(pending)
+                pending.clear()
+                last_flush = time.time()
+
+
+if __name__ == "__main__":
+    main()

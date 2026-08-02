@@ -1,0 +1,11 @@
+#!/bin/bash
+# arc-dns-hot — enable NextDNS at boot and activate aggressive filtering now
+set -euo pipefail
+
+echo "==> enabling arc-dns-boot.service"
+systemctl --user enable arc-dns-boot.service
+
+echo "==> activating NextDNS (hot / aggressive)"
+arc dns on
+
+echo "==> done. manage blocklists: arc dns blocklists"

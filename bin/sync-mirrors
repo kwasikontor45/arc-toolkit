@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# sync-mirrors — compare k45 vs k6 SHAs, push anything diverged
+set -euo pipefail
+
+# SOP gate bridge: same audit policy as interactive shells, non-blocking --
+# never gates automation, just logs it under the same DB the gate reads.
+{ command -v arc-sop >/dev/null 2>&1 && arc-sop ack-auto "sync-mirrors" >/dev/null 2>&1; } || true
+
+K45="kwasikontor45"
+K6="k6-bleedin6ed6e-k6"
+LOG_DIR="$HOME/.local/share/sync-mirrors"
+LOG="$LOG_DIR/sync-mirrors.log"
+WORK_DIR="/tmp/sync-mirrors-$$"
+
+# repos intentionally mirrored k45 → k6
+REPOS=(
+  blue-team-portfolio
+  the-feather-test
+  athena
+  kataleya
+  kataleya-mobile
+  py-bite
+  khaos
+  war-room
+  wazuh-soc-lab
+  kontor-studio
+  tutor-worker
+)
+
+mkdir -p "$LOG_DIR"
+
+log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*" | tee -a "$LOG"; }
+
+get_sha() {
+  local owner="$1" repo="$2" sha
+  for branch in main master; do
+    sha=$(gh api "repos/$owner/$repo/commits/$branch" 2>/dev/null \
+      | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sha',''))" 2>/dev/null)
+    [[ -n "$sha" ]] && echo "$sha" && return
+  done
+  echo "MISSING"
+}
+
+# Cross-account visibility of a PUBLIC repo works fine under a single gh auth
+# session — but a PRIVATE repo on the k6 account is invisible to the k45
+# session (404, not "in sync"). Found 2026-07-07 with kontor-studio, which is
+# private. Switch to k6's own auth just for this one check, then switch back —
+# works for any future private mirrored repo too, not just this one.
+get_k6_sha() {
+  local repo="$1" sha
+  gh auth switch --hostname github.com --user "$K6" >/dev/null 2>&1
+  sha=$(get_sha "$K6" "$repo")
+  gh auth switch --hostname github.com --user "$K45" >/dev/null 2>&1
+  echo "$sha"
+}
+
+get_default_branch() {
+  local owner="$1" repo="$2"
+  gh api "repos/$owner/$repo" --jq '.default_branch' 2>/dev/null || echo "main"
+}
+
+log "=== sync-mirrors start ==="
+
+synced=0
+skipped=0
+errors=0
+
+for REPO in "${REPOS[@]}"; do
+  K45_SHA=$(get_sha "$K45" "$REPO")
+  K6_SHA=$(get_k6_sha "$REPO")
+
+  if [[ "$K45_SHA" == "MISSING" ]]; then
+    log "SKIP  $REPO — not found on k45"
+    (( skipped++ )) || true
+    continue
+  fi
+
+  if [[ "$K6_SHA" == "MISSING" ]]; then
+    log "SKIP  $REPO — not found on k6 (create repo first)"
+    (( skipped++ )) || true
+    continue
+  fi
+
+  if [[ "$K45_SHA" == "$K6_SHA" ]]; then
+    log "OK    $REPO — in sync (${K45_SHA:0:7})"
+    continue
+  fi
+
+  log "SYNC  $REPO — k45=${K45_SHA:0:7} k6=${K6_SHA:0:7} — pushing..."
+
+  BRANCH=$(get_default_branch "$K45" "$REPO")
+  CLONE_DIR="$WORK_DIR/$REPO"
+
+  mkdir -p "$WORK_DIR"
+  if git clone --quiet "git@github.com:$K45/$REPO.git" "$CLONE_DIR" 2>>"$LOG"; then
+    cd "$CLONE_DIR"
+    git remote add k6 "git@github-k6:$K6/$REPO.git"
+    if git push k6 "$BRANCH" 2>>"$LOG" \
+       || git push k6 "$BRANCH" --force 2>>"$LOG"; then
+      log "DONE  $REPO — pushed to k6"
+      (( synced++ )) || true
+    else
+      log "ERR   $REPO — push to k6 failed"
+      (( errors++ )) || true
+    fi
+    cd - > /dev/null
+    rm -rf "$CLONE_DIR"
+  else
+    log "ERR   $REPO — clone failed"
+    (( errors++ )) || true
+  fi
+done
+
+rm -rf "$WORK_DIR"
+log "=== done — synced=$synced skipped=$skipped errors=$errors ==="

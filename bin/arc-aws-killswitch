@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# arc-aws-killswitch — watches the AWS Budgets "circuit-breaker" budget and,
+# if it's crossed (actual spend >= limit — i.e. about to pay out of pocket),
+# terminates EVERY EC2 instance in the account and fires a loud local
+# notification via arc-pine. Deliberately destructive, deliberately terminal
+# — the whole point is a hard stop on real money, not a soft warning.
+#
+# Uses a dedicated, minimally-scoped IAM identity (profile: arc-killswitch),
+# NOT wazuh-arc-lt — that identity can't see budgets/cost at all by design,
+# and can't grant itself broader access either (confirmed, standing account
+# policy). See ~/dev-notes/hq-main/.arc-killswitch-iam-policy.json for the
+# exact policy: budgets:ViewBudget + ec2:DescribeInstances + ec2:TerminateInstances,
+# nothing else, no ability to create resources.
+set -uo pipefail
+
+# SOP gate bridge: same audit policy as interactive shells, non-blocking --
+# never gates automation, just logs it under the same DB the gate reads.
+{ command -v arc-sop >/dev/null 2>&1 && arc-sop ack-auto "arc-aws-killswitch" >/dev/null 2>&1; } || true
+
+PROFILE="arc-killswitch"
+STATE_DIR="$HOME/.local/state"
+LOG="$STATE_DIR/arc-aws-killswitch.log"
+FIRED_STAMP="$STATE_DIR/arc-aws-killswitch-fired"
+mkdir -p "$STATE_DIR"
+
+log() { echo "$(date -u -Is) $*" >> "$LOG"; }
+
+if ! aws sts get-caller-identity --profile "$PROFILE" >/dev/null 2>&1; then
+  log "ERROR: profile '$PROFILE' not configured or invalid -- see .arc-killswitch-iam-policy.json for setup"
+  exit 1
+fi
+
+# Already fired -- don't re-terminate/re-notify every poll. Cleared manually
+# (rm the stamp file) once the situation's actually resolved.
+if [[ -f "$FIRED_STAMP" ]]; then
+  log "already fired at $(cat "$FIRED_STAMP") -- skipping (rm $FIRED_STAMP to re-arm)"
+  exit 0
+fi
+
+# Find the circuit-breaker budget specifically, by name substring, rather
+# than hardcoding a duplicate dollar threshold here -- the $75/mo figure
+# already configured in AWS Budgets is the single source of truth.
+ACCOUNT_ID=$(aws sts get-caller-identity --profile "$PROFILE" --query Account --output text 2>/dev/null)
+BUDGETS_JSON=$(aws budgets describe-budgets --account-id "$ACCOUNT_ID" --profile "$PROFILE" --output json 2>&1)
+
+if [[ $? -ne 0 ]]; then
+  log "ERROR: describe-budgets failed: $BUDGETS_JSON"
+  exit 1
+fi
+
+TRIGGERED=$(echo "$BUDGETS_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for b in d.get('Budgets', []):
+    name = b.get('BudgetName', '')
+    if 'circuit-breaker' not in name.lower():
+        continue
+    limit = float(b.get('BudgetLimit', {}).get('Amount', 0) or 0)
+    actual = float(b.get('CalculatedSpend', {}).get('ActualSpend', {}).get('Amount', 0) or 0)
+    print(f'{name}|{actual}|{limit}|{1 if limit > 0 and actual >= limit else 0}')
+")
+
+if [[ -z "$TRIGGERED" ]]; then
+  log "WARN: no budget with 'circuit-breaker' in its name found -- nothing to watch, check budget naming"
+  exit 0
+fi
+
+IFS='|' read -r B_NAME B_ACTUAL B_LIMIT B_HIT <<< "$TRIGGERED"
+
+if [[ "$B_HIT" != "1" ]]; then
+  log "OK: $B_NAME — \$${B_ACTUAL} / \$${B_LIMIT}"
+  exit 0
+fi
+
+# --- TRIGGERED ---
+log "TRIGGERED: $B_NAME — \$${B_ACTUAL} / \$${B_LIMIT} — terminating all EC2 instances now"
+
+notify-send -u critical -i dialog-error \
+  "AWS KILL SWITCH FIRED" \
+  "Budget '$B_NAME' hit \$${B_ACTUAL}/\$${B_LIMIT} — terminating ALL EC2 instances now." \
+  2>/dev/null || true
+
+INSTANCE_IDS=$(aws ec2 describe-instances --profile "$PROFILE" \
+  --filters "Name=instance-state-name,Values=running,stopped,stopping,pending" \
+  --query "Reservations[].Instances[].InstanceId" --output text 2>&1)
+
+if [[ -n "$INSTANCE_IDS" ]]; then
+  log "terminating: $INSTANCE_IDS"
+  TERM_OUT=$(aws ec2 terminate-instances --profile "$PROFILE" --instance-ids $INSTANCE_IDS 2>&1)
+  log "terminate result: $TERM_OUT"
+else
+  log "no instances found to terminate"
+fi
+
+date -u -Is > "$FIRED_STAMP"
+
+notify-send -u critical -i dialog-error \
+  "AWS KILL SWITCH — DONE" \
+  "All EC2 instances terminated. Re-arm with: rm $FIRED_STAMP" \
+  2>/dev/null || true
+
+log "DONE — fired stamp written to $FIRED_STAMP"

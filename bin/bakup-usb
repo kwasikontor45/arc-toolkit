@@ -1,0 +1,121 @@
+#!/bin/bash
+# bakup-usb — sync local work → USB vault (additive, nothing deleted)
+# Generates lightweight checksum manifests for critical cargo.
+
+MOUNT="/mnt/storage"
+USB="$MOUNT/Persistent"
+STAMP_DIR="$HOME/.usb-bakup"
+STAMP="$STAMP_DIR/.last-sync"
+MANIFEST_DIR="$HOME/.usb-bakup/manifests"
+
+G='\033[0;32m'; R='\033[0;31m'; C='\033[0;36m'; D='\033[0;90m'; Y='\033[0;33m'; N='\033[0m'
+
+mkdir -p "$STAMP_DIR" "$MANIFEST_DIR"
+
+# ── Generate local checksum manifests for critical LOCAL files ─────────────────
+generate_manifests() {
+  local m
+
+  # .echo/forge is the local mirror of USB forge — safe to checksum.
+  if [ -d "$HOME/.echo/forge/.pictures" ]; then
+    m="$MANIFEST_DIR/forge-pictures.md5"
+    find "$HOME/.echo/forge/.pictures" -type f -exec md5sum {} + > "$m" 2>/dev/null
+    echo -e "  ${G}✓${N}  manifest: .echo/forge/.pictures ($(wc -l < "$m") files)"
+  fi
+
+  if [ -d "$HOME/.echo/cargo" ]; then
+    m="$MANIFEST_DIR/cargo.md5"
+    find "$HOME/.echo/cargo" -type f -exec md5sum {} + > "$m" 2>/dev/null
+    echo -e "  ${G}✓${N}  manifest: .echo/cargo ($(wc -l < "$m") files)"
+  fi
+
+  if [ -d "$HOME/dev-notes" ]; then
+    m="$MANIFEST_DIR/dev-notes.md5"
+    find "$HOME/dev-notes" -type f -exec md5sum {} + > "$m" 2>/dev/null
+    echo -e "  ${G}✓${N}  manifest: dev-notes ($(wc -l < "$m") files)"
+  fi
+
+  if [ -d "$HOME/khaos-lab" ]; then
+    m="$MANIFEST_DIR/khaos-lab.md5"
+    find "$HOME/khaos-lab" -type f \
+      -not -path "*/vbox-vms/*" \
+      -not \( -iname "*.vdi" -o -iname "*.vmdk" -o -iname "*.vhd" -o -iname "*.vhdx" \
+              -o -iname "*.qcow2" -o -iname "*.ova" -o -iname "*.ovf" -o -iname "*.img" \) \
+      -exec md5sum {} + > "$m" 2>/dev/null
+    echo -e "  ${G}✓${N}  manifest: khaos-lab ($(wc -l < "$m") files, VM disks excluded)"
+  fi
+}
+
+# ── Verify manifests against current files ─────────────────────────────────────
+verify_manifests() {
+  local failed=0
+  for m in "$MANIFEST_DIR"/*.md5; do
+    [ -f "$m" ] || continue
+    local name
+    name=$(basename "$m")
+    if md5sum -c "$m" --quiet 2>/dev/null; then
+      echo -e "  ${G}✓${N}  verify $name: OK"
+    else
+      echo -e "  ${R}✗${N}  verify $name: MISMATCH"
+      failed=1
+    fi
+  done
+  return $failed
+}
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+if [ "${1:-}" = "--verify" ]; then
+  echo -e "${C}verify manifests${N}"
+  verify_manifests
+  exit $?
+fi
+
+echo -e "${C}bakup-usb${N}"
+
+generate_manifests
+
+if ! mountpoint -q "$MOUNT" 2>/dev/null; then
+  echo -e "  ${Y}!${N}  USB not mounted — local manifests generated, USB sync skipped"
+  date "+%Y-%m-%d %H:%M" > "$STAMP"
+  echo -e "  ${D}stamped: $(cat "$STAMP")${N}"
+  exit 0
+fi
+
+echo -e "  ${C}→${N}  dev-notes → vault..."
+rsync -a --delete "$HOME/dev-notes/" "$USB/dev-notes/" \
+  && echo -e "  ${G}✓${N}  dev-notes synced" \
+  || echo -e "  ${R}✗${N}  dev-notes sync failed"
+
+echo -e "  ${C}→${N}  khaos-lab → vault/khaos-lab...  ${D}(VM disks/vbox-vms excluded — waste of space)${N}"
+rsync -a --delete --delete-excluded \
+  --exclude='vbox-vms/' \
+  --exclude='*.vdi' --exclude='*.vmdk' --exclude='*.vhd' --exclude='*.vhdx' \
+  --exclude='*.qcow2' --exclude='*.ova' --exclude='*.ovf' --exclude='*.img' \
+  "$HOME/khaos-lab/" "$USB/khaos-lab/" \
+  && echo -e "  ${G}✓${N}  khaos-lab synced" \
+  || echo -e "  ${R}✗${N}  khaos-lab sync failed"
+
+echo -e "  ${C}→${N}  manifests → vault..."
+rsync -a --delete "$MANIFEST_DIR/" "$USB/manifests/" \
+  && echo -e "  ${G}✓${N}  manifests synced" \
+  || echo -e "  ${R}✗${N}  manifests sync failed"
+
+echo -e "  ${C}→${N}  arc-portable → vault..."
+PORTABLE_BIN=(
+  arc arc-aws-killswitch arc-cf-watch arc-dns arc-dns-cold arc-dns-hot
+  arc-gate-bypass arc-heal arc-ip-sync arc-quiet-clean arc-rkhunter-check
+  arc-sop arc-sop-gate-hook arc-suricata-watch arc-vpn auto-move-large-files
+  bakup-local bakup-usb build-notes-site sync-mirrors lt
+)
+mkdir -p "$USB/arc-portable/bin" "$USB/arc-portable/config" "$USB/arc-portable/systemd" "$USB/arc-portable/docs"
+for f in "${PORTABLE_BIN[@]}"; do
+  [[ -f "$HOME/.local/bin/$f" ]] && cp -a "$HOME/.local/bin/$f" "$USB/arc-portable/bin/"
+done
+[[ -f /usr/local/bin/storage-mount.sh ]] && sudo -n cp /usr/local/bin/storage-mount.sh "$USB/arc-portable/bin/" 2>/dev/null
+cp -a "$HOME/.config/arc/greeting.sh" "$HOME/.config/arc/motd" "$HOME/.config/arc/shell-init.sh" "$USB/arc-portable/config/" 2>/dev/null
+[[ -f /etc/systemd/system/storage-mount.service ]] && sudo -n cp /etc/systemd/system/storage-mount.service "$USB/arc-portable/systemd/" 2>/dev/null
+crontab -l > "$USB/arc-portable/docs/crontab.txt" 2>/dev/null
+echo -e "  ${G}✓${N}  arc-portable refreshed (excludes: LUKS keyfile, SOP db, gate-owner-uid, last-known-ip — machine-specific by design)"
+
+date "+%Y-%m-%d %H:%M" > "$STAMP"
+echo -e "  ${D}stamped: $(cat "$STAMP")${N}"

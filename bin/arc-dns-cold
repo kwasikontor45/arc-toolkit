@@ -1,0 +1,11 @@
+#!/bin/bash
+# arc-dns-cold — disable NextDNS at boot and deactivate filtering now
+set -euo pipefail
+
+echo "==> deactivating NextDNS (cold / daily driver)"
+arc dns off
+
+echo "==> disabling arc-dns-boot.service"
+systemctl --user disable arc-dns-boot.service
+
+echo "==> done. manage blocklists: arc dns blocklists"

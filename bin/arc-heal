@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# arc-heal — self-healing watchdog for the real architecture (AWS, Cloudflare,
+# local machine). Standalone: no dependency on the arc script or any other
+# object — safe to delete alone, safe to run alone.
+#
+# Philosophy (deliberately NOT Chaos Monkey): this never breaks anything on
+# its own. It checks real state, fixes what's safe and mechanical to fix
+# (restart a stopped service, remount the vault), and only ever FLAGS
+# anything that needs a real decision or a password.
+set -uo pipefail
+
+# SOP gate bridge: same audit policy as interactive shells, non-blocking --
+# never gates automation, just logs it under the same DB the gate reads.
+{ command -v arc-sop >/dev/null 2>&1 && arc-sop ack-auto "arc-heal" >/dev/null 2>&1; } || true
+
+LOG_DIR="$HOME/khaos-lab/arc-heal-log"
+LATEST="$LOG_DIR/latest-status.md"
+HISTORY="$LOG_DIR/history.log"
+mkdir -p "$LOG_DIR"
+
+RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
+RUN_START=$(date +%s)
+FINDINGS=()   # each: "OK|HEALED|FLAG::component::message"
+
+note() { FINDINGS+=("$1"); }
+
+_notify() { notify-send -u "$1" -i "$2" "arc-heal" "$3" 2>/dev/null || true; }
+
+# ── AWS: which boxes actually exist right now ───────────────────────────────
+_ec2_ip() {
+  aws ec2 describe-instances --region us-east-1 --filters "Name=tag:Name,Values=$1" \
+    --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>/dev/null
+}
+
+check_py_bite() {
+  local ip; ip=$(_ec2_ip py-bite)
+  [[ -z "$ip" || "$ip" == "None" ]] && { note "FLAG::py-bite::instance not found — always-on box should always exist"; return; }
+  local http; http=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 8 "https://py-bite.kwasikontor.dev" 2>/dev/null)
+  if [[ "$http" == "200" ]]; then note "OK::py-bite::site 200"; return; fi
+  # site down — check if the container itself is the problem (mechanical, fixable)
+  local svc; svc=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=6 -i ~/.ssh/py-bite.pem ubuntu@"$ip" "sudo docker ps --filter name=py-bite --format '{{.Status}}'" 2>/dev/null)
+  if [[ -z "$svc" ]]; then
+    ssh -o StrictHostKeyChecking=no -i ~/.ssh/py-bite.pem ubuntu@"$ip" "sudo docker restart py-bite" >/dev/null 2>&1
+    sleep 5
+    http=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 8 "https://py-bite.kwasikontor.dev" 2>/dev/null)
+    [[ "$http" == "200" ]] && note "HEALED::py-bite::container was stopped, restarted, site back to 200" \
+      || note "FLAG::py-bite::container restarted but site still not 200 — needs a look"
+  else
+    note "FLAG::py-bite::container running ($svc) but site returned HTTP $http — not a container-restart problem"
+  fi
+}
+
+check_local_stack() {
+  systemctl is-active cloudflared >/dev/null 2>&1 && note "OK::cloudflared::active" \
+    || { systemctl restart cloudflared 2>/dev/null && note "HEALED::cloudflared::was down, restarted"; }
+  systemctl is-active fail2ban >/dev/null 2>&1 && note "OK::fail2ban::active" || note "FLAG::fail2ban::not active, needs sudo to fix — can't self-heal"
+  nextdns status 2>/dev/null | grep -q running && note "OK::nextdns::running" || note "FLAG::nextdns::not running, check 'arc dns status'"
+  if [[ -d /mnt/storage/Persistent/dev-notes ]]; then note "OK::usb-vault::mounted"; else note "OK::usb-vault::not mounted (fine if unplugged on purpose)"; fi
+}
+
+check_dns() {
+  for h in ssh.kontor.studio desktop.kontor.studio athena.kontor.studio kontor.studio; do
+    local code; code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 6 "https://${h}" 2>/dev/null)
+    [[ -n "$code" && "$code" != "000" ]] && note "OK::dns:${h}::responds ($code)" || note "FLAG::dns:${h}::no response — check DNS/tunnel/CF Pages status directly"
+  done
+}
+
+check_audio_profile() {
+  local card active
+  card=$(pactl list cards short 2>/dev/null | awk '{print $2}' | head -1)
+  [[ -z "$card" ]] && { note "FLAG::audio-profile::no sound card found via pactl"; return; }
+  active=$(pactl list cards 2>/dev/null | grep "Active Profile" | awk '{print $NF}')
+  if [[ "$active" == "pro-audio" ]]; then
+    # Zoom (and similar apps) can push PipeWire into Pro Audio profile, which
+    # exposes raw multichannel sub-devices instead of the real speaker output
+    # — real symptom hit 2026-07-23: audio far quieter than normal. Revert.
+    pactl set-card-profile "$card" output:analog-stereo+input:analog-stereo 2>/dev/null
+    sleep 1
+    local recheck; recheck=$(pactl list cards 2>/dev/null | grep "Active Profile" | awk '{print $NF}')
+    if [[ "$recheck" != "pro-audio" ]]; then
+      note "HEALED::audio-profile::card was stuck on pro-audio (thin/quiet sound), reverted to analog-stereo"
+    else
+      note "FLAG::audio-profile::stuck on pro-audio, revert attempt failed — needs a look"
+    fi
+  else
+    note "OK::audio-profile::${active:-unknown}"
+  fi
+}
+
+check_cron_health() {
+  for pair in "arc-cf-watch:/home/architect-of-chaos/.local/state/arc-cf-watch.log:180" \
+              "arc-ip-sync:/home/architect-of-chaos/.local/state/arc-ip-sync.log:90" \
+              "arc-aws-killswitch:/home/architect-of-chaos/.local/state/arc-aws-killswitch.log:30"; do
+    local name="${pair%%:*}"
+    local rest="${pair#*:}"
+    local logf="${rest%%:*}"
+    local max_min="${rest##*:}"
+    if [[ -f "$logf" ]]; then
+      local age_min=$(( ( $(date +%s) - $(stat -c %Y "$logf") ) / 60 ))
+      [[ "$age_min" -le "$max_min" ]] && note "OK::cron:${name}::last log ${age_min}m ago" \
+        || note "FLAG::cron:${name}::last log ${age_min}m ago (expected within ${max_min}m) — cron may be stuck"
+    else
+      note "FLAG::cron:${name}::no log file yet"
+    fi
+  done
+}
+
+# ── run everything ───────────────────────────────────────────────────────
+check_py_bite
+check_local_stack
+check_audio_profile
+check_dns
+check_cron_health
+
+RUN_END=$(date +%s)
+DURATION=$(( RUN_END - RUN_START ))
+
+HEALED=$(printf '%s\n' "${FINDINGS[@]}" | grep -c "^HEALED" || true)
+FLAGGED=$(printf '%s\n' "${FINDINGS[@]}" | grep -c "^FLAG" || true)
+OK=$(printf '%s\n' "${FINDINGS[@]}" | grep -c "^OK" || true)
+
+{
+  echo "# arc-heal — ${RUN_ID}"
+  echo "Run took ${DURATION}s · ${OK} ok · ${HEALED} healed · ${FLAGGED} flagged"
+  echo ""
+  for f in "${FINDINGS[@]}"; do
+    level="${f%%::*}"; rest="${f#*::}"
+    comp="${rest%%::*}"; msg="${rest#*::}"
+    case "$level" in
+      OK)    echo "- ✅ **${comp}** — ${msg}" ;;
+      HEALED) echo "- 🩹 **${comp}** — ${msg}" ;;
+      FLAG)  echo "- 🚩 **${comp}** — ${msg}" ;;
+    esac
+  done
+} > "$LATEST"
+
+echo "$(date -Is) run=${RUN_ID} duration=${DURATION}s ok=${OK} healed=${HEALED} flagged=${FLAGGED}" >> "$HISTORY"
+
+if [[ "$FLAGGED" -gt 0 ]]; then
+  _notify critical dialog-warning "${FLAGGED} thing(s) need attention — see ~/khaos-lab/arc-heal-log/latest-status.md"
+elif [[ "$HEALED" -gt 0 ]]; then
+  _notify normal dialog-information "${HEALED} thing(s) self-healed automatically — see the log"
+fi
+
+cat "$LATEST"

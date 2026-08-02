@@ -1,0 +1,447 @@
+#!/usr/bin/env python3
+"""
+build-notes-site — static, offline, self-contained site over your notes.
+
+Home page = resources-in-place.md rendered as a dashboard (the "sites/servers
+blueprint"). Browse page = full-text search across arc-lt-cmc + dev-notes +
+khaos-lab + vault/archive, with an inline (not fetched) search index so it
+works from a plain file:// open in any browser, no server, no internet.
+
+Visual language matches kontor.studio / kontor.studio/bootlog: JetBrains Mono
+(installed locally, no webfont fetch needed), phosphor/cyan on near-black,
+scanline+vignette overlay, system-bar with circadian phase color shift.
+
+Output lives inside the encrypted vault (/mnt/storage/Persistent/notes-site) -- that's
+the "lock": it only exists while the vault is unlocked and mounted.
+"""
+import base64
+import hashlib
+import html
+import json
+import sys
+from pathlib import Path
+
+try:
+    import markdown as _markdown
+except ImportError:
+    print("python3-markdown not installed: sudo apt install python3-markdown", file=sys.stderr)
+    sys.exit(1)
+
+HOME = Path.home()
+OUT = Path("/mnt/storage/Persistent/notes-site")
+
+TREES = {
+    "arc-lt-cmc": HOME / "arc-lt-cmc",
+    "dev-notes": HOME / "dev-notes",
+    "khaos-lab": HOME / "khaos-lab",
+    "vault/archive": Path("/mnt/storage/Persistent/archive"),
+}
+
+SKIP_DIR_NAMES = {".git", "node_modules", "__pycache__", ".arc-notes", "master-archive"}
+DASHBOARD_SOURCE = HOME / "khaos-lab" / "resources-in-place.md"
+
+FAVICON_SOURCE = HOME / ".local/share/arc/notes-site-favicon.png"
+FAVICON_TAG = ""
+if FAVICON_SOURCE.exists():
+    _b64 = base64.b64encode(FAVICON_SOURCE.read_bytes()).decode()
+    FAVICON_TAG = f'<link rel="icon" type="image/png" href="data:image/png;base64,{_b64}">'
+
+CSS = """
+:root {
+  --bg: #080809;
+  --panel-bg: #0e0e11;
+  --panel-bg-alt: #111318;
+  --phosphor: #c8f563;
+  --cyan: #5ec8ed;
+  --text: #e2e0dc;
+  --text-dim: #6e7480;
+  --text-mid: #9da2ad;
+  --border: #1a1c22;
+  --border-hot: rgba(200,245,99,0.2);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+  font-size: 13px; line-height: 1.6; min-height: 100vh; overflow-x: hidden;
+  text-shadow: 0 0 1px rgba(255,255,255,0.10);
+}
+body::before {
+  content: ''; position: fixed; inset: 0;
+  background: repeating-linear-gradient(0deg, transparent, transparent 3px,
+    rgba(0,0,0,0.06) 3px, rgba(0,0,0,0.06) 4px);
+  pointer-events: none; z-index: 100;
+}
+body::after {
+  content: ''; position: fixed; inset: 0;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%);
+  pointer-events: none; z-index: 99;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+@keyframes phosphor-pulse {
+  0%,100%{text-shadow:0 0 8px var(--phosphor),0 0 20px rgba(200,245,99,0.3)}
+  50%{text-shadow:0 0 4px var(--phosphor),0 0 10px rgba(200,245,99,0.1)}
+}
+@keyframes fade-in-up { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
+@keyframes flow { 0%{opacity:.2;transform:translateY(2px) scale(.98)} 50%{opacity:1;transform:translateY(-2px) scale(1.02)} 100%{opacity:.2;transform:translateY(2px) scale(.98)} }
+@keyframes flow-delay { 0%{opacity:1;transform:translateY(-2px) scale(1.02)} 50%{opacity:.2;transform:translateY(2px) scale(.98)} 100%{opacity:1;transform:translateY(-2px) scale(1.02)} }
+@keyframes mercury-crawl { 0%{left:0%} 100%{left:86%} }
+
+.site-wrapper { max-width: 780px; margin: 0 auto; padding: 32px 20px 60px; display: flex; flex-direction: column; gap: 12px; }
+
+.system-bar {
+  position: relative; display: flex; justify-content: space-between; align-items: center;
+  font-size: 10px; letter-spacing: 1.5px; color: var(--text-dim);
+  padding-bottom: 10px; border-bottom: 1px solid var(--border);
+  animation: fade-in-up .4s ease both; flex-wrap: wrap; gap: 6px;
+}
+.system-bar .right { color: var(--cyan); }
+.cursor { display: inline-block; animation: blink 1s infinite; color: var(--phosphor); font-weight: 700; }
+[data-phase="nyx"]        .mercury-glyph, [data-phase="nyx"]        .signature { color: #ea9a97; text-shadow: 0 0 6px rgba(234,154,151,.45); }
+[data-phase="choice"]     .mercury-glyph, [data-phase="choice"]     .signature { color: #5ec8ed; text-shadow: 0 0 6px rgba(94,200,237,.45); }
+[data-phase="desire"]     .mercury-glyph, [data-phase="desire"]     .signature { color: #f6c177; text-shadow: 0 0 6px rgba(246,193,119,.45); }
+[data-phase="still-pine"] .mercury-glyph, [data-phase="still-pine"] .signature { color: #c4a7e7; text-shadow: 0 0 6px rgba(196,167,231,.45); }
+.system-bar::after {
+  content: ''; position: absolute; bottom: -1px; left: 0; width: 14%; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+  box-shadow: 0 0 5px var(--cyan); opacity: .8;
+  animation: mercury-crawl 6s ease-in-out infinite alternate; pointer-events: none;
+}
+
+nav.uplinks { display: flex; gap: 6px; flex-wrap: wrap; }
+.uplink-btn {
+  display: inline-block; padding: 7px 14px; border: 1px solid var(--border); border-radius: 999px;
+  background: rgba(255,255,255,0.02); color: var(--text-mid); text-decoration: none;
+  font-size: 10px; letter-spacing: 1px; transition: all .2s ease; font-family: inherit;
+}
+.uplink-btn:hover, .uplink-btn.active {
+  border-color: var(--phosphor); color: var(--phosphor);
+  background: rgba(200,245,99,0.03); box-shadow: 0 0 12px rgba(200,245,99,0.07);
+}
+
+.panel {
+  background: linear-gradient(160deg, color-mix(in srgb, var(--phosphor) 4%, var(--panel-bg)), var(--panel-bg));
+  border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 6px 20px rgba(0,0,0,.35);
+  padding: 24px; position: relative; overflow: hidden; animation: fade-in-up .5s ease both;
+}
+.panel::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-hot), transparent);
+  opacity: 0; transition: opacity .3s;
+}
+.panel:hover::before { opacity: 1; }
+
+.tag { font-size: 9px; letter-spacing: 2.5px; text-transform: uppercase; color: var(--phosphor); display: block; margin-bottom: 12px; opacity: .65; }
+
+.hero { text-align: center; padding: 36px 24px; }
+.hero h1 { font-size: clamp(1.3rem, 4vw, 1.7rem); font-weight: 700; color: #fff; letter-spacing: .06em; animation: phosphor-pulse 4s ease infinite; }
+.hero-sub { font-size: 11px; color: var(--text-dim); margin-top: 10px; font-style: italic; line-height: 1.7; }
+
+/* raw markdown output inside a panel */
+.panel h1 { font-size: 1.3em; color: #fff; letter-spacing: .03em; margin-bottom: 10px; }
+.panel h2 { font-size: .95em; color: var(--phosphor); text-transform: uppercase; letter-spacing: 1.5px; opacity: .8; margin: 1.6em 0 .6em; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.panel h3 { font-size: .9em; color: var(--cyan); margin: 1.2em 0 .4em; }
+.panel p, .panel li { color: var(--text-mid); font-size: 12px; line-height: 1.8; }
+.panel a { color: var(--cyan); text-decoration: none; }
+.panel a:hover { color: var(--phosphor); }
+.panel strong { color: var(--text); }
+.panel table { border-collapse: collapse; width: 100%; margin: 10px 0 18px; font-size: 11px; }
+.panel th, .panel td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--text-mid); }
+.panel th { color: var(--text-dim); font-weight: 700; letter-spacing: .5px; text-transform: uppercase; font-size: 9px; }
+.panel code { background: rgba(200,245,99,0.06); color: var(--phosphor); border-radius: 4px; padding: .1em .4em; font-size: .92em; }
+.panel pre { background: var(--panel-bg-alt); border: 1px solid var(--border); border-radius: 8px; padding: 14px; overflow-x: auto; }
+.panel pre code { background: none; padding: 0; color: var(--text); }
+.panel hr { border: none; border-top: 1px solid var(--border); margin: 1.4em 0; }
+
+.searchbox {
+  width: 100%; padding: 12px 14px; font-size: 13px; font-family: inherit; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel-bg-alt); color: var(--text); margin-bottom: 4px;
+}
+.searchbox:focus { outline: none; border-color: var(--phosphor); box-shadow: 0 0 12px rgba(200,245,99,.1); }
+.stats { font-size: 10px; color: var(--text-dim); letter-spacing: 1px; margin: 10px 0; }
+
+.lab-entry { padding: 16px 0; border-bottom: 1px solid var(--border); }
+.lab-entry:last-child { border-bottom: none; }
+.lab-entry .tree-tag { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--cyan); opacity: .8; }
+.lab-entry .lab-title { display: block; font-size: 12px; font-weight: 700; color: #fff; margin: 4px 0 6px; letter-spacing: .03em; }
+.lab-entry .lab-title:hover { color: var(--phosphor); }
+.lab-entry .lab-desc { font-size: 11px; color: var(--text-mid); line-height: 1.7; }
+.lab-entry mark { background: rgba(200,245,99,0.18); color: var(--phosphor); border-radius: 3px; padding: 0 2px; }
+
+.close-bar { text-align: center; padding: 16px; font-size: 10px; color: var(--text-dim); letter-spacing: 1.5px; border-top: 1px solid var(--border); margin-top: 8px; animation: fade-in-up .5s ease .6s both; }
+.close-bar a { color: var(--phosphor); text-decoration: none; opacity: .7; transition: opacity .2s; }
+.close-bar a:hover { opacity: 1; }
+.signature { text-align: center; margin-top: 6px; font-size: 11px; letter-spacing: 2px; opacity: .6; }
+
+@media (max-width: 600px) {
+  .site-wrapper { padding: 20px 14px 48px; }
+  .hero h1 { font-size: 1.2rem; }
+}
+
+.flow { display: flex; flex-direction: column; gap: 0; margin: 14px 0 18px; }
+.flow-step {
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px;
+  background: var(--panel-bg-alt); font-size: 12px; color: var(--text);
+}
+.flow-step b { color: var(--phosphor); }
+.flow-arrow { text-align: center; color: var(--text-dim); font-size: 13px; padding: 2px 0; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 9px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; }
+.pill.up { color: #8fe08f; background: rgba(143,224,143,.12); }
+.pill.down { color: var(--text-dim); background: rgba(255,255,255,.06); }
+.pill.watch { color: #f0a868; background: rgba(240,168,104,.12); }
+"""
+
+PHASE_SCRIPT = """
+(function(){
+  var h=new Date().getHours();
+  var p=(h>=21||h<6)?'nyx':(h<11?'choice':(h<17?'desire':'still-pine'));
+  document.documentElement.setAttribute('data-phase',p);
+  var el=document.getElementById('phase-label');
+  if(el) el.textContent=p;
+}());
+"""
+
+SEARCH_JS = """
+const q = document.getElementById('q');
+const results = document.getElementById('results');
+const stats = document.getElementById('stats');
+
+function esc(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function highlight(text, needle) {
+  const safe = esc(text);
+  if (!needle) return safe.slice(0, 160);
+  const idx = safe.toLowerCase().indexOf(needle.toLowerCase());
+  if (idx === -1) return safe.slice(0, 160);
+  const start = Math.max(0, idx - 40);
+  const end = Math.min(safe.length, idx + needle.length + 100);
+  let snippet = (start > 0 ? '...' : '') + safe.slice(start, end) + (end < safe.length ? '...' : '');
+  const re = new RegExp(needle.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'), 'ig');
+  return snippet.replace(re, m => '<mark>' + m + '</mark>');
+}
+
+function render(items, needle) {
+  stats.textContent = items.length + ' result' + (items.length === 1 ? '' : 's');
+  results.innerHTML = items.slice(0, 200).map(it => `
+    <div class="lab-entry">
+      <div class="tree-tag">${it.tree}</div>
+      <a class="lab-title" href="${it.href}">${esc(it.rel)}</a>
+      <div class="lab-desc">${highlight(it.content, needle)}</div>
+    </div>
+  `).join('');
+}
+
+q.addEventListener('input', () => {
+  const needle = q.value.trim();
+  if (!needle) { results.innerHTML = ''; stats.textContent = ''; return; }
+  const lower = needle.toLowerCase();
+  const hits = INDEX.filter(it =>
+    it.rel.toLowerCase().includes(lower) || it.content.toLowerCase().includes(lower)
+  );
+  render(hits, needle);
+});
+"""
+
+
+def slug_for(path: Path) -> str:
+    h = hashlib.sha1(str(path).encode()).hexdigest()[:12]
+    return f"{path.stem}-{h}.html".replace(" ", "-")
+
+
+def render_markdown(text: str) -> str:
+    return _markdown.markdown(text, extensions=["fenced_code", "tables"])
+
+
+def page_shell(system_label: str, body: str, active: str, extra_script: str = "") -> str:
+    home_cls = ' class="uplink-btn active"' if active == "home" else ' class="uplink-btn"'
+    browse_cls = ' class="uplink-btn active"' if active == "browse" else ' class="uplink-btn"'
+    blueprint_cls = ' class="uplink-btn active"' if active == "blueprint" else ' class="uplink-btn"'
+    return f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape(system_label)}</title>
+{FAVICON_TAG}
+<style>{CSS}</style>
+</head><body>
+<div class="site-wrapper">
+  <div class="system-bar">
+    <div>SYSTEM: {html.escape(system_label.upper())} <span class="cursor">_</span></div>
+    <div class="right">
+      STATE: ADAPTIVE_SYNC
+      <span class="mercury-glyph" style="display:inline-block;animation:flow 2.4s ease-in-out infinite;">&#9791;</span><span class="mercury-glyph" style="display:inline-block;animation:flow-delay 2.4s ease-in-out infinite;margin-right:4px;">&#9789;</span>
+    </div>
+  </div>
+
+  <nav class="uplinks" style="padding:14px 0;">
+    <a href="index.html"{home_cls}>dashboard</a>
+    <a href="browse.html"{browse_cls}>browse // search</a>
+    <a href="blueprint.html"{blueprint_cls}>blueprint</a>
+  </nav>
+
+  {body}
+
+  <div class="close-bar">
+    <div class="signature">..: :..</div>
+    <div style="margin-top:6px;">notes-site &middot; vault-local &middot; <a href="index.html">home</a></div>
+  </div>
+</div>
+<script>{PHASE_SCRIPT}</script>
+{extra_script}
+</body></html>"""
+
+
+def collect_notes():
+    notes = []
+    for tree_label, tree_root in TREES.items():
+        if not tree_root.is_dir():
+            continue
+        for f in tree_root.rglob("*"):
+            if not f.is_file():
+                continue
+            if f.suffix.lower() not in (".md", ".txt"):
+                continue
+            if any(part in SKIP_DIR_NAMES for part in f.parts):
+                continue
+            try:
+                text = f.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            rel = str(f.relative_to(tree_root))
+            notes.append({"tree": tree_label, "path": f, "rel": rel, "content": text})
+    return notes
+
+
+BLUEPRINT_BODY = """
+<div class="panel hero">
+  <h1>INFRASTRUCTURE BLUEPRINT</h1>
+  <p class="hero-sub">click through to the real deep-reference doc or the live URL &mdash; last verified 2026-07-28</p>
+</div>
+
+<div class="panel">
+  <span class="tag">01 &mdash; access path</span>
+  <div class="flow">
+    <div class="flow-step">YOU (browser / SSH client)</div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">NextDNS resolver &mdash; profile 275ee2</div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">Cloudflare edge &mdash; kontor.studio zone</div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step"><b>Cloudflare Access</b> &mdash; email OTP, team kdev-kstudio</div>
+    <div class="flow-arrow">&darr; &darr;</div>
+    <div class="flow-step">tunnel &middot; bleedin6ed6e-workstation &nbsp;|&nbsp; tunnel &middot; csi-linux</div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">
+      <a href="https://ssh.kontor.studio">ssh.kontor.studio</a> &middot;
+      <a href="https://desktop.kontor.studio/vnc.html">desktop.kontor.studio</a> &middot;
+      <a href="https://csi-ssh.kontor.studio">csi-ssh.kontor.studio</a> &middot;
+      <a href="https://csi-desktop.kontor.studio">csi-desktop.kontor.studio</a>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <span class="tag">02 &mdash; AWS EC2 inventory</span>
+  <table>
+    <tr><th>Box</th><th>State</th><th>Deep ref</th></tr>
+    <tr><td>py-bite</td><td><span class="pill up">running</span> always-on</td><td><a href="notes/aws-ec2-ref-2ab9750fd718.html">aws-ec2-ref.md</a></td></tr>
+    <tr><td>csi-linux-native</td><td><span class="pill up">running</span></td><td><a href="notes/csi-ec2-ref-1c4bdb03832e.html">csi-ec2-ref.md</a></td></tr>
+  </table>
+  <p class="tag">wazuh-server and cloud-workstation torn down 2026-07-31 — replaced by the Docker-based Sagan+EveBox SOC lab.</p>
+  <p>Quick-connect for all of the above: <a href="notes/airplane-mode-connections-30110b1b2830.html">airplane-mode-connections.md</a></p>
+</div>
+
+<div class="panel">
+  <span class="tag">03 &mdash; where the paper trail lives</span>
+  <p><a href="notes/airplane-mode-connections-30110b1b2830.html">airplane-mode-connections.md</a> &mdash; start here for any "how do I connect" question.</p>
+  <p><a href="notes/resources-in-place-4326e6739be1.html">resources-in-place.md</a> &mdash; the master "what's live right now" snapshot (this page's own source).</p>
+  <p><a href="browse.html">browse // search</a> &mdash; full-text search across every note on this machine.</p>
+</div>
+"""
+
+
+def main():
+    OUT.mkdir(parents=True, exist_ok=True)
+    notes_dir = OUT / "notes"
+    # Slugs hash the full source path -- a moved/renamed file gets a new
+    # slug, and the old rendered page for its previous path was otherwise
+    # never cleaned up, silently accumulating stale orphans every time
+    # something in the four source trees moves. Full rebuild each run
+    # anyway, so wiping first is correct, not just tidy.
+    if notes_dir.exists():
+        for f in notes_dir.glob("*.html"):
+            f.unlink()
+    notes_dir.mkdir(exist_ok=True)
+
+    notes = collect_notes()
+    print(f"found {len(notes)} notes across {len(TREES)} trees")
+
+    index_entries = []
+    for n in notes:
+        slug = slug_for(n["path"])
+        out_file = OUT / "notes" / slug
+        body_html = render_markdown(n["content"])
+        title = f"{n['tree']}/{n['rel']}"
+        page_body = f"<div class='panel'><span class='tag'>{html.escape(n['tree'])}</span>{body_html}</div>"
+        page = page_shell(title, page_body, active="browse")
+        out_file.write_text(page, encoding="utf-8")
+
+        index_entries.append({
+            "tree": n["tree"],
+            "rel": n["rel"],
+            "href": f"notes/{slug}",
+            "content": n["content"][:4000],
+        })
+
+    # Browse page
+    index_json = json.dumps(index_entries)
+    browse_body = """
+    <div class="panel">
+      <span class="tag">browse // search</span>
+      <p style="color:var(--text-mid);font-size:11px;margin-bottom:14px;">
+        Searches across arc-lt-cmc, dev-notes, khaos-lab, vault/archive &mdash; titles and content.
+      </p>
+      <input class="searchbox" id="q" type="text" placeholder="search everything...">
+      <div class="stats" id="stats"></div>
+      <div id="results"></div>
+    </div>
+    """
+    browse_script = "<script>const INDEX = " + index_json + ";\n" + SEARCH_JS + "</script>"
+    (OUT / "browse.html").write_text(
+        page_shell("ARCHIVE_SEARCH", browse_body, active="browse", extra_script=browse_script),
+        encoding="utf-8",
+    )
+
+    # Dashboard (home) page, from resources-in-place.md
+    if DASHBOARD_SOURCE.exists():
+        dash_html = render_markdown(DASHBOARD_SOURCE.read_text(encoding="utf-8", errors="ignore"))
+    else:
+        dash_html = "<p>resources-in-place.md not found.</p>"
+
+    dash_body = f"""
+    <div class="panel hero">
+      <h1>SITES &amp; SERVERS</h1>
+      <p class="hero-sub">the living blueprint &mdash; resources-in-place.md, rendered</p>
+    </div>
+    <div class="panel">{dash_html}</div>
+    """
+    (OUT / "index.html").write_text(
+        page_shell("NOTES_ARCHIVE", dash_body, active="home"),
+        encoding="utf-8",
+    )
+
+    (OUT / "blueprint.html").write_text(
+        page_shell("BLUEPRINT", BLUEPRINT_BODY, active="blueprint"),
+        encoding="utf-8",
+    )
+
+    (OUT / "style.css").write_text(CSS, encoding="utf-8")
+
+    print(f"built: {OUT}/index.html (dashboard), {OUT}/browse.html (search), {OUT}/blueprint.html")
+    print(f"{len(notes)} notes indexed")
+
+
+if __name__ == "__main__":
+    main()

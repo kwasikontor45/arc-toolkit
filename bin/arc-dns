@@ -1,0 +1,201 @@
+#!/bin/bash
+# arc-dns — NextDNS toggle for kontor studio
+# Usage: arc dns on | off | status | profile <id>
+
+PROFILE_FILE="$HOME/.config/nextdns-profile"
+CMD="${1:-status}"
+
+_profile_id() {
+    [ -f "$PROFILE_FILE" ] && cat "$PROFILE_FILE" || echo ""
+}
+
+_require_profile() {
+    local id
+    id=$(_profile_id)
+    if [ -z "$id" ]; then
+        echo "  no profile set. run: arc dns profile <your-6-char-id>"
+        echo "  get your ID at: https://my.nextdns.io → Setup tab"
+        exit 1
+    fi
+    echo "$id"
+}
+
+case "$CMD" in
+    profile)
+        ID="${2:-}"
+        if [ -z "$ID" ]; then
+            current=$(_profile_id)
+            [ -n "$current" ] && echo "  current profile: $current" || echo "  no profile set"
+            exit 0
+        fi
+        if ! echo "$ID" | grep -qE '^[a-z0-9]{6}$'; then
+            echo "  invalid profile ID — must be 6 lowercase alphanumeric chars (example: a1b2c3)"
+            exit 1
+        fi
+        mkdir -p "$(dirname "$PROFILE_FILE")"
+        echo "$ID" > "$PROFILE_FILE"
+        echo "  profile set: $ID"
+        if sudo nextdns config set --profile="$ID" 2>/dev/null; then
+            echo "  profile applied to nextdns daemon"
+        else
+            echo "  saved — will apply on next 'arc dns on'"
+        fi
+        ;;
+
+    on)
+        PROFILE=$(_require_profile)
+        echo "  activating NextDNS (profile: $PROFILE)..."
+        sudo nextdns config set --profile="$PROFILE"
+        sudo nextdns activate
+        RESOLVER=$(cat /etc/resolv.conf 2>/dev/null | grep '^nameserver' | head -1 | awk '{print $2}')
+        echo "  NextDNS ON  →  resolver: $RESOLVER"
+        ;;
+
+    off)
+        echo "  deactivating NextDNS — restoring system defaults..."
+        sudo nextdns deactivate
+        RESOLVER=$(cat /etc/resolv.conf 2>/dev/null | grep '^nameserver' | head -1 | awk '{print $2}')
+        echo "  NextDNS OFF →  resolver: $RESOLVER"
+        ;;
+
+    status)
+        echo ""
+        echo "  ── DNS STATUS ──────────────────────────"
+        if systemctl is-active --quiet nextdns 2>/dev/null; then
+            echo "  nextdns daemon:  running (v$(nextdns version 2>/dev/null | awk '{print $NF}'))"
+        else
+            echo "  nextdns daemon:  stopped"
+        fi
+        PROFILE=$(_profile_id)
+        [ -n "$PROFILE" ] && echo "  profile:         $PROFILE" || echo "  profile:         not set"
+        UPSTREAM=$(resolvectl status 2>/dev/null | grep -E 'DNS Servers' | head -1 | awk '{print $NF}')
+        echo "  upstream:        ${UPSTREAM:-unknown}"
+        if [ "$UPSTREAM" = "127.0.0.1" ]; then
+            echo "  mode:            NextDNS ACTIVE"
+        elif [ -n "$UPSTREAM" ]; then
+            echo "  mode:            direct → $UPSTREAM"
+        else
+            echo "  mode:            unknown"
+        fi
+        resolvectl status 2>/dev/null | grep -E 'Current DNS|DNS Servers' | head -2 | sed 's/^/  /'
+        echo "  ────────────────────────────────────────"
+        echo ""
+        ;;
+
+    flush)
+        echo "  flushing DNS cache..."
+        if sudo resolvectl flush-caches 2>&1; then
+            echo "  ✓  cache cleared"
+        else
+            echo "  ✗  flush failed"
+        fi
+        ;;
+
+    restart)
+        echo "  restarting NextDNS..."
+        sudo systemctl restart nextdns
+        sleep 1
+        if systemctl is-active --quiet nextdns 2>/dev/null; then
+            echo "  ✓  NextDNS restarted"
+        else
+            echo "  ✗  NextDNS failed to restart — run: arc dns status"
+        fi
+        ;;
+
+    check)
+        echo ""
+        echo "  ── DNS CHECK ───────────────────────────"
+        if systemctl is-active --quiet nextdns 2>/dev/null; then
+            echo "  daemon:    running"
+        else
+            echo "  daemon:    STOPPED"
+        fi
+        # Check every link that actually holds +DefaultRoute DNS scope, not
+        # a single link inferred from `ip route show default` -- a per-link
+        # DNS override (from DHCP, if NetworkManager's ipv4.ignore-auto-dns
+        # is "no") takes priority over the Global 127.0.0.1 fallback for
+        # actual resolution. Checking Global alone gave a false "wired"
+        # reading on 2026-07-31 while queries leaked to the ISP in the clear.
+        #
+        # Inferring "the" DNS link from the main routing table also breaks
+        # under policy-routed VPN clients (e.g. Proton's WireGuard CLI): the
+        # main table keeps the physical NIC as default for compatibility
+        # even while a VPN interface is the real +DefaultRoute DNS scope, so
+        # that approach checked the wrong link entirely once VPN was up
+        # (2026-07-31). Multiple links (docker0, a VPN iface, etc.) can hold
+        # +DefaultRoute at once -- flag a leak if ANY of them isn't 127.0.0.1.
+        #
+        # resolvectl only prints "Current DNS Server:" when a link has
+        # multiple servers to disambiguate; with a single server (our normal
+        # steady state -- just the NextDNS stub) it prints only
+        # "DNS Servers:", so fall back to that when the former is absent.
+        DEFAULT_LINKS=$(resolvectl status 2>/dev/null | awk '
+            /^Link [0-9]+ \(/ {
+                if (iface != "" && has_default) print iface, (server != "" ? server : "?")
+                s=$0; sub(/^.*\(/,"",s); sub(/\).*$/,"",s); iface=s
+                has_default=0; server=""
+                next
+            }
+            /\+DefaultRoute/ { has_default=1 }
+            /Current DNS Server/ { server=$NF }
+            /DNS Servers/ && server=="" { server=$NF }
+            END { if (iface != "" && has_default) print iface, (server != "" ? server : "?") }
+        ')
+        LEAKS=""
+        WIRED=""
+        while read -r ln srv; do
+            [ -z "$ln" ] && continue
+            if [ "$srv" = "127.0.0.1" ]; then
+                WIRED="${WIRED}${ln} "
+            else
+                LEAKS="${LEAKS}${ln}→${srv:-none} "
+            fi
+        done <<< "$DEFAULT_LINKS"
+        if [ -n "$LEAKS" ]; then
+            echo "  routing:   NOT wired  (leaking via: ${LEAKS}— real queries may bypass NextDNS)"
+        elif [ -n "$WIRED" ]; then
+            echo "  routing:   wired → NextDNS  (link: ${WIRED% })"
+        else
+            echo "  routing:   NOT wired  (no link holds default DNS scope)"
+        fi
+        result=$(dig +short +time=3 nextdns.io @127.0.0.1 2>/dev/null | head -1)
+        if [ -n "$result" ]; then
+            echo "  query:     OK  ($result)"
+        else
+            echo "  query:     FAILED"
+        fi
+        echo "  ────────────────────────────────────────"
+        echo ""
+        ;;
+
+    blocklists|lists)
+        PROFILE=$(_profile_id)
+        [ -z "$PROFILE" ] && PROFILE="<your-profile>"
+        URL="https://my.nextdns.io/${PROFILE}/privacy/blocklists"
+        echo ""
+        echo "  ── BLOCKLIST PRESETS ───────────────────"
+        echo "  daily driver (arc-dns-cold):"
+        echo "    → NextDNS Ads & Trackers Blocklist"
+        echo "    → StevenBlack"
+        echo "    → oisd (small)"
+        echo ""
+        echo "  aggressive (arc-dns-hot):"
+        echo "    → everything above PLUS:"
+        echo "    → oisd (big)"
+        echo "    → NoCoin"
+        echo "    → notracking"
+        echo "    → The Block List Project (abuse, malware, phishing, ransomware, scams)"
+        echo ""
+        echo "  manage blocklists: ${URL}"
+        echo "  ────────────────────────────────────────"
+        echo ""
+        if command -v xdg-open >/dev/null 2>&1; then
+            echo "  opening blocklists page..."
+            xdg-open "$URL" >/dev/null 2>&1
+        fi
+        ;;
+
+    *)
+        echo "usage: arc dns on | off | restart | flush | check | status | profile | blocklists [<6-char-id>]"
+        ;;
+esac

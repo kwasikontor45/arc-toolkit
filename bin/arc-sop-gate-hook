@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""
+arc-sop-gate-hook — Claude Code PreToolUse hook, real enforcement point.
+
+Blocks Bash tool calls until arc-sop's gate is actually satisfied (GAMEPLAN
+[STARTING] entry today + a same-day ack for this agent), or the human owner
+has set the bypass. Self-serve commands (arc-sop/arc sop) are allowed
+through unconditionally so the gate can be satisfied without a deadlock.
+"""
+import json
+import re
+import subprocess
+import sys
+
+SELF_SERVE = re.compile(r"^\s*(sudo\s+)?(arc-sop\b|arc\s+sop\b)", re.IGNORECASE)
+
+
+def _notify(title: str, message: str):
+    try:
+        subprocess.run(
+            ["notify-send", "--urgency=critical", "--app-name=arc-sop", title, message],
+            check=False, timeout=10, capture_output=True,
+        )
+    except Exception:
+        pass
+
+
+def main():
+    raw = sys.stdin.read()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        sys.exit(0)  # malformed input -- fail open, don't brick the session
+
+    if data.get("tool_name") != "Bash":
+        sys.exit(0)
+
+    command = (data.get("tool_input") or {}).get("command", "")
+    if SELF_SERVE.match(command):
+        sys.exit(0)
+
+    result = subprocess.run(
+        ["/home/architect-of-chaos/.local/bin/arc-sop", "gate-check"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode == 0:
+        sys.exit(0)
+
+    reason = result.stdout.strip() or "SOP gate not satisfied"
+    _notify("SOP gate BLOCKED a command", reason)
+    print(json.dumps({"decision": "deny", "reason": reason}), file=sys.stderr)
+    sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

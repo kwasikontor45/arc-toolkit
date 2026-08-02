@@ -1,0 +1,117 @@
+#!/bin/bash
+# arc-quiet-clean — silent periodic maintenance (cron every 3 days)
+# No interaction, no prompts. Logs everything.
+# Wires in arc-home-sweep for automatic home directory pruning.
+
+# SOP gate bridge: same audit policy as interactive shells, non-blocking --
+# never gates automation, just logs it under the same DB the gate reads.
+{ command -v arc-sop >/dev/null 2>&1 && arc-sop ack-auto "arc-quiet-clean" >/dev/null 2>&1; } || true
+
+MOUNT="/mnt/storage"
+LOG="$HOME/.local/share/arc/quiet-clean.log"
+FF_DIR="$MOUNT/forge/.busy-msfox/Restore Firefox"
+ARCHIVE_DIR="$MOUNT/Persistent/archive"
+SWEEP="$HOME/.local/bin/arc-home-sweep"
+
+mkdir -p "$(dirname "$LOG")"
+_log() { echo "$(date '+%F %T')  $*" >> "$LOG"; }
+
+_log "--- quiet-clean start ---"
+
+# ── 1. Home sweep ─────────────────────────────────────────────────────────────
+if [[ -x "$SWEEP" ]]; then
+  "$SWEEP" --purge >> "$LOG" 2>&1 \
+    && _log "home-sweep: done (purge mode)" \
+    || _log "home-sweep: failed"
+else
+  _log "home-sweep: not found at $SWEEP — skipping"
+fi
+
+# ── 2. User cache prune ───────────────────────────────────────────────────────
+before_kb=$(df / | awk 'NR==2 {print $3}')
+rm -rf "$HOME/.cache/"* 2>/dev/null
+rm -f "$HOME/.xsession-errors" "$HOME/.xsession-errors.old" 2>/dev/null
+after_kb=$(df / | awk 'NR==2 {print $3}')
+freed=$(( before_kb - after_kb ))
+_log "cache: cleared (freed ~${freed}KB)"
+
+# ── 3. Journal vacuum (3 days) ────────────────────────────────────────────────
+sudo /usr/local/bin/arc-journal-vacuum > /dev/null 2>&1 \
+  && _log "journal: vacuumed to 3d" \
+  || _log "journal: vacuum skipped (no sudo or script missing)"
+
+# ── 4. Fail2ban log cap ───────────────────────────────────────────────────────
+F2B_LOG="/var/log/fail2ban.log"
+if [[ -f "$F2B_LOG" ]]; then
+  size_kb=$(du -k "$F2B_LOG" 2>/dev/null | cut -f1)
+  if (( size_kb > 5120 )); then
+    sudo tail -c 5M "$F2B_LOG" > /tmp/f2b-trim.log 2>/dev/null \
+      && sudo mv /tmp/f2b-trim.log "$F2B_LOG" \
+      && _log "fail2ban: log trimmed (was ${size_kb}KB)" \
+      || _log "fail2ban: trim failed"
+  else
+    _log "fail2ban: log ok (${size_kb}KB)"
+  fi
+fi
+
+# ── 5. npm cache prune ───────────────────────────────────────────────────────
+npm_mb=$(du -sm "$HOME/.npm" 2>/dev/null | cut -f1)
+if (( npm_mb > 60 )); then
+  npm cache clean --force > /dev/null 2>&1 \
+    && _log "npm: cache cleared (was ${npm_mb}MB)" \
+    || _log "npm: cache clean failed"
+else
+  _log "npm: cache ok (${npm_mb}MB)"
+fi
+
+# ── 6. Claude Code — prune old version binaries ───────────────────────────────
+CLAUDE_VERS="$HOME/.local/share/claude/versions"
+if [[ -d "$CLAUDE_VERS" ]]; then
+  mapfile -t _cv < <(ls -t "$CLAUDE_VERS" 2>/dev/null)
+  if (( ${#_cv[@]} > 1 )); then
+    for v in "${_cv[@]:1}"; do
+      rm -f "$CLAUDE_VERS/$v"
+      _log "claude: removed old version $v"
+    done
+  else
+    _log "claude: only one version — nothing to prune"
+  fi
+fi
+
+# ── 7. Firefox bookmark prune — keep 1 newest per profile hash ───────────────
+if [[ -d "$FF_DIR" ]]; then
+  declare -A seen_hash
+  pruned_ff=0
+  while IFS= read -r f; do
+    base=$(basename "$f")
+    hash=$(echo "$base" | awk -F'_' '{print $3}')
+    [[ -z "$hash" ]] && continue
+    if [[ -z "${seen_hash[$hash]}" ]]; then
+      seen_hash[$hash]=1
+    else
+      rm -f "$f"
+      _log "firefox: pruned $base"
+      (( pruned_ff++ ))
+    fi
+  done < <(find "$FF_DIR" -maxdepth 1 -name 'FirefoxBackup_*.html' 2>/dev/null | sort -r)
+  [[ $pruned_ff -eq 0 ]] && _log "firefox: nothing to prune"
+fi
+
+# Prune stale Firefox HTML copies in archive
+find "$ARCHIVE_DIR" -maxdepth 1 -name 'FirefoxBackup_*.html' -delete 2>/dev/null \
+  && _log "firefox: archive copies cleared"
+
+# ── 7. vault/archive — prune items older than 30 days ────────────────────────
+if mountpoint -q "$MOUNT" 2>/dev/null; then
+  pruned_arc=0
+  while IFS= read -r item; do
+    rm -rf "$item"
+    _log "archive: pruned $(basename "$item") (>30d)"
+    (( pruned_arc++ ))
+  done < <(find "$ARCHIVE_DIR" -maxdepth 1 -mindepth 1 -mtime +30 2>/dev/null)
+  [[ $pruned_arc -eq 0 ]] && _log "archive: nothing older than 30d"
+else
+  _log "archive: USB not mounted — skipped"
+fi
+
+_log "--- quiet-clean done ---"

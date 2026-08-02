@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# arc-vpn — thin wrapper around the official proton-vpn-cli for daily ops
+# hook: arc vpn <cmd>   (see arc-dispatch snippet below)
+set -euo pipefail
+
+BIN="protonvpn"
+STATE_DIR="$HOME/.local/state/arc-vpn"
+LOG="$STATE_DIR/arc-vpn.log"
+mkdir -p "$STATE_DIR"
+
+command -v "$BIN" >/dev/null 2>&1 || { echo "arc-vpn: $BIN not found" >&2; exit 1; }
+
+VPN_IFACE="proton0"
+
+log() { printf '%s %s\n' "$(date -Iseconds)" "$*" >> "$LOG"; }
+
+# Proton pushes its own DNS (10.2.0.1) onto proton0 with DefaultRoute scope,
+# which bypasses the local NextDNS stub (127.0.0.1) for all queries while
+# connected. Re-point proton0 at the stub so NextDNS filtering still applies.
+fix_dns() {
+  if command -v resolvectl >/dev/null 2>&1 && ip link show "$VPN_IFACE" >/dev/null 2>&1; then
+    if resolvectl dns "$VPN_IFACE" 127.0.0.1 >/dev/null 2>&1; then
+      log "dns: $VPN_IFACE -> 127.0.0.1 (NextDNS)"
+    else
+      log "dns: failed to re-point $VPN_IFACE to NextDNS"
+    fi
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+arc vpn <command>
+
+  connect [country|--p2p|--tor]   connect (default: fastest server)
+  disconnect                      drop connection
+  status                          connection status
+  reconnect                       disconnect then reconnect to fastest
+  ip                              current public IP only
+EOF
+}
+
+case "${1:-status}" in
+  connect)
+    shift
+    target="${1:-}"
+    if [ -z "$target" ]; then
+      args=()
+    elif [[ "$target" == --* ]]; then
+      args=("$target")
+    else
+      args=(--country "$target")
+    fi
+    tmp=$(mktemp)
+    ok=0
+    "$BIN" connect "${args[@]}" >"$tmp" 2>&1 || ok=$?
+    cat "$tmp"; rm -f "$tmp"
+    log "connect ${args[*]:-fastest} rc=$ok"
+    if [ "$ok" -eq 0 ]; then
+      fix_dns
+      notify-send -a arc-vpn "VPN" "connected: ${args[*]:-fastest}" 2>/dev/null || true
+    else
+      notify-send -a arc-vpn -u critical "VPN" "connect FAILED: ${args[*]:-fastest} (rc=$ok)" 2>/dev/null || true
+    fi
+    exit "$ok"
+    ;;
+
+  disconnect)
+    "$BIN" disconnect
+    log "disconnect"
+    notify-send -a arc-vpn "VPN" "disconnected" 2>/dev/null || true
+    ;;
+
+  reconnect)
+    "$BIN" disconnect >/dev/null 2>&1 || true
+    "$BIN" connect
+    fix_dns
+    log "reconnect"
+    ;;
+
+  status)
+    "$BIN" status
+    ;;
+
+  ip)
+    curl -s ifconfig.me
+    echo
+    ;;
+
+  -h|--help|help)
+    usage
+    ;;
+
+  *)
+    echo "arc-vpn: unknown command '$1'" >&2
+    usage
+    exit 1
+    ;;
+esac

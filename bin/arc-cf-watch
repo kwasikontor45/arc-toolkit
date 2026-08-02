@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# arc-cf-watch — warns before Cloudflare Workers' free-tier daily request cap
+# (100,000 req/day, account-wide) is hit. Standalone: reads its own token
+# from .cftk, no dependency on any other script. Safe to delete alone.
+#
+# Why this exists, not a spend alert: Cloudflare's free tier fails CLOSED —
+# past the cap, requests just start erroring, no bill happens on its own.
+# This is a heads-up so that doesn't surprise you mid-day, not a money guard.
+set -euo pipefail
+
+# SOP gate bridge: same audit policy as interactive shells, non-blocking --
+# never gates automation, just logs it under the same DB the gate reads.
+{ command -v arc-sop >/dev/null 2>&1 && arc-sop ack-auto "arc-cf-watch" >/dev/null 2>&1; } || true
+
+CFTK="$HOME/dev-notes/surgery-tools/.cftk"
+STATE_DIR="$HOME/.local/state"
+STATE_FILE="$STATE_DIR/arc-cf-watch-state"
+LOG_FILE="$STATE_DIR/arc-cf-watch.log"
+CAP=100000
+WARN_PCT=80
+CRIT_PCT=95
+
+mkdir -p "$STATE_DIR"
+
+if [[ ! -f "$CFTK" ]]; then
+  echo "$(date -Is) ERROR: .cftk not found" >> "$LOG_FILE"
+  exit 1
+fi
+
+CF_ACCT_ID=$(grep "^cf-acct-id=" "$CFTK" | cut -d= -f2)
+TOKEN=$(grep "^arc-deploy-workers=" "$CFTK" | cut -d= -f2)
+
+TODAY_START=$(date -u +%Y-%m-%dT00:00:00Z)
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+TODAY_KEY=$(date -u +%Y-%m-%d)
+
+QUERY="query { viewer { accounts(filter: {accountTag: \\\"${CF_ACCT_ID}\\\"}) { workersInvocationsAdaptive(limit: 1000, filter: {datetime_geq: \\\"${TODAY_START}\\\", datetime_leq: \\\"${NOW}\\\"}) { sum { requests } } } } }"
+
+RESP=$(curl -s -X POST "https://api.cloudflare.com/client/v4/graphql" \
+  -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d "{\"query\":\"${QUERY}\"}")
+
+TOTAL=$(echo "$RESP" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    rows = d['data']['viewer']['accounts'][0]['workersInvocationsAdaptive']
+    print(sum(r['sum']['requests'] for r in rows))
+except Exception:
+    print('ERROR')
+" 2>/dev/null)
+
+if [[ "$TOTAL" == "ERROR" || -z "$TOTAL" ]]; then
+  echo "$(date -Is) ERROR: could not parse response: $RESP" >> "$LOG_FILE"
+  exit 1
+fi
+
+PCT=$(( TOTAL * 100 / CAP ))
+echo "$(date -Is) requests=$TOTAL pct=${PCT}%" >> "$LOG_FILE"
+
+# One notification per threshold per day — tracked in STATE_FILE as
+# "YYYY-MM-DD:last_level" (none/warn/crit), so re-running often (cron) never
+# spams once a level's already been announced today.
+LAST=""
+[[ -f "$STATE_FILE" ]] && LAST=$(cat "$STATE_FILE")
+LAST_DAY="${LAST%%:*}"
+LAST_LEVEL="${LAST#*:}"
+[[ "$LAST_DAY" != "$TODAY_KEY" ]] && LAST_LEVEL="none"
+
+notify() {
+  notify-send -u "$1" -i "$2" "arc · Cloudflare Workers" "$3" 2>/dev/null || true
+}
+
+if (( PCT >= CRIT_PCT )) && [[ "$LAST_LEVEL" != "crit" ]]; then
+  notify critical dialog-error "${TOTAL}/${CAP} requests today (${PCT}%) — close to the free-tier cap, requests will start erroring soon"
+  echo "${TODAY_KEY}:crit" > "$STATE_FILE"
+elif (( PCT >= WARN_PCT )) && [[ "$LAST_LEVEL" == "none" ]]; then
+  notify normal dialog-warning "${TOTAL}/${CAP} requests today (${PCT}%) — approaching the free-tier daily cap"
+  echo "${TODAY_KEY}:warn" > "$STATE_FILE"
+fi

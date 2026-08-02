@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# arc-rkhunter-check — periodic rootkit-hunter scan with a real desktop
+# notification when it actually finds something (same notify pipeline as
+# arc-suricata-watch: notify-send into architect-of-chaos's session via the
+# deterministic DBUS_SESSION_BUS_ADDRESS for uid 1000, which arc-pine then
+# picks up for sound/voice). Runs as root via systemd (arc-rkhunter-check.
+# timer), same reason as arc-suricata-watch: reads root-only state, and this
+# way needs no NOPASSWD sudoers entry or password in a cron job.
+#
+# Deliberately does NOT run --propupd here -- baselining what counts as
+# "normal" is a decision a human should make after reviewing a warning, not
+# something a script should do silently on a timer. Standalone: no
+# dependency on any other script, safe to stop/delete alone.
+set -euo pipefail
+
+TARGET_USER="architect-of-chaos"
+TARGET_UID=1000
+LOG=/var/log/rkhunter.log
+
+notify() {
+  local urgency="$1" summary="$2" body="$3"
+  su "$TARGET_USER" -c "DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${TARGET_UID}/bus notify-send -u ${urgency} -i security-high 'arc-rkhunter' '${summary}
+${body}'" 2>/dev/null || true
+}
+
+rkhunter --check --sk --rwo >/dev/null 2>&1 || true
+
+warnings=$(grep -c "^Warning: " "$LOG" 2>/dev/null || echo 0)
+if [[ "$warnings" -gt 0 ]]; then
+  detail=$(grep "^Warning: " "$LOG" | head -3)
+  notify critical "${warnings} rootkit warning(s) found" "${detail}
+run: arc sec rkhunter"
+fi

@@ -1,0 +1,12 @@
+# Data/state files these scripts read or write — never the scripts' own content,
+# but if you're pulling a fresh copy from ~/.local/bin or ~/.config/arc into this
+# repo later, make sure none of these tag along.
+*.db
+*.db.*
+gate-owner-uid
+last-known-ip
+*.key
+.cftk
+aws.conf
+__pycache__/
+*.pyc

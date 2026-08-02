@@ -1,0 +1,951 @@
+#!/usr/bin/env python3
+"""
+arc-sop — SOP enforcement engine for kontor studio.
+
+Local-only SQLite database. No network. No cloud. No required git dependency.
+Backups: via arc backup → USB vault → MEGA.
+Root copy: /usr/local/share/arc/sop/ (created by arc-sop --root-copy, requires sudo).
+
+Commands:
+  ack              Record agent SOP acknowledgment for this session.
+  baseline         Record current hashes of all SOP files into the local DB.
+  verify           Verify intel-ops files match the stored local DB baseline.
+  check            Run all compliance checks.
+  status           Show current compliance state.
+  recover          Restore SOP files from root copy or MEGA fallback.
+  bundle           Archive intel-ops to USB vault for MEGA sync.
+  root-copy        Copy current intel-ops to /usr/local/share/arc/sop/ (sudo).
+"""
+
+import hashlib
+import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+def _user_home() -> Path:
+    """Return the real user's home directory, even when running under sudo."""
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        import pwd
+        try:
+            return Path(pwd.getpwnam(sudo_user).pw_dir)
+        except KeyError:
+            pass
+    return Path.home()
+
+
+HOME = _user_home()
+INTEL_OPS = HOME / "dev-notes/intel-ops"
+SOP_DIR = HOME / ".config/arc/sop"
+DB_PATH = SOP_DIR / "arc-sop.db"
+ROOT_COPY = Path("/usr/local/share/arc/sop")
+VAULT_SOP = Path("/mnt/storage/Persistent/arc-sop")
+MEGA_SOP = Path("mega:/arc-sop")
+
+# ---------------------------------------------------------------------------
+# Colors
+# ---------------------------------------------------------------------------
+G = "\033[0;32m"
+R = "\033[0;31m"
+Y = "\033[0;33m"
+C = "\033[0;36m"
+D = "\033[0;90m"
+N = "\033[0m"
+
+BOLD = "\033[1m"
+
+# ---------------------------------------------------------------------------
+# Notification helper — emits a desktop notification that Arc Pine captures.
+# ---------------------------------------------------------------------------
+def _notify(title: str, message: str, urgency: str = "normal"):
+    """Send a notification via notify-send if available."""
+    urgency_map = {"low": "low", "normal": "normal", "critical": "critical"}
+    level = urgency_map.get(urgency, "normal")
+    try:
+        subprocess.run(
+            ["notify-send", f"--urgency={level}", "--app-name=arc-sop", title, message],
+            check=False, timeout=10, capture_output=True,
+        )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# DB helpers
+# ---------------------------------------------------------------------------
+def init_db():
+    SOP_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS acks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            agent_id TEXT,
+            session_id TEXT,
+            ack_type TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS checks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            check_name TEXT,
+            passed INTEGER,
+            message TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS violations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            rule TEXT,
+            details TEXT,
+            resolved INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS baseline (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            file_path TEXT UNIQUE,
+            file_hash TEXT
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def db_insert(table: str, **kwargs):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    cols = ", ".join(kwargs.keys())
+    placeholders = ", ".join("?" for _ in kwargs)
+    c.execute(f"INSERT INTO {table} ({cols}) VALUES ({placeholders})", tuple(kwargs.values()))
+    conn.commit()
+    conn.close()
+
+
+def db_query(query: str, params=()):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute(query, params)
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Core helpers
+# ---------------------------------------------------------------------------
+def now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+_KNOWN_TERMINALS = {
+    "xfce4-terminal", "gnome-terminal", "gnome-terminal-server", "konsole",
+    "tabby", "tabby-shell", "alacritty", "kitty", "terminator", "xterm",
+    "tilix", "rxvt", "urxvt", "sakura", "terminology", "st",
+}
+
+
+def _detect_terminal_emulator() -> str:
+    """Walk process ancestry to find the terminal emulator hosting this shell.
+    Falls back to $TERM_PROGRAM, then 'unknown-terminal' if neither works."""
+    try:
+        pid = os.getpid()
+        for _ in range(12):
+            with open(f"/proc/{pid}/status") as f:
+                status = f.read()
+            ppid = None
+            for line in status.splitlines():
+                if line.startswith("PPid:"):
+                    ppid = int(line.split()[1])
+                    break
+            if not ppid or ppid <= 1:
+                break
+            try:
+                with open(f"/proc/{ppid}/comm") as f:
+                    comm = f.read().strip()
+            except Exception:
+                break
+            if comm in _KNOWN_TERMINALS:
+                return comm
+            pid = ppid
+    except Exception:
+        pass
+    return os.environ.get("TERM_PROGRAM", "unknown-terminal")
+
+
+def _detect_shell() -> str:
+    shell = os.environ.get("SHELL", "")
+    return os.path.basename(shell) if shell else "unknown-shell"
+
+
+def session_id() -> str:
+    # Only harness-injected vars (genuine agent context) get used as the
+    # session id. CLAUDE_SESSION_ID is deliberately excluded here even though
+    # it's often set -- .bashrc/.zshrc export it unconditionally for every
+    # interactive shell (a past session's convenience id, prefixed "claude-"
+    # regardless of who's actually typing), so showing it next to "User
+    # <name>" reads as contradictory. Confirmed confusing live 2026-07-26:
+    # a human ack showed "User architect-of-chaos" correctly, but
+    # "session: claude-20260726-044456-3388" right next to it. For any
+    # non-agent context, always describe the real shell/terminal instead.
+    sid = (
+        os.environ.get("KIMI_SESSION_ID")
+        or os.environ.get("CLAUDE_CODE_SESSION_ID")
+        or os.environ.get("CLAUDE_CODE_BRIDGE_SESSION_ID")
+        or ""
+    )
+    if sid:
+        return sid[:64]
+    return f"{_detect_shell()}@{_detect_terminal_emulator()}"[:64]
+
+
+def agent_id() -> str:
+    # Only harness-injected vars mean an actual agent is driving this --
+    # confirmed live 2026-07-26: a human running `arc sop ack` by hand still
+    # had CLAUDE_SESSION_ID set (from .bashrc/.zshrc, see session_id() above)
+    # and got misreported as "Agent claude". Don't repeat that.
+    if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_CODE_BRIDGE_SESSION_ID"):
+        return "claude"
+    if os.environ.get("KIMI_SESSION_ID"):
+        return "kimi"
+    explicit = os.environ.get("AGENT_ID")
+    if explicit:
+        return explicit
+    # Not a recognized agent session -- a human is running this directly.
+    who = os.environ.get("USER") or os.environ.get("LOGNAME")
+    if who:
+        return who
+    try:
+        result = subprocess.run(["whoami"], capture_output=True, text=True, timeout=5)
+        return result.stdout.strip() or "unknown-user"
+    except Exception:
+        return "unknown-user"
+
+
+def is_agent_id(aid: str) -> bool:
+    return aid in ("claude", "kimi") or bool(os.environ.get("AGENT_ID"))
+
+
+def run(cmd: list, check: bool = False, capture: bool = True) -> tuple:
+    try:
+        if capture:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=check, timeout=30)
+        else:
+            result = subprocess.run(cmd, text=True, check=check, timeout=30)
+        return result.returncode, result.stdout, result.stderr
+    except Exception as e:
+        return 1, "", str(e)
+
+
+def print_rule(name: str, passed: bool, message: str):
+    symbol = f"{G}✓{N}" if passed else f"{R}✗{N}"
+    print(f"  {symbol}  {BOLD}{name}{N}: {message}")
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+def cmd_ack():
+    """Record agent acknowledgment."""
+    init_db()
+    sid = session_id()
+    aid = agent_id()
+    ts = now()
+
+    db_insert(
+        "acks",
+        timestamp=ts,
+        agent_id=aid,
+        session_id=sid,
+        ack_type="sop",
+    )
+
+    who_label = "Agent" if is_agent_id(aid) else "User"
+
+    print(f"{C}arc-sop ack{N}")
+    print(f"  {G}✓{N}  {who_label} {Y}{aid}{N} acknowledged all SOPs")
+    print(f"  {D}   session: {sid}{N}")
+    print(f"  {D}   time:    {ts}{N}")
+
+    _notify(
+        "SOP acknowledged",
+        f"{who_label} {aid} acknowledged all SOPs",
+        urgency="normal",
+    )
+
+
+def cmd_ack_auto(script_name: str):
+    """Non-interactive ack for cron/scripted jobs -- same audit trail as a
+    human ack, but never touches GAMEPLAN.md (would flood it with routine
+    automation noise) and never blocks. This is the 'bridge' for automation:
+    tracked under the same policy, not exempt from being logged, but not
+    gated -- gating a backup/security-sync cron job would be worse than the
+    friction this whole feature exists to fix."""
+    init_db()
+    ts = now()
+    aid = f"cron:{script_name}"
+    db_insert("acks", timestamp=ts, agent_id=aid, session_id=f"cron@{script_name}", ack_type="sop-auto")
+    print(f"{D}[arc-sop] auto-ack: {aid} @ {ts}{N}")
+
+
+def _gameplan_today_has_starting() -> bool:
+    gp = INTEL_OPS / "GAMEPLAN.md"
+    if not gp.exists():
+        return False
+    today = datetime.now().strftime("%Y-%m-%d")
+    content = gp.read_text()
+    today_lines = [l for l in content.splitlines() if today in l]
+    return bool(today_lines) and any("[STARTING]" in l for l in today_lines)
+
+
+def cmd_start(description: str):
+    """The one command that satisfies the interactive gate: shows the tail of
+    GAMEPLAN.md (the 'read it' requirement), appends a properly-formatted
+    dated [STARTING] entry (the exact thing cmd_check's 'GAMEPLAN today'
+    check looks for -- today's date AND [STARTING] on the same line), then
+    acks. Exits 0 only if all three actually succeeded -- the calling shell
+    loop uses that exit code directly to decide whether to unlock."""
+    init_db()
+    gp = INTEL_OPS / "GAMEPLAN.md"
+
+    # 1. Show recent context -- glow if available, else plain tail.
+    if not gp.exists():
+        print(f"{R}✗{N}  GAMEPLAN.md not found at {gp} -- cannot satisfy the gate")
+        return 1
+    print(f"{C}── GAMEPLAN.md — last entry header ──{N}")
+    all_lines = gp.read_text().splitlines()
+    header_lines = [i for i, l in enumerate(all_lines) if l.startswith("## ")]
+    if header_lines:
+        start = header_lines[-1]
+        snippet = all_lines[start:start + 6]
+    else:
+        snippet = all_lines[-15:]
+    glow = shutil.which("glow")
+    if glow:
+        subprocess.run([glow, "-"], input="\n".join(snippet), text=True)
+    else:
+        print("\n".join(snippet))
+    print(f"{D}({len(header_lines)} dated entries on record — full history: glow {gp}){N}")
+    print(f"{C}──────────────────────────{N}\n")
+
+    # 2. Append a fresh dated [STARTING] entry -- but only if today doesn't
+    # already have one. The ack below still happens fresh every single call
+    # (that's the actual per-tab proof-of-engagement); the GAMEPLAN entry
+    # marks a real session start, not every terminal tab -- one new "## "
+    # header per day, not one per tab, matching how every other entry in
+    # this file is already structured (one header, many HH:MM bullets).
+    sid = session_id()
+    aid = agent_id()
+    ts_date = datetime.now().strftime("%Y-%m-%d")
+
+    if _gameplan_today_has_starting():
+        print(f"{D}today already has a [STARTING] entry -- not adding another, just acking this shell{N}")
+        return _finish_start(sid, aid)
+
+    entry = f"\n## {ts_date} · {aid} · [sid:{sid}] · [STARTING] {description}\n"
+    try:
+        with open(gp, "a") as f:
+            f.write(entry)
+    except Exception as e:
+        print(f"{R}✗{N}  couldn't write to GAMEPLAN.md: {e}")
+        return 1
+
+    if not _gameplan_today_has_starting():
+        print(f"{R}✗{N}  wrote the entry but the today+[STARTING] check still doesn't pass -- something's off, not unlocking")
+        return 1
+
+    print(f"{G}✓{N}  GAMEPLAN.md: logged today's [STARTING] entry")
+    return _finish_start(sid, aid)
+
+
+def _finish_start(sid: str, aid: str) -> int:
+    """Shared tail of cmd_start: ack + unlock, used whether or not a fresh
+    GAMEPLAN entry was written this call."""
+    ts = now()
+    db_insert("acks", timestamp=ts, agent_id=aid, session_id=sid, ack_type="sop")
+    who_label = "Agent" if is_agent_id(aid) else "User"
+    print(f"{G}✓{N}  {who_label} {Y}{aid}{N} acknowledged all SOPs")
+    _notify("SOP acknowledged", f"{who_label} {aid} acknowledged all SOPs -- session unlocked", urgency="normal")
+
+    print(f"\n{G}✓ unlocked{N}")
+    return 0
+
+
+GATE_BYPASS_FILE = HOME / ".config/arc/gate-bypass"
+
+
+def cmd_gate_status():
+    active = GATE_BYPASS_FILE.exists()
+    gp_ok = _gameplan_today_has_starting()
+    owner_uid = _gate_owner_uid()
+    print(f"{C}arc-sop gate status{N}")
+    print(f"  {D}bypass{N}    {(R + 'ACTIVE — gate disabled' + N) if active else (G + 'off — gate enforced' + N)}")
+    print(f"  {D}gameplan{N}  {(G + 'satisfied for today' + N) if gp_ok else (Y + 'not satisfied yet' + N)}")
+    print(f"  {D}owner{N}     {Y}uid {owner_uid}{N}  {D}({_current_username() if os.getuid() == owner_uid else 'not you'}, only this uid can bypass/enable){N}")
+
+
+def cmd_gate_check() -> bool:
+    """Silent boolean check for the real enforcement point (a Claude Code
+    PreToolUse hook, see ~/.local/bin/arc-sop-gate-hook). Gate is satisfied
+    if: bypass is active (owner-only, see cmd_gate_bypass), OR both
+    GAMEPLAN.md has today's [STARTING] entry AND THIS SPECIFIC SESSION has an
+    ack recorded today. Checked by session_id, not just agent_id -- agent_id
+    is always just "claude" across every Claude Code session on the machine,
+    so checking only that meant one session acking today silently satisfied
+    every OTHER session too, including a brand new one that never checked in
+    itself. Found live 2026-07-31: opened a second session, nothing fired."""
+    if GATE_BYPASS_FILE.exists():
+        print("bypass active")
+        return True
+
+    gp_ok = _gameplan_today_has_starting()
+    today = datetime.now().strftime("%Y-%m-%d")
+    aid = agent_id()
+    sid = session_id()
+    rows = db_query(
+        "SELECT * FROM acks WHERE timestamp LIKE ? AND agent_id = ? AND session_id = ? ORDER BY timestamp DESC LIMIT 1",
+        (f"{today}%", aid, sid),
+    )
+    ack_ok = bool(rows)
+
+    if gp_ok and ack_ok:
+        print("gate satisfied")
+        return True
+
+    missing = []
+    if not gp_ok:
+        missing.append("GAMEPLAN.md missing today's [STARTING] entry")
+    if not ack_ok:
+        missing.append(f"no SOP ack recorded today for '{aid}' session '{sid}'")
+    print(f"gate NOT satisfied: {'; '.join(missing)} -- run: arc-sop start \"<description>\"")
+    return False
+
+
+GATE_OWNER_UID_FILE = HOME / ".config/arc/gate-owner-uid"
+
+
+def _gate_owner_uid() -> int:
+    """The one UID allowed to bypass/enable the gate. Stored explicitly
+    rather than hardcoded, and keyed on UID (not username) specifically so
+    a future username change ('architect-of-chaos' renamed to something
+    else) doesn't lock the real owner out -- usermod -l keeps the UID, only
+    the login name changes. First call enrolls whoever's running it right
+    now as the owner (this machine's real primary user, UID 1000 at the
+    time this was built)."""
+    GATE_OWNER_UID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if GATE_OWNER_UID_FILE.exists():
+        try:
+            return int(GATE_OWNER_UID_FILE.read_text().strip())
+        except (ValueError, OSError):
+            pass
+    uid = os.getuid()
+    GATE_OWNER_UID_FILE.write_text(f"{uid}\n")
+    return uid
+
+
+def _is_gate_owner() -> bool:
+    return os.getuid() == _gate_owner_uid()
+
+
+def _current_username() -> str:
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        return os.environ.get("USER", f"uid:{os.getuid()}")
+
+
+def cmd_gate_bypass():
+    aid = agent_id()
+    if is_agent_id(aid):
+        # Checked before the uid check, on purpose: an agent sharing the
+        # owner's uid (Claude Code has no separate account on this machine)
+        # must never bypass this gate, only a human typing directly can --
+        # 2026-07-30, user's explicit call. Matching uid alone is not
+        # sufficient here.
+        print(f"{R}✗{N}  refused — agent bypass is never allowed, regardless of uid. Detected: {aid}")
+        _notify("SOP gate bypass REFUSED", f"Agent tried to bypass: {aid} (uid {os.getuid()}, {_current_username()})", urgency="critical")
+        sys.exit(1)
+    if not _is_gate_owner():
+        print(f"{R}✗{N}  refused — only the machine's owner (uid {_gate_owner_uid()}) can bypass the gate. You are: {_current_username()} (uid {os.getuid()})")
+        _notify("SOP gate bypass REFUSED", f"Non-owner tried to bypass: {_current_username()} (uid {os.getuid()})", urgency="critical")
+        sys.exit(1)
+    GATE_BYPASS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    GATE_BYPASS_FILE.write_text(f"bypassed {now()} by {aid} (owner uid {os.getuid()}, {_current_username()})\n")
+    print(f"{Y}⚠{N}  gate bypass ACTIVE — new shells will not be gated until: arc sop gate enable")
+    _notify("SOP gate bypassed", f"Gate bypass activated by {aid} ({_current_username()})", urgency="critical")
+
+
+def cmd_gate_enable():
+    aid = agent_id()
+    if is_agent_id(aid):
+        print(f"{R}✗{N}  refused — agent cannot manage gate enforcement, regardless of uid. Detected: {aid}")
+        _notify("SOP gate enable REFUSED", f"Agent tried to re-enable: {aid} (uid {os.getuid()}, {_current_username()})", urgency="critical")
+        sys.exit(1)
+    if not _is_gate_owner():
+        print(f"{R}✗{N}  refused — only the machine's owner (uid {_gate_owner_uid()}) can manage gate enforcement. You are: {_current_username()} (uid {os.getuid()})")
+        _notify("SOP gate enable REFUSED", f"Non-owner tried to re-enable: {_current_username()} (uid {os.getuid()})", urgency="critical")
+        sys.exit(1)
+    if GATE_BYPASS_FILE.exists():
+        GATE_BYPASS_FILE.unlink()
+        print(f"{G}✓{N}  gate bypass removed — enforcement active again for new shells")
+    else:
+        print(f"{D}bypass wasn't active — nothing to do{N}")
+
+
+def hash_file(path: Path) -> str:
+    """Return MD5 hex digest of a file."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sop_files():
+    """Yield (relative_path, absolute_path) for all SOP files."""
+    if not INTEL_OPS.exists():
+        return
+    for f in INTEL_OPS.rglob("*"):
+        if f.is_file() and ".git/" not in str(f.relative_to(INTEL_OPS)):
+            yield f.relative_to(INTEL_OPS), f
+
+
+def cmd_baseline():
+    """Record current hashes of all SOP files into the local DB."""
+    init_db()
+    ts = now()
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM baseline")
+
+    count = 0
+    for rel, abs_path in sop_files():
+        c.execute(
+            "INSERT INTO baseline (timestamp, file_path, file_hash) VALUES (?, ?, ?)",
+            (ts, str(rel), hash_file(abs_path)),
+        )
+        count += 1
+
+    conn.commit()
+    conn.close()
+
+    print(f"{C}arc-sop baseline{N}")
+    print(f"  {G}✓{N}  Recorded {count} SOP file hashes")
+    print(f"  {D}   time: {ts}{N}")
+
+
+def cmd_verify():
+    """Verify intel-ops files match the stored local DB baseline."""
+    init_db()
+    if not INTEL_OPS.exists():
+        print(f"{R}✗{N}  intel-ops directory missing. Run: arc-sop recover")
+        return False
+
+    baseline_rows = db_query("SELECT file_path, file_hash FROM baseline")
+    if not baseline_rows:
+        print(f"{Y}!{N}  No baseline recorded yet. Run: arc-sop baseline")
+        return False
+
+    baseline = {row["file_path"]: row["file_hash"] for row in baseline_rows}
+    current = {}
+    for rel, abs_path in sop_files():
+        current[str(rel)] = hash_file(abs_path)
+
+    missing = [p for p in baseline if p not in current]
+    added = [p for p in current if p not in baseline]
+    changed = [p for p in baseline if p in current and baseline[p] != current[p]]
+
+    if missing or added or changed:
+        details = []
+        for p in missing:
+            print(f"  {R}✗{N}  missing: {Y}{p}{N}")
+            details.append(f"missing:{p}")
+        for p in added:
+            print(f"  {R}✗{N}  added:   {Y}{p}{N}")
+            details.append(f"added:{p}")
+        for p in changed:
+            print(f"  {R}✗{N}  changed: {Y}{p}{N}")
+            details.append(f"changed:{p}")
+        details_str = "; ".join(details)
+        db_insert(
+            "violations",
+            timestamp=now(),
+            rule="SOP-baseline-mismatch",
+            details=details_str,
+            resolved=0,
+        )
+        _notify(
+            "SOP violation: baseline mismatch",
+            f"{len(missing)} missing, {len(added)} added, {len(changed)} changed",
+            urgency="critical",
+        )
+        return False
+
+    print(f"{G}✓{N}  SOP files match local DB baseline ({len(current)} files)")
+    return True
+
+
+def cmd_done_balance() -> bool:
+    """Check that every today [STARTING] entry has a paired [DONE]."""
+    gp = INTEL_OPS / "GAMEPLAN.md"
+    if not gp.exists():
+        print(f"{Y}!{N}  GAMEPLAN.md not found")
+        return True
+    content = gp.read_text()
+    today = datetime.now().strftime("%Y-%m-%d")
+    lines = content.splitlines()
+    starts = [l.strip() for l in lines if today in l and "[STARTING]" in l]
+    dones  = [l.strip() for l in lines if today in l and "[DONE]" in l]
+    if len(starts) > len(dones):
+        unmatched = len(starts) - len(dones)
+        print(f"{Y}!{N}  {unmatched} task(s) have no [DONE] entry today")
+        for s in starts:
+            print(f"  {D}  {s}{N}")
+        return False
+    print(f"{G}✓{N}  All today's tasks closed  {D}({len(dones)}/{len(starts)}){N}")
+    return True
+
+
+def cmd_violations():
+    """List all open (unresolved) violations."""
+    init_db()
+    rows = db_query("SELECT * FROM violations WHERE resolved = 0 ORDER BY timestamp DESC")
+    print(f"{C}arc-sop violations{N}")
+    if not rows:
+        print(f"  {G}✓{N}  No open violations")
+        return
+    print(f"  {Y}{len(rows)} open violation(s){N}\n")
+    for r in rows:
+        print(f"  {D}[{r['id']}]{N}  {r['timestamp']}  {Y}{r['rule']}{N}")
+        print(f"        {D}{r['details']}{N}")
+
+
+def cmd_resolve(vid: str):
+    """Mark a violation as resolved."""
+    init_db()
+    if not vid.isdigit():
+        print(f"{R}✗{N}  Usage: arc sop resolve <id>")
+        return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE violations SET resolved = 1 WHERE id = ?", (int(vid),))
+    if c.rowcount == 0:
+        print(f"{R}✗{N}  No violation with id {vid}")
+    else:
+        print(f"{G}✓{N}  Violation {vid} marked resolved")
+    conn.commit()
+    conn.close()
+
+
+def cmd_ack_today() -> bool:
+    """Return True if an ack exists for today's date."""
+    init_db()
+    today = datetime.now().strftime("%Y-%m-%d")
+    rows = db_query(
+        "SELECT * FROM acks WHERE timestamp LIKE ? ORDER BY timestamp DESC LIMIT 1",
+        (f"{today}%",),
+    )
+    if rows:
+        print(f"{G}✓{N}  SOP acknowledged today  {D}({rows[0]['timestamp']}){N}")
+        return True
+    print(f"{R}✗{N}  No SOP acknowledgment recorded today ({today})")
+    print(f"  {D}Run: arc sop ack{N}")
+    return False
+
+
+def cmd_check():
+    """Run all compliance checks."""
+    init_db()
+    print(f"{C}arc-sop check{N}")
+
+    checks = []
+
+    # 1. SOP baseline clean
+    sop_clean = cmd_verify()
+    checks.append(("SOP baseline", sop_clean, "intel-ops matches local DB baseline" if sop_clean else "SOP files changed since baseline"))
+
+    # 2. Read-only dirs exist and are readable
+    read_only = [
+        (HOME / "arc-lt-cmc", "arc-lt-cmc"),
+        (HOME / "dev-notes/hq-main", "hq-main"),
+    ]
+    for path, label in read_only:
+        if path.exists() and path.is_dir():
+            if os.access(path, os.R_OK):
+                checks.append((f"{label} read-only", True, f"{label} present and readable"))
+            else:
+                checks.append((f"{label} read-only", False, f"{label} not readable"))
+        else:
+            checks.append((f"{label} read-only", True, f"{label} not present (OK)"))
+
+    # 3. GAMEPLAN.md has a [STARTING] entry for today (not just any mention of the date)
+    gp = INTEL_OPS / "GAMEPLAN.md"
+    gp_ok = False
+    gp_msg = "GAMEPLAN.md missing"
+    if gp.exists():
+        content = gp.read_text()
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_lines = [l for l in content.splitlines() if today in l]
+        if today_lines and any("[STARTING]" in l for l in today_lines):
+            gp_ok = True
+            gp_msg = f"GAMEPLAN.md has {today} [STARTING] entry"
+        elif today_lines:
+            gp_ok = False
+            gp_msg = f"GAMEPLAN.md has {today} entry but no [STARTING] — pre-task log missing"
+        else:
+            gp_msg = f"GAMEPLAN.md missing {today} entry"
+    checks.append(("GAMEPLAN today", gp_ok, gp_msg))
+
+    # 4. Recent ack
+    recent_ack = db_query(
+        "SELECT * FROM acks ORDER BY timestamp DESC LIMIT 1"
+    )
+    ack_ok = False
+    ack_msg = "no SOP acknowledgment on record"
+    if recent_ack:
+        last = recent_ack[0]["timestamp"]
+        ack_msg = f"last ack: {last}"
+        ack_ok = True
+    checks.append(("SOP acknowledgment", ack_ok, ack_msg))
+
+    # 5. Backup recent (< 24h)
+    stamp = HOME / ".usb-bakup/.last-sync"
+    backup_ok = False
+    backup_msg = "no backup on record"
+    if stamp.exists():
+        last = stamp.read_text().strip()
+        try:
+            last_ts = datetime.strptime(last, "%Y-%m-%d %H:%M")
+            hours = (datetime.now() - last_ts).total_seconds() / 3600
+            backup_ok = hours < 24
+            backup_msg = f"last backup: {last} ({hours:.1f}h ago)"
+        except ValueError:
+            backup_msg = f"last backup: {last} (parse error)"
+    checks.append(("Backup <24h", backup_ok, backup_msg))
+
+    # Print results
+    all_passed = True
+    for name, passed, message in checks:
+        print_rule(name, passed, message)
+        db_insert("checks", timestamp=now(), check_name=name, passed=int(passed), message=message)
+        if not passed:
+            all_passed = False
+
+    if not all_passed:
+        failed_names = [name for name, passed, _ in checks if not passed]
+        summary = ", ".join(failed_names)
+        print(f"\n{Y}⚠{N}  Compliance issues found. Review above.")
+        _notify("SOP compliance failed", summary, urgency="critical")
+    else:
+        print(f"\n{G}✓{N}  All checks passed.")
+
+    return all_passed
+
+
+def cmd_status():
+    """Show current compliance state."""
+    init_db()
+    print(f"{C}arc-sop status{N}")
+
+    acks = db_query("SELECT COUNT(*) as c FROM acks")[0]["c"]
+    violations = db_query("SELECT COUNT(*) as c FROM violations WHERE resolved = 0")[0]["c"]
+    checks = db_query("SELECT * FROM checks ORDER BY timestamp DESC LIMIT 5")
+
+    print(f"  Total acknowledgments: {acks}")
+    print(f"  Open violations:       {violations}")
+    print(f"\n  Recent checks:")
+    for c in checks:
+        sym = f"{G}✓{N}" if c["passed"] else f"{R}✗{N}"
+        print(f"    {sym}  {c['timestamp']} · {c['check_name']}: {c['message']}")
+
+
+def cmd_bundle():
+    """Create a tar archive of intel-ops and place it in USB vault for MEGA sync."""
+    init_db()
+    if not INTEL_OPS.exists():
+        print(f"{R}✗{N}  intel-ops directory missing")
+        return False
+
+    if not VAULT_SOP.parent.exists():
+        print(f"{R}✗{N}  USB vault not mounted at /mnt/storage")
+        return False
+
+    VAULT_SOP.mkdir(parents=True, exist_ok=True)
+
+    bundle_name = f"intel-ops-{datetime.now().strftime('%Y%m%d-%H%M%S')}.tar.gz"
+    bundle_path = VAULT_SOP / bundle_name
+
+    rc, _, stderr = run(
+        ["tar", "-czf", str(bundle_path), "-C", str(INTEL_OPS.parent), "intel-ops"]
+    )
+    if rc != 0:
+        print(f"{R}✗{N}  archive failed: {stderr}")
+        return False
+
+    print(f"{G}✓{N}  SOP archive created: {bundle_path}")
+    print(f"{D}   MEGA sync on next arc sync{N}")
+    return True
+
+
+def cmd_root_copy():
+    """Copy current intel-ops to root-backed disaster recovery path."""
+    init_db()
+    if not INTEL_OPS.exists():
+        print(f"{R}✗{N}  intel-ops directory missing")
+        return False
+
+    # Create parent directory first, then rsync. ROOT_COPY needs sudo.
+    rc, _, stderr = run(["sudo", "mkdir", "-p", str(ROOT_COPY.parent)])
+    if rc != 0:
+        print(f"{R}✗{N}  failed to create {ROOT_COPY.parent}: {stderr}")
+        return False
+
+    rc, _, stderr = run(
+        ["sudo", "rsync", "-a", "--delete", f"{INTEL_OPS}/", f"{ROOT_COPY}/"]
+    )
+    if rc != 0:
+        print(f"{R}✗{N}  root copy failed: {stderr}")
+        return False
+
+    # Also copy the SQLite enforcement DB so the baseline/history/acks survive
+    # a home-directory wipe, not just the markdown SOP files.
+    db_rc, _, db_stderr = run(
+        ["sudo", "cp", "-a", str(DB_PATH), str(ROOT_COPY / "arc-sop.db")]
+    )
+    if db_rc != 0:
+        print(f"{R}✗{N}  DB root copy failed: {db_stderr}")
+        return False
+
+    print(f"{G}✓{N}  Root copy updated: {ROOT_COPY}")
+    print(f"{G}✓{N}  DB copied to:       {ROOT_COPY / 'arc-sop.db'}")
+    return True
+
+
+def cmd_recover():
+    """Restore SOP files from root copy or MEGA fallback."""
+    init_db()
+    source = None
+    source_type = None
+
+    if ROOT_COPY.exists() and (ROOT_COPY / "SOT.md").exists():
+        source = ROOT_COPY
+        source_type = "dir"
+        print(f"{C}Recovering SOP from root copy: {ROOT_COPY}{N}")
+    elif VAULT_SOP.exists():
+        archives = sorted(VAULT_SOP.glob("*.tar.gz"))
+        if archives:
+            source = archives[-1]
+            source_type = "tar"
+            print(f"{C}Recovering SOP from archive: {source}{N}")
+        else:
+            print(f"{R}✗{N}  No root copy or archive found")
+            return False
+    else:
+        print(f"{R}✗{N}  No recovery source available")
+        return False
+
+    # Backup current
+    backup_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_dir = HOME / f"dev-notes/intel-ops-backup-{backup_ts}"
+    if INTEL_OPS.exists():
+        run(["cp", "-a", str(INTEL_OPS), str(backup_dir)])
+        print(f"{D}   current backed up to: {backup_dir}{N}")
+
+    if source_type == "dir":
+        run(["rsync", "-a", "--delete", "--exclude=arc-sop.db", f"{source}/", f"{INTEL_OPS}/"])
+    else:
+        INTEL_OPS.mkdir(parents=True, exist_ok=True)
+        run(["tar", "-xzf", str(source), "-C", str(INTEL_OPS.parent)])
+
+    # Restore the SQLite DB if a root copy exists.
+    dr_db = source / "arc-sop.db" if source_type == "dir" else None
+    if dr_db and dr_db.exists():
+        SOP_DIR.mkdir(parents=True, exist_ok=True)
+        db_backup = DB_PATH.with_suffix(f".db.pre-recover-{backup_ts}")
+        run(["cp", "-a", str(DB_PATH), str(db_backup)])
+        run(["cp", "-a", str(dr_db), str(DB_PATH)])
+        print(f"{G}✓{N}  DB restored from:   {dr_db}")
+        print(f"{D}   previous DB saved: {db_backup}{N}")
+
+    print(f"{G}✓{N}  SOP recovery complete")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: arc-sop [ack | baseline | verify | check | status | bundle | root-copy | recover]")
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+    if cmd == "ack":
+        cmd_ack()
+    elif cmd == "baseline":
+        cmd_baseline()
+    elif cmd == "verify":
+        cmd_verify()
+    elif cmd == "check":
+        cmd_check()
+    elif cmd == "status":
+        cmd_status()
+    elif cmd == "bundle":
+        cmd_bundle()
+    elif cmd == "root-copy":
+        cmd_root_copy()
+    elif cmd == "recover":
+        cmd_recover()
+    elif cmd in ("ack-today", "check-today"):
+        ok = cmd_ack_today()
+        sys.exit(0 if ok else 1)
+    elif cmd in ("done-balance", "check-done"):
+        ok = cmd_done_balance()
+        sys.exit(0 if ok else 1)
+    elif cmd == "violations":
+        cmd_violations()
+    elif cmd == "resolve":
+        if len(sys.argv) < 3:
+            print("Usage: arc-sop resolve <id>")
+            sys.exit(1)
+        cmd_resolve(sys.argv[2])
+    elif cmd == "start":
+        description = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "general session"
+        sys.exit(cmd_start(description))
+    elif cmd == "ack-auto":
+        if len(sys.argv) < 3:
+            print("Usage: arc-sop ack-auto <script-name>")
+            sys.exit(1)
+        cmd_ack_auto(sys.argv[2])
+    elif cmd == "gate-status":
+        cmd_gate_status()
+    elif cmd == "gate-check":
+        ok = cmd_gate_check()
+        sys.exit(0 if ok else 1)
+    elif cmd == "gate-bypass":
+        cmd_gate_bypass()
+    elif cmd == "gate-enable":
+        cmd_gate_enable()
+    else:
+        print(f"Unknown command: {cmd}")
+        print("Usage: arc-sop [ack | baseline | verify | check | status | violations | resolve <id> | bundle | root-copy | recover | ack-today | done-balance | start | ack-auto | gate-status | gate-bypass | gate-enable]")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

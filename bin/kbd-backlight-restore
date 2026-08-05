@@ -1,0 +1,14 @@
+#!/bin/bash
+# kbd-backlight-restore — restores keyboard-backlight brightness saved by
+# kbd-backlight-off. Falls back to a sane default (50, matches this
+# hardware's documented factory default) if no saved state exists.
+BACKLIGHT="/sys/class/leds/smc::kbd_backlight/brightness"
+STATE_FILE="$HOME/.local/share/arc-kbd-lock-watch/last-brightness"
+
+[[ -w "$BACKLIGHT" ]] || { echo "not writable: $BACKLIGHT (needs the video group + udev rule)" >&2; exit 1; }
+
+if [[ -f "$STATE_FILE" ]]; then
+    cat "$STATE_FILE" > "$BACKLIGHT"
+else
+    echo 50 > "$BACKLIGHT"
+fi

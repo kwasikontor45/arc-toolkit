@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""
+arc-kbd-lock-watch — turns the keyboard backlight off on screen lock, restores
+it on unlock.
+
+Rebuilt from scratch (lost with the Tails USB) from a real, complete spec
+found in dev-notes/hq-main/private-intel/session-log/2026-06-21-session-close-2.md
+— NOT a guess from the name alone. But the mechanism had to change, not just
+the wording: the original watched light-locker over the systemd-logind
+*system* bus, with the session object path hardcoded ("session/c2" — flagged
+in its own notes as fragile, "if session ID ever changes, update the
+script"). This machine doesn't even have light-locker installed anymore —
+MATE's own mate-screensaver is the real locker now, confirmed live. So this
+rebuild watches mate-screensaver's own org.mate.ScreenSaver ActiveChanged
+signal on the *session* bus instead — MATE-native, and structurally can't
+go stale the way a hardcoded session path could, since it's not keyed to
+any session ID at all.
+"""
+
+import subprocess
+import sys
+
+import dbus
+import dbus.mainloop.glib
+from gi.repository import GLib
+
+
+def on_active_changed(active):
+    cmd = "kbd-backlight-off" if active else "kbd-backlight-restore"
+    result = subprocess.run([cmd], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"arc-kbd-lock-watch: {cmd} failed: {result.stderr.strip()}", file=sys.stderr)
+
+
+def main():
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SessionBus()
+
+    bus.add_signal_receiver(
+        on_active_changed,
+        signal_name="ActiveChanged",
+        dbus_interface="org.mate.ScreenSaver",
+        path="/org/mate/ScreenSaver",
+    )
+
+    print("arc-kbd-lock-watch running — watching org.mate.ScreenSaver", flush=True)
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main()

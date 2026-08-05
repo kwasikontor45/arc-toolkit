@@ -1,11 +1,14 @@
 #!/bin/bash
-# Panel monitor script for arc-break — outputs Pango markup.
+# Panel status script for arc-break — MATE Command applet (plain text, no
+# markup support to rely on, unlike XFCE's Genmon which this replaces).
+# Setup: right-click panel -> Add to Panel -> Command
+#   Command:  /home/architect-of-chaos/.local/bin/arc-break-panel
+#   Interval: 5000 (ms)
 STATE="$HOME/.local/share/arc-break/state.json"
 PID_F="$HOME/.local/share/arc-break/arc-break.pid"
 
 if [[ ! -f "$PID_F" ]] || ! kill -0 "$(cat "$PID_F" 2>/dev/null)" 2>/dev/null; then
-    echo "<txt>💀 --:--</txt>"
-    echo "<tool>arc-break not running — arc break start</tool>"
+    echo "💀 --:--"
     exit 0
 fi
 
@@ -16,7 +19,7 @@ with open('$STATE') as f:
 print(d['phase'], int(d['phase_start']), int(d['phase_end']))
 " 2>/dev/null)
 
-[[ -z "$phase" ]] && { echo "<txt>💀 --:--</txt>"; exit 0; }
+[[ -z "$phase" ]] && { echo "💀 --:--"; exit 0; }
 
 now=$(date +%s)
 remaining=$(( phase_end - now ))
@@ -46,8 +49,6 @@ if [[ "$phase" == "work" ]]; then
     elif (( pct >= 3  )); then emoji="😤"
     else                        emoji="🔔"
     fi
-    color="#f6c177"
-    tip="WORK — $fmt remaining"
 else
     if   (( pct >= 80 )); then emoji="🌿"
     elif (( pct >= 60 )); then emoji="☕"
@@ -55,9 +56,6 @@ else
     elif (( pct >= 20 )); then emoji="💤"
     else                       emoji="🔔"
     fi
-    color="#eb6f92"
-    tip="BREAK — $fmt remaining"
 fi
 
-echo "<txt><span color='$color'>$emoji $fmt</span></txt>"
-echo "<tool>$tip</tool>"
+echo "$emoji $fmt"

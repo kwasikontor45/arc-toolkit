@@ -1,0 +1,12 @@
+[Unit]
+Description=arc-kbd-lock-watch — keyboard backlight off on lock, restore on unlock
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/home/architect-of-chaos/.local/bin/arc-kbd-lock-watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

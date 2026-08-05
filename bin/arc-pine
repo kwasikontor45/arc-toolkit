@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""
+arc-pine — notification history browser.
+
+Rebuilt from scratch (original source lost with the Tails USB). Fresh,
+functional design rather than a port of the old one: one clean theme
+(Rose Pine Moon, matching this system's existing GTK/terminal theme) instead
+of three, search-as-you-type, delete individual entries, purge by age or by
+app. Reads the same history.db that arc-pined writes to.
+"""
+
+import sqlite3
+import sys
+import tkinter as tk
+from tkinter import ttk
+from pathlib import Path
+from datetime import datetime, timedelta
+
+DB_PATH = Path.home() / ".local/share/arc-pine/history.db"
+
+# Rose Pine Moon
+BG       = "#232136"
+SURFACE  = "#2a273f"
+OVERLAY  = "#393552"
+FG       = "#e0def4"
+FG_MUTED = "#6e6a86"
+GOLD     = "#f6c177"
+ROSE     = "#eb6f92"
+PINE     = "#3e8fb0"
+TEAL     = "#9ccfd8"
+
+URGENCY_COLOR = {0: FG_MUTED, 1: TEAL, 2: ROSE}
+
+
+def db_query(sql, params=()):
+    if not DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return rows
+
+
+def db_exec(sql, params=()):
+    if not DB_PATH.exists():
+        return
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(sql, params)
+    conn.commit()
+    conn.close()
+
+
+class ArcPine(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("arc · pine")
+        self.geometry("480x560")
+        self.configure(bg=BG)
+
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *_: self.refresh())
+
+        self._build_ui()
+        self.refresh()
+
+    def _build_ui(self):
+        top = tk.Frame(self, bg=BG)
+        top.pack(fill="x", padx=10, pady=10)
+
+        tk.Label(top, text="arc pine", font=("JetBrains Mono", 14, "bold"),
+                 bg=BG, fg=GOLD).pack(side="left")
+
+        entry = tk.Entry(top, textvariable=self.search_var, font=("JetBrains Mono", 10),
+                          bg=SURFACE, fg=FG, insertbackground=FG, relief="flat")
+        entry.pack(side="right", fill="x", expand=True, padx=(10, 0))
+        entry.insert(0, "")
+        entry.focus()
+
+        # Scrollable list
+        container = tk.Frame(self, bg=BG)
+        container.pack(fill="both", expand=True, padx=10)
+
+        canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        self.list_frame = tk.Frame(canvas, bg=BG)
+
+        self.list_frame.bind(
+            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.create_window((0, 0), window=self.list_frame, anchor="nw", width=440)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Bottom action bar
+        bottom = tk.Frame(self, bg=BG)
+        bottom.pack(fill="x", padx=10, pady=10)
+
+        BTN = dict(font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
+                   activebackground=OVERLAY, activeforeground=TEAL,
+                   relief="flat", bd=0, padx=8, pady=4, cursor="hand2")
+
+        tk.Button(bottom, text="purge >7d", command=lambda: self.purge_age(7), **BTN).pack(side="left", padx=2)
+        tk.Button(bottom, text="purge >30d", command=lambda: self.purge_age(30), **BTN).pack(side="left", padx=2)
+        tk.Button(bottom, text="clear all", command=self.purge_all, **{**BTN, "fg": ROSE}).pack(side="left", padx=2)
+
+        self.count_lbl = tk.Label(bottom, text="", font=("JetBrains Mono", 9), bg=BG, fg=FG_MUTED)
+        self.count_lbl.pack(side="right")
+
+    def refresh(self):
+        for w in self.list_frame.winfo_children():
+            w.destroy()
+
+        q = self.search_var.get().strip()
+        if q:
+            rows = db_query(
+                "SELECT * FROM notifications WHERE app_name LIKE ? OR summary LIKE ? OR body LIKE ? "
+                "ORDER BY id DESC LIMIT 200",
+                (f"%{q}%", f"%{q}%", f"%{q}%"),
+            )
+        else:
+            rows = db_query("SELECT * FROM notifications ORDER BY id DESC LIMIT 200")
+
+        if not rows:
+            tk.Label(self.list_frame, text="no notifications", font=("JetBrains Mono", 10),
+                     bg=BG, fg=FG_MUTED).pack(pady=20)
+
+        for row in rows:
+            self._add_card(row)
+
+        total = db_query("SELECT COUNT(*) as c FROM notifications")
+        self.count_lbl.configure(text=f"{total[0]['c'] if total else 0} total")
+
+    def _add_card(self, row):
+        card = tk.Frame(self.list_frame, bg=SURFACE)
+        card.pack(fill="x", pady=3)
+
+        color = URGENCY_COLOR.get(row["urgency"], TEAL)
+
+        header = tk.Frame(card, bg=SURFACE)
+        header.pack(fill="x", padx=8, pady=(6, 0))
+        tk.Label(header, text=row["app_name"], font=("JetBrains Mono", 9, "bold"),
+                 bg=SURFACE, fg=color).pack(side="left")
+        tk.Label(header, text=row["timestamp"], font=("JetBrains Mono", 8),
+                 bg=SURFACE, fg=FG_MUTED).pack(side="right")
+
+        tk.Label(card, text=row["summary"], font=("JetBrains Mono", 10),
+                 bg=SURFACE, fg=FG, anchor="w", wraplength=420, justify="left"
+                 ).pack(fill="x", padx=8, pady=(2, 0))
+
+        if row["body"]:
+            tk.Label(card, text=row["body"], font=("JetBrains Mono", 9),
+                     bg=SURFACE, fg=FG_MUTED, anchor="w", wraplength=420, justify="left"
+                     ).pack(fill="x", padx=8, pady=(0, 4))
+
+        actions = tk.Frame(card, bg=SURFACE)
+        actions.pack(fill="x", padx=8, pady=(0, 6))
+
+        def do_copy(text=f"{row['summary']} {row['body']}".strip()):
+            self.clipboard_clear()
+            self.clipboard_append(text)
+
+        def do_delete(nid=row["id"]):
+            db_exec("DELETE FROM notifications WHERE id = ?", (nid,))
+            self.refresh()
+
+        tk.Button(actions, text="copy", command=do_copy, font=("JetBrains Mono", 8),
+                  bg=OVERLAY, fg=TEAL, relief="flat", bd=0, padx=6, cursor="hand2"
+                  ).pack(side="left")
+        tk.Button(actions, text="delete", command=do_delete, font=("JetBrains Mono", 8),
+                  bg=OVERLAY, fg=ROSE, relief="flat", bd=0, padx=6, cursor="hand2"
+                  ).pack(side="left", padx=(4, 0))
+
+    def purge_age(self, days):
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        db_exec("DELETE FROM notifications WHERE timestamp < ?", (cutoff,))
+        self.refresh()
+
+    def purge_all(self):
+        db_exec("DELETE FROM notifications")
+        self.refresh()
+
+
+if __name__ == "__main__":
+    ArcPine().mainloop()

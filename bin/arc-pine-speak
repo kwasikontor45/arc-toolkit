@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""
+arc-pine-speak — TTS toggle for arc-pined.
+
+Usage:
+  arc-pine-speak on         — enable TTS
+  arc-pine-speak off        — disable TTS (AFK/bathroom mode — silence voice
+                               without killing the daemon or sound entirely)
+  arc-pine-speak            — show current state
+  arc-pine-speak "text"     — speak arbitrary text directly (low-level,
+                               bypasses the notification pipeline entirely)
+"""
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+CONFIG_PATH = Path.home() / ".config/arc-pine/config.json"
+PIPER_BIN   = Path.home() / ".local/bin/piper"
+PIPER_VOICE = Path.home() / ".local/share/piper/voices/en_US-lessac-medium.onnx"
+
+DEFAULT_CONFIG = {
+    "sound_enabled": True,
+    "sound_file": "/usr/share/sounds/freedesktop/stereo/bell.oga",
+    "speak_enabled": True,
+    "speak_apps": ["arc-break"],
+    "ignored_apps": [],
+}
+
+
+def load_config():
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH) as f:
+                return {**DEFAULT_CONFIG, **json.load(f)}
+        except Exception:
+            pass
+    return DEFAULT_CONFIG.copy()
+
+
+def save_config(cfg):
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def speak_direct(text):
+    if not PIPER_BIN.exists() or not PIPER_VOICE.exists():
+        print("piper not installed — nothing to speak with", file=sys.stderr)
+        sys.exit(1)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        wav_path = tmp.name
+    subprocess.run(
+        [str(PIPER_BIN), "-m", str(PIPER_VOICE), "-f", wav_path],
+        input=text.encode(), capture_output=True, timeout=15,
+    )
+    subprocess.run(["paplay", wav_path], capture_output=True, timeout=30)
+    Path(wav_path).unlink(missing_ok=True)
+
+
+def main():
+    args = sys.argv[1:]
+    cfg = load_config()
+
+    if not args:
+        print(f"speak_enabled: {cfg.get('speak_enabled', True)}")
+        print(f"speak_apps: {cfg.get('speak_apps', [])}")
+        return
+
+    arg = args[0]
+    if arg == "on":
+        cfg["speak_enabled"] = True
+        save_config(cfg)
+        print("TTS enabled")
+    elif arg == "off":
+        cfg["speak_enabled"] = False
+        save_config(cfg)
+        print("TTS disabled")
+    else:
+        speak_direct(" ".join(args))
+
+
+if __name__ == "__main__":
+    main()

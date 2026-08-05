@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""
+arc-pined — background notification daemon.
+
+Monitors desktop notifications via D-Bus (org.freedesktop.DBus.Monitoring
+BecomeMonitor — the modern non-deprecated alternative to the old
+eavesdrop=true match rule), without replacing the system notification
+daemon that actually renders the visual popups. For every notification:
+
+  - logs it to SQLite (~/.local/share/arc-pine/notifications.db)
+  - plays a gentle notification sound (never an alarm sound — see config)
+  - speaks it via Piper TTS, but ONLY for apps in the speak_apps allowlist
+    (empty list = speak nothing; default scopes this to arc-break alone,
+    so routine notifications from other apps stay silent-voice)
+
+Rebuilt from scratch (source lost with the Tails USB, never recovered) —
+this is a fresh implementation of the original's purpose, not a port of
+its exact old design.
+"""
+
+import json
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+import dbus
+import dbus.mainloop.glib
+from gi.repository import GLib
+
+CONFIG_DIR  = Path.home() / ".config/arc-pine"
+CONFIG_PATH = CONFIG_DIR / "config.json"
+DATA_DIR    = Path.home() / ".local/share/arc-pine"
+DB_PATH     = DATA_DIR / "history.db"
+
+PIPER_BIN   = Path.home() / ".local/bin/piper"
+PIPER_VOICE = Path.home() / ".local/share/piper/voices/en_US-lessac-medium.onnx"
+
+DEFAULT_CONFIG = {
+    "sound_enabled": True,
+    "sound_file": "/usr/share/sounds/freedesktop/stereo/bell.oga",
+    "speak_enabled": True,
+    "speak_apps": ["arc-break"],
+    "ignored_apps": [],
+}
+
+
+def load_config():
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH) as f:
+                return {**DEFAULT_CONFIG, **json.load(f)}
+        except Exception:
+            pass
+    return DEFAULT_CONFIG.copy()
+
+
+def init_db():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            app_name TEXT,
+            summary TEXT,
+            body TEXT,
+            urgency INTEGER,
+            timestamp TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def log_notification(app_name, summary, body, urgency):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO notifications (app_name, summary, body, urgency, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (app_name, summary, body, urgency, time.strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    conn.commit()
+    conn.close()
+
+
+def play_sound(sound_file):
+    if not sound_file or not Path(sound_file).exists():
+        return
+    subprocess.run(["paplay", sound_file], capture_output=True)
+
+
+def speak(text):
+    if not PIPER_BIN.exists() or not PIPER_VOICE.exists():
+        return
+    if not text.strip():
+        return
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            wav_path = tmp.name
+        subprocess.run(
+            [str(PIPER_BIN), "-m", str(PIPER_VOICE), "-f", wav_path],
+            input=text.encode(),
+            capture_output=True,
+            timeout=15,
+        )
+        subprocess.run(["paplay", wav_path], capture_output=True, timeout=30)
+    except Exception:
+        pass
+    finally:
+        try:
+            Path(wav_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def handle_notify(args):
+    # Notify(app_name, replaces_id, app_icon, summary, body, actions, hints, expire_timeout)
+    if len(args) < 8:
+        return
+    app_name, _replaces_id, _icon, summary, body, _actions, hints, _timeout = args[:8]
+    app_name = str(app_name)
+    summary  = str(summary)
+    body     = str(body)
+    urgency  = int(hints.get("urgency", 1)) if hints else 1
+
+    cfg = load_config()
+    if app_name in cfg.get("ignored_apps", []):
+        return
+
+    log_notification(app_name, summary, body, urgency)
+
+    if cfg.get("sound_enabled", True):
+        threading.Thread(target=play_sound, args=(cfg.get("sound_file"),), daemon=True).start()
+
+    if cfg.get("speak_enabled", True) and app_name in cfg.get("speak_apps", []):
+        text = summary if not body else f"{summary}. {body}"
+        threading.Thread(target=speak, args=(text,), daemon=True).start()
+
+
+def main():
+    init_db()
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if not CONFIG_PATH.exists():
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(DEFAULT_CONFIG, f, indent=2)
+
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SessionBus()
+
+    def on_message(bus, msg):
+        if msg.get_member() == "Notify" and msg.get_interface() == "org.freedesktop.Notifications":
+            try:
+                handle_notify(msg.get_args_list())
+            except Exception as e:
+                print(f"arc-pined: error handling notification: {e}", file=sys.stderr)
+
+    bus.add_message_filter(on_message)
+
+    monitor_iface = dbus.Interface(
+        bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus"),
+        "org.freedesktop.DBus.Monitoring",
+    )
+    monitor_iface.BecomeMonitor(
+        ["interface='org.freedesktop.Notifications',member='Notify'"],
+        dbus.UInt32(0),
+    )
+
+    print("arc-pined running — monitoring notifications", flush=True)
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main()

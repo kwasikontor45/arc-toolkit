@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""
+rename-case — bulk rename files and directories to a consistent case style.
+
+Rebuilt from scratch (original source lost with the Tails USB, never
+recovered). Full spec was preserved though — khaos-lab/refs/rename-case-guide.md
+documented the complete interface and every edge case, so this is a faithful
+rebuild from that spec, not a guess.
+
+Usage: rename-case [OPTIONS] <path> [path ...]
+
+  -k, --kebab          kebab-case (default)
+  -c, --camel          camelCase
+  -s, --snake          snake_case
+  -r, --recursive      descend into subdirectories
+  -n, --dry-run        preview renames, do nothing
+  -N, --numbers        convert digits to words (ch01 -> ch-one)
+  -d, --delete         trash targets instead of renaming
+      --trash          inspect trash contents
+      --empty-trash    permanently purge trash
+"""
+
+import argparse
+import os
+import re
+import shutil
+import sys
+import time
+from pathlib import Path
+
+TRASH_DIR = Path.home() / ".local/share/arc/rename-case-trash"
+
+DIGIT_WORDS = {
+    "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
+    "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
+}
+
+
+def split_ext(name):
+    """Splits a filename into (root, ext). Dotfiles keep their leading dot as
+    part of the name, not treated as a separator (.bashrc -> ('.bashrc', ''),
+    not ('', '.bashrc'))."""
+    leading_dot = name.startswith(".")
+    core = name[1:] if leading_dot else name
+    if "." in core:
+        root, ext = os.path.splitext(core)
+    else:
+        root, ext = core, ""
+    if leading_dot:
+        root = "." + root
+    return root, ext
+
+
+def tokenize(s, numbers):
+    """Splits on spaces/dashes/underscores first, then within each resulting
+    piece, splits again on camelCase boundaries (lower->upper), and — only
+    when numbers=True — on letter<->digit boundaries too (so 'ep01' becomes
+    ['ep', '01'] only under -N; without it, 'v3' stays one token, matching
+    the documented default behavior)."""
+    raw = [t for t in re.split(r"[\s\-_]+", s) if t]
+    tokens = []
+    for chunk in raw:
+        parts = []
+        current = ""
+        prev_type = None
+        for ch in chunk:
+            if ch.isdigit():
+                t = "digit"
+            elif ch.isupper():
+                t = "upper"
+            elif ch.islower():
+                t = "lower"
+            else:
+                t = "other"
+
+            boundary = False
+            if prev_type is not None:
+                if prev_type == "lower" and t == "upper":
+                    boundary = True
+                elif numbers and (
+                    (prev_type in ("lower", "upper") and t == "digit")
+                    or (prev_type == "digit" and t in ("lower", "upper"))
+                ):
+                    boundary = True
+
+            if boundary and current:
+                parts.append(current)
+                current = ""
+            current += ch
+            prev_type = t
+        if current:
+            parts.append(current)
+        tokens.extend(parts)
+    return tokens
+
+
+def expand_numbers(tokens, numbers):
+    if not numbers:
+        return tokens
+    result = []
+    for t in tokens:
+        if t.isdigit():
+            result.extend(DIGIT_WORDS[d] for d in t)
+        else:
+            result.append(t)
+    return result
+
+
+def to_case(tokens, style):
+    if not tokens:
+        return ""
+    if style == "kebab":
+        return "-".join(t.lower() for t in tokens)
+    if style == "snake":
+        return "_".join(t.lower() for t in tokens)
+    if style == "camel":
+        first = tokens[0].lower()
+        rest = "".join(t.capitalize() for t in tokens[1:])
+        return first + rest
+    raise ValueError(style)
+
+
+def convert_name(name, style, numbers):
+    root, ext = split_ext(name)
+    leading_dot = root.startswith(".")
+    body = root[1:] if leading_dot else root
+    tokens = expand_numbers(tokenize(body, numbers), numbers)
+    converted = to_case(tokens, style)
+    if leading_dot:
+        converted = "." + converted
+    return converted + ext
+
+
+def collect_targets(paths, recursive):
+    """Returns a flat list of absolute paths to process, deepest-first when
+    recursive (so renaming a parent dir never invalidates an already-computed
+    child path)."""
+    targets = []
+    for p in paths:
+        p = os.path.abspath(p)
+        if not os.path.exists(p):
+            print(f"skip: not found: {p}", file=sys.stderr)
+            continue
+        targets.append(p)
+        if recursive and os.path.isdir(p):
+            for dirpath, dirnames, filenames in os.walk(p):
+                for f in filenames:
+                    targets.append(os.path.join(dirpath, f))
+                for d in dirnames:
+                    targets.append(os.path.join(dirpath, d))
+    targets.sort(key=lambda t: t.count(os.sep), reverse=True)
+    return targets
+
+
+def _display(path):
+    """Relative-to-cwd display path for dry-run output, matching the
+    documented example format (./projects/MyApp, not the full absolute
+    path)."""
+    try:
+        rel = os.path.relpath(path, os.getcwd())
+        return rel if not rel.startswith("..") else path
+    except ValueError:
+        return path
+
+
+def do_rename(path, style, numbers, dry_run):
+    parent = os.path.dirname(path)
+    base = os.path.basename(path)
+    new_base = convert_name(base, style, numbers)
+
+    if new_base == base:
+        return  # already correct — silently skipped
+
+    new_path = os.path.join(parent, new_base)
+
+    if os.path.exists(new_path) and new_path != path:
+        print(f"skip: collision: {base} -> {new_base}")
+        return
+
+    if dry_run:
+        print(f"[dry-run] {_display(path)} -> {_display(new_path)}")
+        return
+
+    os.rename(path, new_path)
+    print(f"renamed: {base} -> {new_base}")
+
+
+def do_trash(path, dry_run):
+    base = os.path.basename(path)
+    if dry_run:
+        print(f"[dry-run] trash: {base} -> {TRASH_DIR}/...")
+        return
+    TRASH_DIR.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d-%H%M%S") + f"-{time.time_ns() % 1_000_000:06d}"
+    dest = TRASH_DIR / f"{ts}-{base}"
+    # shutil.move, not os.rename -- the trash dir is a fixed location that
+    # can be on a different filesystem than the target (a different mount,
+    # the vault USB, etc.), and os.rename() can't cross filesystems.
+    shutil.move(str(path), str(dest))
+    print(f"trashed: {base} -> {dest}")
+
+
+def cmd_trash_list():
+    if not TRASH_DIR.exists() or not any(TRASH_DIR.iterdir()):
+        print("trash contents:")
+        print("total: 0 items, 0 bytes")
+        return
+    print("trash contents:")
+    total_size = 0
+    total_count = 0
+    for item in sorted(TRASH_DIR.iterdir()):
+        size = item.stat().st_size if item.is_file() else sum(
+            f.stat().st_size for f in item.rglob("*") if f.is_file()
+        )
+        total_size += size
+        total_count += 1
+        print(f"  {item.name}  ({size} bytes)")
+    print(f"total: {total_count} items, {total_size} bytes")
+
+
+def cmd_empty_trash():
+    if not TRASH_DIR.exists():
+        print("trash already empty")
+        return
+    for item in TRASH_DIR.iterdir():
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
+    print("trash emptied")
+
+
+def main():
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("-k", "--kebab", action="store_true")
+    parser.add_argument("-c", "--camel", action="store_true")
+    parser.add_argument("-s", "--snake", action="store_true")
+    parser.add_argument("-r", "--recursive", action="store_true")
+    parser.add_argument("-n", "--dry-run", action="store_true")
+    parser.add_argument("-N", "--numbers", action="store_true")
+    parser.add_argument("-d", "--delete", action="store_true")
+    parser.add_argument("--trash", action="store_true")
+    parser.add_argument("--empty-trash", action="store_true")
+    parser.add_argument("paths", nargs="*")
+    args = parser.parse_args()
+
+    if args.trash:
+        cmd_trash_list()
+        return
+    if args.empty_trash:
+        cmd_empty_trash()
+        return
+
+    if not args.paths:
+        parser.print_usage(sys.stderr)
+        sys.exit(1)
+
+    style = "camel" if args.camel else "snake" if args.snake else "kebab"
+
+    targets = collect_targets(args.paths, args.recursive)
+    for path in targets:
+        if args.delete:
+            do_trash(path, args.dry_run)
+        else:
+            do_rename(path, style, args.numbers, args.dry_run)
+
+
+if __name__ == "__main__":
+    main()

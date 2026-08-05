@@ -16,7 +16,8 @@ from tkinter import ttk
 from pathlib import Path
 from datetime import datetime, timedelta
 
-DB_PATH = Path.home() / ".local/share/arc-pine/history.db"
+DB_PATH   = Path.home() / ".local/share/arc-pine/history.db"
+ICON_PATH = Path.home() / ".local/share/arc-pine/icon.png"
 
 # Rose Pine Moon
 BG       = "#232136"
@@ -57,6 +58,13 @@ class ArcPine(tk.Tk):
         self.title("arc · pine")
         self.geometry("480x560")
         self.configure(bg=BG)
+
+        if ICON_PATH.exists():
+            try:
+                self._icon = tk.PhotoImage(file=str(ICON_PATH))
+                self.iconphoto(True, self._icon)
+            except Exception:
+                pass
 
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self.refresh())

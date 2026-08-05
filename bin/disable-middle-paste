@@ -1,0 +1,38 @@
+#!/bin/bash
+# disable-middle-paste — kills X11 middle-click / primary-selection paste.
+#
+# Rebuilt from scratch (original lost with the Tails USB) from the one-line
+# description that survived in reference.md: zeroes pointer button 2 on
+# every real pointer device, and disables GTK's primary-paste setting, so
+# highlight-to-copy text can't accidentally paste on a middle-click anywhere.
+#
+# Looks devices up by name/type each run rather than hardcoding xinput
+# device IDs — those shift across reconnects/reboots, hardcoding them would
+# silently stop working the first time a device re-enumerates differently.
+
+# ── Zero button 2 on every real slave pointer device ─────────────────────
+# "real" = a slave pointer that isn't the XTEST virtual device (XTEST has no
+# physical button to accidentally click, touching it is a no-op at best).
+while IFS= read -r line; do
+    name=$(echo "$line" | sed -E 's/^[⎡⎜⎣↳ ]*//; s/\s+id=.*$//')
+    [[ "$name" == *"XTEST"* ]] && continue
+
+    id=$(echo "$line" | grep -oE 'id=[0-9]+' | cut -d= -f2)
+    [[ -z "$id" ]] && continue
+
+    current_map=$(xinput get-button-map "$id" 2>/dev/null)
+    [[ -z "$current_map" ]] && continue  # not a device with buttons
+
+    # Rebuild the map with position 2 zeroed, everything else unchanged.
+    new_map=$(echo "$current_map" | awk '{for(i=1;i<=NF;i++){ if(i==2) printf "0 "; else printf "%s ", $i } print ""}')
+    xinput set-button-map "$id" $new_map 2>/dev/null \
+        && echo "disabled middle-click: $name (id=$id)"
+done < <(xinput list 2>/dev/null | grep "slave  pointer")
+
+# ── Disable GTK primary-selection auto-paste ──────────────────────────────
+gsettings set org.mate.interface gtk-enable-primary-paste false 2>/dev/null
+# Also cover the GNOME schema, in case any Flatpak/GNOME app reads that one
+# instead of the MATE one.
+gsettings set org.gnome.desktop.interface gtk-enable-primary-paste false 2>/dev/null
+
+echo "primary-selection paste disabled"

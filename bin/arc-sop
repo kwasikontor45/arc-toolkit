@@ -411,6 +411,8 @@ def cmd_gate_check() -> bool:
         print("bypass active")
         return True
 
+    init_db()
+
     gp_ok = _gameplan_today_has_starting()
     today = datetime.now().strftime("%Y-%m-%d")
     aid = agent_id()

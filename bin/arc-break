@@ -1,0 +1,447 @@
+#!/usr/bin/env python3
+"""
+arc-break — background break reminder daemon.
+
+Runs silently in the background. No tray icon. No panel widget.
+Fires notify-send alerts when it's time to rest, then when break is over.
+Sound/voice on those alerts is handled entirely by arc-pine over D-Bus —
+arc-break itself stays silent.
+
+Commands (via arc break):
+  arc break start          — start daemon
+  arc break stop           — stop daemon
+  arc break status         — show phase + time remaining
+  arc break snooze [N]     — delay next break by N min (default 5)
+  arc break skip           — skip current break, restart work timer
+  arc break config         — show current config
+  arc break gui            — open live timer window
+"""
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# ── Paths ──────────────────────────────────────────────────────────────────────
+STATE_DIR    = Path.home() / ".local/share/arc-break"
+STATE_PATH   = STATE_DIR / "state.json"
+PID_PATH     = STATE_DIR / "arc-break.pid"
+GUI_PID_PATH = STATE_DIR / "arc-break-gui.pid"
+ICON_PATH    = STATE_DIR / "icon.png"
+CONFIG_DIR   = Path.home() / ".config/arc-break"
+CONFIG_PATH  = CONFIG_DIR / "config.json"
+SNOOZE_PATH  = STATE_DIR / "snooze"
+SKIP_PATH    = STATE_DIR / "skip"
+
+DEFAULT_CONFIG = {
+    "work_minutes":  30,
+    "break_minutes": 5,
+    "gui_enabled":   False,
+}
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+def load_config():
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH) as f:
+                return {**DEFAULT_CONFIG, **json.load(f)}
+        except Exception:
+            pass
+    return DEFAULT_CONFIG.copy()
+
+
+def save_config(updates: dict):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    cfg = load_config()
+    cfg.update(updates)
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+def notify(title, body, urgency="normal"):
+    subprocess.run(
+        ["notify-send", "-u", urgency, "-a", "arc-break",
+         f"arc · {title}", body],
+        capture_output=True
+    )
+
+
+def write_state(phase, phase_end):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_PATH.write_text(json.dumps({
+        "phase":       phase,
+        "phase_start": time.time(),
+        "phase_end":   phase_end,
+    }))
+
+
+def write_pid():
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    PID_PATH.write_text(str(os.getpid()))
+
+
+def cleanup(signum=None, frame=None):
+    PID_PATH.unlink(missing_ok=True)
+    STATE_PATH.unlink(missing_ok=True)
+    sys.exit(0)
+
+
+def interruptible_sleep(total_seconds):
+    elapsed = 0
+    deadline = total_seconds
+    while elapsed < deadline:
+        time.sleep(1)
+        elapsed += 1
+        if SKIP_PATH.exists():
+            SKIP_PATH.unlink(missing_ok=True)
+            return "skip"
+        if SNOOZE_PATH.exists():
+            try:
+                extra = int(SNOOZE_PATH.read_text().strip()) * 60
+            except Exception:
+                extra = 5 * 60
+            SNOOZE_PATH.unlink(missing_ok=True)
+            deadline += extra
+            notify("snoozed", f"Break delayed {extra // 60} min.", "low")
+    return "done"
+
+
+def launch_gui():
+    subprocess.Popen(
+        [sys.executable, __file__, "gui"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+# ── GUI ────────────────────────────────────────────────────────────────────────
+def run_gui():
+    try:
+        import tkinter as tk
+        from tkinter import font as tkfont
+    except ImportError:
+        print("tkinter not available — run: sudo apt install python3-tk", file=sys.stderr)
+        sys.exit(1)
+
+    GUI_PID_PATH.parent.mkdir(parents=True, exist_ok=True)
+    GUI_PID_PATH.write_text(str(os.getpid()))
+
+    # Rose Pine Moon
+    BG       = "#232136"
+    SURFACE  = "#2a273f"
+    FG_WORK  = "#f6c177"
+    FG_BREAK = "#eb6f92"
+    FG_MUTED = "#6e6a86"
+    FG_STOP  = "#393552"
+    FG_TEAL  = "#9ccfd8"
+
+    root = tk.Tk()
+    root.title("arc · break")
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+    root.configure(bg=BG)
+    root.geometry("260x226+20+20")
+
+    if ICON_PATH.exists():
+        try:
+            _icon = tk.PhotoImage(file=str(ICON_PATH))
+            root.iconphoto(True, _icon)
+        except Exception:
+            pass
+
+    try:
+        big_font    = tkfont.Font(family="JetBrains Mono", size=22, weight="bold")
+        small_font  = tkfont.Font(family="JetBrains Mono", size=9)
+        toggle_font = tkfont.Font(family="JetBrains Mono", size=10, underline=True)
+        btn_font    = tkfont.Font(family="JetBrains Mono", size=9)
+    except Exception:
+        big_font    = tkfont.Font(size=22, weight="bold")
+        small_font  = tkfont.Font(size=9)
+        toggle_font = tkfont.Font(size=10, underline=True)
+        btn_font    = tkfont.Font(size=9)
+
+    # ── Status display ─────────────────────────────────────────────────────────
+    phase_lbl = tk.Label(root, text="WORK",   font=big_font,  bg=BG, fg=FG_WORK)
+    time_lbl  = tk.Label(root, text="--:--",  font=big_font,  bg=BG, fg=FG_WORK)
+    phase_lbl.pack(pady=(8, 0))
+    time_lbl.pack()
+
+    status_lbl = tk.Label(root, text="loading…", font=small_font, bg=BG, fg=FG_MUTED)
+    status_lbl.pack(pady=(3, 0))
+
+    tk.Frame(root, bg=FG_STOP, height=1).pack(fill="x", padx=10, pady=(0, 6))
+
+    # ── Daemon helpers ─────────────────────────────────────────────────────────
+    def daemon_running():
+        if not PID_PATH.exists():
+            return False
+        try:
+            os.kill(int(PID_PATH.read_text().strip()), 0)
+            return True
+        except Exception:
+            return False
+
+    def do_start():
+        if daemon_running():
+            return
+        subprocess.Popen(
+            [sys.executable, __file__],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        root.after(800, update_btn_states)
+
+    def do_stop():
+        if not PID_PATH.exists():
+            return
+        try:
+            os.kill(int(PID_PATH.read_text().strip()), signal.SIGTERM)
+        except Exception:
+            pass
+        root.after(600, update_btn_states)
+
+    def do_reset():
+        do_stop()
+        root.after(1200, do_start)
+
+    def do_skip():
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        SKIP_PATH.write_text("1")
+
+    def do_snooze():
+        try:
+            n = int(snooze_var.get())
+        except Exception:
+            n = 5
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        SNOOZE_PATH.write_text(str(n))
+
+    def do_config():
+        popup = tk.Toplevel(root)
+        popup.title("config")
+        popup.configure(bg=BG)
+        popup.resizable(False, False)
+        popup.attributes("-topmost", True)
+        popup.geometry("250x120+20+290")
+
+        cfg = load_config()
+
+        tk.Label(popup, text="work min",  font=small_font, bg=BG, fg=FG_MUTED).grid(
+            row=0, column=0, padx=12, pady=(14, 4), sticky="w")
+        work_var = tk.StringVar(value=str(cfg["work_minutes"]))
+        tk.Entry(popup, textvariable=work_var, width=4, font=btn_font,
+                 bg=SURFACE, fg=FG_WORK, insertbackground=FG_WORK, relief="flat"
+                 ).grid(row=0, column=1, padx=8, pady=(14, 4))
+
+        tk.Label(popup, text="break min", font=small_font, bg=BG, fg=FG_MUTED).grid(
+            row=1, column=0, padx=12, pady=4, sticky="w")
+        break_var = tk.StringVar(value=str(cfg["break_minutes"]))
+        tk.Entry(popup, textvariable=break_var, width=4, font=btn_font,
+                 bg=SURFACE, fg=FG_WORK, insertbackground=FG_WORK, relief="flat"
+                 ).grid(row=1, column=1, padx=8, pady=4)
+
+        def apply_cfg():
+            try:
+                save_config({
+                    "work_minutes":  int(work_var.get()),
+                    "break_minutes": int(break_var.get()),
+                })
+                popup.destroy()
+            except ValueError:
+                pass
+
+        tk.Button(
+            popup, text="apply  (restart to take effect)",
+            command=apply_cfg,
+            font=small_font, bg=SURFACE, fg=FG_TEAL,
+            activebackground=BG, activeforeground=FG_TEAL,
+            relief="flat", bd=0, padx=4, pady=6,
+        ).grid(row=2, column=0, columnspan=2, padx=10, pady=(6, 4), sticky="ew")
+
+    # ── Button rows ────────────────────────────────────────────────────────────
+    BTN = dict(font=btn_font, bg=SURFACE, activebackground=BG,
+               relief="flat", bd=0, padx=4, pady=4,
+               cursor="hand2", disabledforeground=FG_STOP)
+
+    # Row 1: start · stop · reset
+    row1 = tk.Frame(root, bg=BG)
+    row1.pack(fill="x", padx=6)
+    for c in range(3):
+        row1.columnconfigure(c, weight=1)
+
+    btn_start = tk.Button(row1, text="▶ start", command=do_start,
+                          fg=FG_TEAL,  activeforeground=FG_TEAL,  **BTN)
+    btn_stop  = tk.Button(row1, text="■ stop",  command=do_stop,
+                          fg=FG_BREAK, activeforeground=FG_BREAK, **BTN)
+    btn_reset = tk.Button(row1, text="↺ reset", command=do_reset,
+                          fg=FG_MUTED, activeforeground=FG_MUTED, **BTN)
+    btn_start.grid(row=0, column=0, padx=2, pady=2, sticky="ew")
+    btn_stop.grid( row=0, column=1, padx=2, pady=2, sticky="ew")
+    btn_reset.grid(row=0, column=2, padx=2, pady=2, sticky="ew")
+
+    # Row 2: skip · N spinbox · snooze
+    row2 = tk.Frame(root, bg=BG)
+    row2.pack(fill="x", padx=6)
+    row2.columnconfigure(0, weight=1)
+    row2.columnconfigure(2, weight=1)
+
+    snooze_var = tk.StringVar(value="5")
+    btn_skip   = tk.Button(row2, text="⏭ skip",   command=do_skip,
+                           fg=FG_WORK,  activeforeground=FG_WORK,  **BTN)
+    snooze_spin = tk.Spinbox(
+        row2, from_=1, to=60, width=3, textvariable=snooze_var,
+        font=btn_font, bg=SURFACE, fg=FG_MUTED, relief="flat",
+        buttonbackground=SURFACE, insertbackground=FG_MUTED,
+    )
+    btn_snooze = tk.Button(row2, text="💤 snooze", command=do_snooze,
+                           fg=FG_MUTED, activeforeground=FG_MUTED, **BTN)
+    btn_skip.grid(   row=0, column=0, padx=2, pady=2, sticky="ew")
+    snooze_spin.grid(row=0, column=1, padx=2, pady=2)
+    btn_snooze.grid( row=0, column=2, padx=2, pady=2, sticky="ew")
+
+    # Row 3: config (full width)
+    row3 = tk.Frame(root, bg=BG)
+    row3.pack(fill="x", padx=6, pady=(2, 6))
+    row3.columnconfigure(0, weight=1)
+
+    btn_config = tk.Button(row3, text="≡ config", command=do_config,
+                           fg=FG_MUTED, activeforeground=FG_MUTED, **BTN)
+    btn_config.grid(row=0, column=0, padx=2, pady=2, sticky="ew")
+
+    # ── Button state sync ─────────────────────────────────────────────────────
+    def update_btn_states():
+        running = daemon_running()
+        btn_start.configure( state="disabled" if running else "normal")
+        btn_stop.configure(  state="normal"   if running else "disabled")
+        btn_skip.configure(  state="normal"   if running else "disabled")
+        btn_snooze.configure(state="normal"   if running else "disabled")
+        snooze_spin.configure(state="normal"  if running else "disabled")
+        btn_reset.configure( state="normal")
+
+    # ── Tick ───────────────────────────────────────────────────────────────────
+    def tick():
+        update_btn_states()
+        if not STATE_PATH.exists():
+            phase_lbl.configure(text="STOP", fg=FG_STOP)
+            time_lbl.configure( text="--:--", fg=FG_STOP)
+            status_lbl.configure(text="not running")
+        else:
+            try:
+                state = json.loads(STATE_PATH.read_text())
+                phase = state["phase"].upper()
+                remaining = max(0, int(state["phase_end"] - time.time()))
+                mins, secs = divmod(remaining, 60)
+                color = FG_BREAK if phase == "BREAK" else FG_WORK
+                phase_lbl.configure(text=phase,                    fg=color)
+                time_lbl.configure( text=f"{mins:02d}:{secs:02d}", fg=color)
+                pid_txt = PID_PATH.read_text().strip() if PID_PATH.exists() else "?"
+                status_lbl.configure(text=f"pid {pid_txt}")
+            except Exception:
+                phase_lbl.configure(text="ERR",   fg=FG_MUTED)
+                time_lbl.configure( text="--:--",  fg=FG_MUTED)
+                status_lbl.configure(text="state read error")
+        root.after(1000, tick)
+
+    tick()
+
+    def on_close():
+        GUI_PID_PATH.unlink(missing_ok=True)
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    root.mainloop()
+    GUI_PID_PATH.unlink(missing_ok=True)
+
+
+# ── Main loop ──────────────────────────────────────────────────────────────────
+def main():
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
+
+    write_pid()
+    cfg = load_config()
+    work_sec  = cfg["work_minutes"]  * 60
+    break_sec = cfg["break_minutes"] * 60
+
+    print(f"arc-break running  ·  work {cfg['work_minutes']}min · break {cfg['break_minutes']}min")
+    print(f"  pid: {os.getpid()}")
+
+    if cfg.get("gui_enabled"):
+        gui_alive = False
+        if GUI_PID_PATH.exists():
+            try:
+                os.kill(int(GUI_PID_PATH.read_text().strip()), 0)
+                gui_alive = True
+            except Exception:
+                pass
+        if not gui_alive:
+            launch_gui()
+
+    while True:
+        write_state("work", time.time() + work_sec)
+        result = interruptible_sleep(work_sec)
+
+        if result == "skip":
+            continue
+
+        notify(
+            "break time",
+            f"{cfg['work_minutes']} min up — step away for {cfg['break_minutes']} min.",
+            "critical"
+        )
+
+        write_state("break", time.time() + break_sec)
+        interruptible_sleep(break_sec)
+
+        notify("back to work", f"Break over — {cfg['work_minutes']} min on the clock.", "normal")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        cmd = sys.argv[1]
+
+        if cmd == "gui":
+            run_gui()
+
+        elif cmd == "status":
+            if not PID_PATH.exists():
+                print("stopped")
+                sys.exit(0)
+            pid = PID_PATH.read_text().strip()
+            if not STATE_PATH.exists():
+                print(f"running (pid {pid}) — state unknown")
+                sys.exit(0)
+            state = json.loads(STATE_PATH.read_text())
+            remaining = max(0, int(state["phase_end"] - time.time()))
+            mins, secs = divmod(remaining, 60)
+            print(f"{state['phase']}  ·  {mins:02d}:{secs:02d} remaining  ·  pid {pid}")
+
+        elif cmd == "snooze":
+            minutes = sys.argv[2] if len(sys.argv) > 2 else "5"
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            SNOOZE_PATH.write_text(minutes)
+            print(f"snooze signal sent ({minutes} min)")
+
+        elif cmd == "skip":
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            SKIP_PATH.write_text("1")
+            print("skip signal sent")
+
+        elif cmd == "config":
+            cfg = load_config()
+            print(f"work:  {cfg['work_minutes']} min")
+            print(f"break: {cfg['break_minutes']} min")
+            print(f"gui:   {cfg.get('gui_enabled', False)}")
+            print(f"config: {CONFIG_PATH}")
+
+        else:
+            print(f"unknown command: {cmd}", file=sys.stderr)
+            sys.exit(1)
+
+        sys.exit(0)
+
+    main()

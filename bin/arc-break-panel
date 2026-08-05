@@ -1,0 +1,63 @@
+#!/bin/bash
+# Panel monitor script for arc-break — outputs Pango markup.
+STATE="$HOME/.local/share/arc-break/state.json"
+PID_F="$HOME/.local/share/arc-break/arc-break.pid"
+
+if [[ ! -f "$PID_F" ]] || ! kill -0 "$(cat "$PID_F" 2>/dev/null)" 2>/dev/null; then
+    echo "<txt>💀 --:--</txt>"
+    echo "<tool>arc-break not running — arc break start</tool>"
+    exit 0
+fi
+
+read -r phase phase_start phase_end < <(python3 -c "
+import json
+with open('$STATE') as f:
+    d = json.load(f)
+print(d['phase'], int(d['phase_start']), int(d['phase_end']))
+" 2>/dev/null)
+
+[[ -z "$phase" ]] && { echo "<txt>💀 --:--</txt>"; exit 0; }
+
+now=$(date +%s)
+remaining=$(( phase_end - now ))
+[[ $remaining -lt 0 ]] && remaining=0
+mins=$(( remaining / 60 ))
+secs=$(( remaining % 60 ))
+fmt=$(printf '%02d:%02d' $mins $secs)
+
+total=$(( phase_end - phase_start ))
+[[ $total -le 0 ]] && total=1
+# remaining as a percentage of the configured phase length, so the
+# emoji staircase scales to whatever work/break minutes are set,
+# instead of assuming a fixed 30/5 min session.
+pct=$(( remaining * 100 / total ))
+
+if [[ "$phase" == "work" ]]; then
+    if   (( pct >= 93 )); then emoji="🚀"
+    elif (( pct >= 83 )); then emoji="🧠"
+    elif (( pct >= 73 )); then emoji="💻"
+    elif (( pct >= 63 )); then emoji="⌨️"
+    elif (( pct >= 53 )); then emoji="📝"
+    elif (( pct >= 43 )); then emoji="🎯"
+    elif (( pct >= 33 )); then emoji="🔍"
+    elif (( pct >= 23 )); then emoji="👀"
+    elif (( pct >= 17 )); then emoji="⏰"
+    elif (( pct >= 10 )); then emoji="⚡"
+    elif (( pct >= 3  )); then emoji="😤"
+    else                        emoji="🔔"
+    fi
+    color="#f6c177"
+    tip="WORK — $fmt remaining"
+else
+    if   (( pct >= 80 )); then emoji="🌿"
+    elif (( pct >= 60 )); then emoji="☕"
+    elif (( pct >= 40 )); then emoji="🧘"
+    elif (( pct >= 20 )); then emoji="💤"
+    else                       emoji="🔔"
+    fi
+    color="#eb6f92"
+    tip="BREAK — $fmt remaining"
+fi
+
+echo "<txt><span color='$color'>$emoji $fmt</span></txt>"
+echo "<tool>$tip</tool>"

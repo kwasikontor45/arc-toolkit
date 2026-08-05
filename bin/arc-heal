@@ -9,6 +9,14 @@
 # anything that needs a real decision or a password.
 set -uo pipefail
 
+# Cron runs this without XDG_RUNTIME_DIR — an interactive login session sets it
+# automatically, cron doesn't. Without it, pactl can't find the user's
+# PulseAudio socket (/run/user/<uid>/pulse/native) and silently returns
+# nothing, which check_audio_profile below misread as "no sound card found"
+# even when audio is completely healthy — found 2026-08-02, false positive,
+# not a real hardware/audio issue.
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+
 # SOP gate bridge: same audit policy as interactive shells, non-blocking --
 # never gates automation, just logs it under the same DB the gate reads.
 { command -v arc-sop >/dev/null 2>&1 && arc-sop ack-auto "arc-heal" >/dev/null 2>&1; } || true
@@ -55,7 +63,7 @@ check_local_stack() {
     || { systemctl restart cloudflared 2>/dev/null && note "HEALED::cloudflared::was down, restarted"; }
   systemctl is-active fail2ban >/dev/null 2>&1 && note "OK::fail2ban::active" || note "FLAG::fail2ban::not active, needs sudo to fix — can't self-heal"
   nextdns status 2>/dev/null | grep -q running && note "OK::nextdns::running" || note "FLAG::nextdns::not running, check 'arc dns status'"
-  if [[ -d /mnt/storage/Persistent/dev-notes ]]; then note "OK::usb-vault::mounted"; else note "OK::usb-vault::not mounted (fine if unplugged on purpose)"; fi
+  if [[ -d /mnt/storage/dev-notes ]]; then note "OK::usb-vault::mounted"; else note "OK::usb-vault::not mounted (fine if unplugged on purpose)"; fi
 }
 
 check_dns() {

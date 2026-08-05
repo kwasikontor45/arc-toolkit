@@ -48,7 +48,7 @@ INTEL_OPS = HOME / "dev-notes/intel-ops"
 SOP_DIR = HOME / ".config/arc/sop"
 DB_PATH = SOP_DIR / "arc-sop.db"
 ROOT_COPY = Path("/usr/local/share/arc/sop")
-VAULT_SOP = Path("/mnt/storage/Persistent/arc-sop")
+VAULT_SOP = Path("/mnt/storage/arc-sop")
 MEGA_SOP = Path("mega:/arc-sop")
 
 # ---------------------------------------------------------------------------
@@ -653,12 +653,15 @@ def cmd_resolve(vid: str):
 
 
 def cmd_ack_today() -> bool:
-    """Return True if an ack exists for today's date."""
+    """Return True if an ack exists for today's date, for this specific agent+session
+    (same scoping as cmd_gate_check -- a different session's ack shouldn't satisfy this)."""
     init_db()
     today = datetime.now().strftime("%Y-%m-%d")
+    aid = agent_id()
+    sid = session_id()
     rows = db_query(
-        "SELECT * FROM acks WHERE timestamp LIKE ? ORDER BY timestamp DESC LIMIT 1",
-        (f"{today}%",),
+        "SELECT * FROM acks WHERE timestamp LIKE ? AND agent_id = ? AND session_id = ? ORDER BY timestamp DESC LIMIT 1",
+        (f"{today}%", aid, sid),
     )
     if rows:
         print(f"{G}✓{N}  SOP acknowledged today  {D}({rows[0]['timestamp']}){N}")
@@ -711,9 +714,14 @@ def cmd_check():
             gp_msg = f"GAMEPLAN.md missing {today} entry"
     checks.append(("GAMEPLAN today", gp_ok, gp_msg))
 
-    # 4. Recent ack
+    # 4. Recent ack -- same-session, same-day (mirrors cmd_gate_check's scoping;
+    # previously had NO filter at all, so any historical ack ever kept this green forever)
+    check_today = datetime.now().strftime("%Y-%m-%d")
+    check_aid = agent_id()
+    check_sid = session_id()
     recent_ack = db_query(
-        "SELECT * FROM acks ORDER BY timestamp DESC LIMIT 1"
+        "SELECT * FROM acks WHERE timestamp LIKE ? AND agent_id = ? AND session_id = ? ORDER BY timestamp DESC LIMIT 1",
+        (f"{check_today}%", check_aid, check_sid),
     )
     ack_ok = False
     ack_msg = "no SOP acknowledgment on record"

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Moves files ≥10MB from ~/downloads to /mnt/storage/Persistent/cargo/
+# Moves files ≥10MB from ~/downloads to /mnt/storage/cargo/
 # Safe to run with no USB — exits clean if not mounted
 
 THRESHOLD_MB=10
 SRC="$HOME/downloads"
-DEST="/mnt/storage/Persistent/cargo"
+DEST="/mnt/storage/cargo"
 LOG="$HOME/.local/share/arc/large-file-mover.log"
 
 if ! mountpoint -q /mnt/storage 2>/dev/null; then

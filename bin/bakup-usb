@@ -3,7 +3,7 @@
 # Generates lightweight checksum manifests for critical cargo.
 
 MOUNT="/mnt/storage"
-USB="$MOUNT/Persistent"
+USB="$MOUNT"
 STAMP_DIR="$HOME/.usb-bakup"
 STAMP="$STAMP_DIR/.last-sync"
 MANIFEST_DIR="$HOME/.usb-bakup/manifests"

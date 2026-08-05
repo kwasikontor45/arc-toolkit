@@ -11,7 +11,7 @@ Visual language matches kontor.studio / kontor.studio/bootlog: JetBrains Mono
 (installed locally, no webfont fetch needed), phosphor/cyan on near-black,
 scanline+vignette overlay, system-bar with circadian phase color shift.
 
-Output lives inside the encrypted vault (/mnt/storage/Persistent/notes-site) -- that's
+Output lives inside the encrypted vault (/mnt/storage/notes-site) -- that's
 the "lock": it only exists while the vault is unlocked and mounted.
 """
 import base64
@@ -28,13 +28,13 @@ except ImportError:
     sys.exit(1)
 
 HOME = Path.home()
-OUT = Path("/mnt/storage/Persistent/notes-site")
+OUT = Path("/mnt/storage/notes-site")
 
 TREES = {
     "arc-lt-cmc": HOME / "arc-lt-cmc",
     "dev-notes": HOME / "dev-notes",
     "khaos-lab": HOME / "khaos-lab",
-    "vault/archive": Path("/mnt/storage/Persistent/archive"),
+    "vault/archive": Path("/mnt/storage/archive"),
 }
 
 SKIP_DIR_NAMES = {".git", "node_modules", "__pycache__", ".arc-notes", "master-archive"}

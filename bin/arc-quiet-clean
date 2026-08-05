@@ -10,7 +10,7 @@
 MOUNT="/mnt/storage"
 LOG="$HOME/.local/share/arc/quiet-clean.log"
 FF_DIR="$MOUNT/forge/.busy-msfox/Restore Firefox"
-ARCHIVE_DIR="$MOUNT/Persistent/archive"
+ARCHIVE_DIR="$MOUNT/archive"
 SWEEP="$HOME/.local/bin/arc-home-sweep"
 
 mkdir -p "$(dirname "$LOG")"

@@ -329,6 +329,7 @@ def run_gui():
             phase_lbl.configure(text="STOP", fg=FG_STOP)
             time_lbl.configure( text="--:--", fg=FG_STOP)
             status_lbl.configure(text="not running")
+            root.title("arc · break")
         else:
             try:
                 state = json.loads(STATE_PATH.read_text())
@@ -340,10 +341,14 @@ def run_gui():
                 time_lbl.configure( text=f"{mins:02d}:{secs:02d}", fg=color)
                 pid_txt = PID_PATH.read_text().strip() if PID_PATH.exists() else "?"
                 status_lbl.configure(text=f"pid {pid_txt}")
+                # Mirror the countdown into the window title so it's visible
+                # in the taskbar/window-list without the window being focused.
+                root.title(f"{phase} {mins:02d}:{secs:02d} — arc break")
             except Exception:
                 phase_lbl.configure(text="ERR",   fg=FG_MUTED)
                 time_lbl.configure( text="--:--",  fg=FG_MUTED)
                 status_lbl.configure(text="state read error")
+                root.title("arc · break")
         root.after(1000, tick)
 
     tick()

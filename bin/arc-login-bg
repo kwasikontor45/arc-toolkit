@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# arc-login-bg — set/change the LightDM (slick-greeter) login background.
+#
+# Always copies the image out to /etc/lightdm/backgrounds/ (root:root, 644)
+# rather than pointing the greeter at anything under the home directory --
+# the greeter runs as the low-priv `lightdm` system user and can't read
+# through a hardened (0700/0600) home dir. See the 2026-08-06 fix this
+# replaces the manual version of.
+set -euo pipefail
+
+CONF=/etc/lightdm/slick-greeter.conf
+BGDIR=/etc/lightdm/backgrounds
+
+usage() {
+  echo "usage: arc-login-bg <image-path>   # set a new login background"
+  echo "       arc-login-bg status         # show what's currently configured"
+}
+
+case "${1:-}" in
+  ""|-h|--help)
+    usage
+    exit 0
+    ;;
+  status)
+    echo "configured background:"
+    grep '^background=' "$CONF" 2>/dev/null | sed 's/^/  /' || echo "  (none set)"
+    echo "draw-user-backgrounds:"
+    grep '^draw-user-backgrounds=' "$CONF" 2>/dev/null | sed 's/^/  /' || echo "  (unset -- greeter default)"
+    exit 0
+    ;;
+esac
+
+IMG=$1
+if [[ ! -f "$IMG" ]]; then
+  echo "not found: $IMG" >&2
+  exit 1
+fi
+
+MIME=$(file --brief --mime-type "$IMG")
+case "$MIME" in
+  image/*) ;;
+  *)
+    echo "not an image ($MIME): $IMG" >&2
+    exit 1
+    ;;
+esac
+
+BASENAME=$(basename "$IMG")
+DEST="$BGDIR/$BASENAME"
+
+sudo mkdir -p "$BGDIR"
+sudo cp "$IMG" "$DEST"
+sudo chown root:root "$DEST"
+sudo chmod 644 "$DEST"
+
+if sudo grep -q '^background=' "$CONF" 2>/dev/null; then
+  sudo sed -i "s|^background=.*|background=$DEST|" "$CONF"
+else
+  sudo sed -i "/^\[Greeter\]/a background=$DEST" "$CONF"
+fi
+
+# Keep the per-user AccountsService wallpaper from silently overriding this.
+if sudo grep -q '^draw-user-backgrounds=' "$CONF" 2>/dev/null; then
+  sudo sed -i 's|^draw-user-backgrounds=.*|draw-user-backgrounds=false|' "$CONF"
+else
+  sudo sed -i "/^\[Greeter\]/a draw-user-backgrounds=false" "$CONF"
+fi
+
+echo "login background set: $DEST"
+echo "check next login, or lock the screen to preview now"

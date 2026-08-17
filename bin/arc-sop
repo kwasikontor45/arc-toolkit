@@ -33,9 +33,22 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 def _user_home() -> Path:
     """Return the real user's home directory, even when running under sudo."""
+    import pwd
+    euid = os.getuid()
+    if euid != 0:
+        # Real effective user -- covers `sudo -u <other>` de-escalation from a
+        # root-native session (e.g. an admin Claude Code session running as
+        # root). SUDO_USER always names who *typed* sudo, not who the process
+        # now runs as, so for `sudo -u <other>` it's backwards for this case.
+        # Trust the euid first.
+        try:
+            return Path(pwd.getpwuid(euid).pw_dir)
+        except KeyError:
+            pass
+    # Running as root itself -- either genuinely root, or escalated via a bare
+    # `sudo <cmd>` from a real user (SUDO_USER correctly names them in that case).
     sudo_user = os.environ.get("SUDO_USER")
     if sudo_user:
-        import pwd
         try:
             return Path(pwd.getpwnam(sudo_user).pw_dir)
         except KeyError:

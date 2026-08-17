@@ -2,6 +2,12 @@
 # arc-dns — NextDNS toggle for kontor studio
 # Usage: arc dns on | off | status | profile <id>
 
+# SOP gate bridge: same audit policy as interactive shells, non-blocking --
+# never gates this script, just logs it under the same DB the gate reads.
+# Was missing entirely -- meant arc-dns-boot.service's every-login run left
+# zero trace in the SOP log. Found 2026-08-17 during the arc-sop coverage audit.
+{ command -v arc-sop >/dev/null 2>&1 && arc-sop ack-auto "arc-dns" >/dev/null 2>&1; } || true
+
 PROFILE_FILE="$HOME/.config/nextdns-profile"
 CMD="${1:-status}"
 
@@ -55,6 +61,23 @@ case "$CMD" in
         echo "  deactivating NextDNS — restoring system defaults..."
         sudo nextdns deactivate
         RESOLVER=$(cat /etc/resolv.conf 2>/dev/null | grep '^nameserver' | head -1 | awk '{print $2}')
+        # NetworkManager.conf has dns=none (2026-08-15, fixes a DNS-leak-on-reconnect
+        # bug) — NM no longer writes resolv.conf itself, so if nextdns's own restore
+        # (from its one-time /etc/resolv.conf.nextdns-bak snapshot) doesn't leave a
+        # real nameserver, nothing else will either. Explicit fallback rather than a
+        # stale snapshot, so this stays correct on any network, not just the one
+        # active when the snapshot was taken.
+        if [ -z "$RESOLVER" ] || [ "$RESOLVER" = "127.0.0.1" ]; then
+            echo "  ! no nameserver after deactivate — writing fallback (1.1.1.1/1.0.0.1)"
+            printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n' | sudo tee /etc/resolv.conf >/dev/null
+            # re-read reality rather than assume the write succeeded (sudo failing
+            # here — wrong password, no TTY — would otherwise get silently reported
+            # as success below)
+            RESOLVER=$(cat /etc/resolv.conf 2>/dev/null | grep '^nameserver' | head -1 | awk '{print $2}')
+            if [ -z "$RESOLVER" ] || [ "$RESOLVER" = "127.0.0.1" ]; then
+                echo "  ✗  fallback write failed — DNS may be broken. Check: sudo cat /etc/resolv.conf"
+            fi
+        fi
         echo "  NextDNS OFF →  resolver: $RESOLVER"
         ;;
 

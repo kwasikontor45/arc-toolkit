@@ -8,6 +8,8 @@ has set the bypass. Self-serve commands (arc-sop/arc sop) are allowed
 through unconditionally so the gate can be satisfied without a deadlock.
 """
 import json
+import os
+import pwd
 import re
 import subprocess
 import sys
@@ -39,8 +41,35 @@ def main():
     if SELF_SERVE.match(command):
         sys.exit(0)
 
+    # arc-sop lives next to this hook -- resolve relative to this file rather
+    # than hardcoding a path, so this works for whoever installs it.
+    arc_sop = os.path.join(os.path.dirname(os.path.abspath(__file__)), "arc-sop")
+
+    if os.getuid() == 0:
+        # Root-native session (e.g. an admin Claude Code session running as
+        # root on a single-user box) -- drop to the real user so arc-sop's
+        # paths/DB/GAMEPLAN.md resolve correctly and any writes stay
+        # correctly owned, instead of silently operating on a nonexistent
+        # parallel /root/... tree. The target user is discovered from who
+        # owns arc-sop itself, not hardcoded, so this works on any machine.
+        # --preserve-env is explicit because sudo resets the environment by
+        # default and would otherwise strip the session id, making every
+        # session misreport as a fresh, unscoped "human" run instead of this
+        # specific agent session.
+        try:
+            real_user = pwd.getpwuid(os.stat(arc_sop).st_uid).pw_name
+        except OSError:
+            sys.exit(0)  # arc-sop not installed -- nothing to gate on
+        cmd = [
+            "sudo", "-u", real_user, "-H",
+            "--preserve-env=CLAUDE_CODE_SESSION_ID,CLAUDE_CODE_BRIDGE_SESSION_ID",
+            arc_sop, "gate-check",
+        ]
+    else:
+        cmd = [arc_sop, "gate-check"]
+
     result = subprocess.run(
-        ["/home/architect-of-chaos/.local/bin/arc-sop", "gate-check"],
+        cmd,
         capture_output=True, text=True, timeout=10,
     )
     if result.returncode == 0:

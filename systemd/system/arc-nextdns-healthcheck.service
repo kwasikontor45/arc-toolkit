@@ -1,0 +1,6 @@
+[Unit]
+Description=arc-nextdns-healthcheck — periodic NextDNS query health check
+
+[Service]
+Type=oneshot
+ExecStart=/home/architect-of-chaos/.local/bin/arc-nextdns-healthcheck

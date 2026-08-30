@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""arc-sagan-watch — tails Sagan's eve.json (same schema as Suricata's) and
+fires a real desktop notification for genuinely correlated findings. Sagan
+correlates across fail2ban/ufw/openssh/auditd log sources -- catching
+patterns individual point-solutions wouldn't, which is the whole reason it
+exists, so this is arguably the most important watcher in this whole
+family.
+
+Built 2026-08-22. Threshold tuned against real classification.config data,
+not guessed: Sagan's own classtype->severity mapping puts brute-force,
+exploit-attempt, and actual privilege-gain attempts at severity 1, while
+raw UFW-block correlation (constant background internet noise on any
+always-on box) sits at severity 2 -- notifying at <=2 here would recreate
+the exact "covers the whole screen" clutter problem this whole notification
+system is being redesigned to avoid. Severity 1 only.
+
+Same proven batch/cap/timeout architecture as arc-suricata-watch (built +
+flood-tested earlier the same day) -- standalone, safe to stop/delete
+alone.
+"""
+
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _arc_watch_common as watch
+
+EVE_LOG = "/fortress/docker/volumes/sagan-evebox-lab_sagan-output/_data/eve.json"
+TARGET_USER = "architect-of-chaos"
+TARGET_UID = 1000
+
+MIN_NOTIFY_SEVERITY = 1
+
+SEV_URGENCY = {1: "critical", 2: "normal", 3: "low"}
+
+FLUSH_INTERVAL = 8.0
+MAX_POPUPS_PER_FLUSH = 4
+NOTIFY_TIMEOUT_MS = 12000
+
+
+# Calls arc-pine-notify instead of notify-send -- arc-pine owns rendering
+# for this whole watcher family (real stacking cap + auto-dismiss),
+# third-party notifications completely unaffected. See arc-suricata-watch.
+def notify(summary: str, body: str, urgency: str):
+    env = f"DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{TARGET_UID}/bus"
+    cmd = f"{env} /home/architect-of-chaos/.local/bin/arc-pine-notify {urgency} arc-sagan {json.dumps(summary)} {json.dumps(body)}"
+    subprocess.run(["su", TARGET_USER, "-c", cmd], check=False)
+
+
+def flush(pending):
+    items = list(pending.items())
+    shown, overflow = items[:MAX_POPUPS_PER_FLUSH], items[MAX_POPUPS_PER_FLUSH:]
+    for (sig, src, dst), entry in shown:
+        count = entry["count"]
+        urgency = SEV_URGENCY.get(entry["sev"], "normal")
+        prefix = f"x{count}  " if count > 1 else ""
+        notify("Sagan correlation alert", f"{sig}\n{prefix}{src} -> {dst}", urgency)
+    if overflow:
+        worst_sev = min(entry["sev"] for _key, entry in overflow)
+        notify(
+            "Sagan correlation alert",
+            f"+{len(overflow)} more alert type(s) in this window — see: arc sagan alerts",
+            SEV_URGENCY.get(worst_sev, "normal"),
+        )
+
+
+def main():
+    pending = {}
+    last_flush = time.time()
+    for line in watch.follow(EVE_LOG):
+        if line:
+            try:
+                ev = json.loads(line)
+            except Exception:
+                ev = None
+            if ev is not None and ev.get("event_type") == "alert":
+                alert = ev.get("alert", {})
+                sev = alert.get("severity", 3)
+                if sev <= MIN_NOTIFY_SEVERITY:
+                    sig = alert.get("signature", "unknown signature")
+                    src = ev.get("src_ip", "?")
+                    dst = ev.get("dest_ip", "?")
+                    key = (sig, src, dst)
+                    entry = pending.setdefault(key, {"count": 0, "sev": sev})
+                    entry["count"] += 1
+
+        if pending and (time.time() - last_flush) >= FLUSH_INTERVAL:
+            flush(pending)
+            pending.clear()
+            last_flush = time.time()
+
+
+if __name__ == "__main__":
+    main()

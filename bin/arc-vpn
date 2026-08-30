@@ -1,98 +1,148 @@
 #!/usr/bin/env bash
-# arc-vpn — thin wrapper around the official proton-vpn-cli for daily ops
-# hook: arc vpn <cmd>   (see arc-dispatch snippet below)
-set -euo pipefail
+# arc-vpn — status/DNS-health wrapper for ProtonVPN (native GUI, proton-vpn-gtk-app).
+# hook: arc vpn <cmd>
+#
+# Swapped Flatpak -> native .deb 2026-08-25/26, same conversation as the full
+# integrity audit below: Kill Switch was grayed-out/unusable on the Flatpak
+# build (confirmed real, not a bug -- Flatpak's sandbox can't grant the
+# low-level privileged network control an always-on kill switch needs;
+# Proton's own docs say native packages are needed for "the full Proton VPN
+# experience"). `proton-vpn-gtk-app` (4.15.3-1) installs cleanly straight
+# from Kali's own repo -- no need for Proton's own third-party apt repo, so
+# neither of the two packaging bugs hit during the original 2026-08-22 CLI
+# install (expired signing key, missing python3-importlib-metadata) applied
+# here; dry-run resolved all 12 packages with zero conflicts. Same
+# architecture as the Flatpak build otherwise: the GUI manages VPN
+# connections through a real NetworkManager connection profile, not a
+# separate daemon/interface. There is no CLI binary to wrap for connect/
+# disconnect/reconnect/countries/cities/info -- those are GUI-only.
+#
+# Config path changed with the swap -- confirmed from the installed
+# package's own source (proton/vpn/core/settings/settings.py ->
+# VPNExecutionEnvironment().path_config), not guessed: now plain
+# ~/.config/Proton/VPN/settings.json, no more ~/.var/app/com.protonvpn.www
+# Flatpak sandbox prefix.
+#
+# Full-tunnel confirmed via policy routing, not assumed: WireGuard's NM
+# plugin marks non-tunnel-destined traffic with a fwmark and routes it into
+# proton0's own table (`ip rule` / `ip route show table all`), which carries
+# a real default route via proton0 -- this is NM's standard "peer routes"
+# full-tunnel implementation, not split-tunnel.
+#
+# Two independent leak-prevention layers confirmed live, not assumed:
+#   1. NetworkManager's own nftables rule (table nm-wg-proton0) drops any
+#      packet to the tunnel gateway that didn't arrive via proton0 itself.
+#   2. Proton's own IPv6 leak protection (settings.json: "ipv6": true)
+#      routes the IPv6 default route into a dummy blackhole interface
+#      (pvpn-killswitch-ipv6) rather than leaving it on the real interface.
+#   The only IPv6 address left on wlan0 is a ULA (fd00::/8 range) --
+#   not globally routable, not a real leak vector either way.
+#
+# Known real gap as of the 2026-08-25 audit: Proton's own Kill Switch
+# setting (settings.json: "killswitch") was 0 (off) on this fresh install.
+# That's a GUI-only toggle (Settings -> Kill Switch) -- deliberately not
+# flipped by this script/session, since editing the app's live settings.json
+# risks being silently overwritten by the running app and a wrong guess at
+# the enum values could corrupt it. Flip it in the app directly.
+#
+# ufw: no proton0-specific rules needed or added. This machine is a VPN
+# *client* -- the WireGuard session is an outbound connection ufw's default
+# stateful tracking already permits the return traffic for (default: deny
+# incoming, allow outgoing, deny routed). This is a different situation
+# from waydroid0's case, which needed explicit rules because that was a
+# separate host (the container) receiving genuinely new inbound DHCP
+# traffic. Verified live: ufw status has zero proton/wireguard-related
+# entries and none are needed.
 
-BIN="protonvpn"
-STATE_DIR="$HOME/.local/state/arc-vpn"
-LOG="$STATE_DIR/arc-vpn.log"
-mkdir -p "$STATE_DIR"
-
-command -v "$BIN" >/dev/null 2>&1 || { echo "arc-vpn: $BIN not found" >&2; exit 1; }
+set -uo pipefail
 
 VPN_IFACE="proton0"
 
-log() { printf '%s %s\n' "$(date -Iseconds)" "$*" >> "$LOG"; }
+_find_conn() {
+  nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | awk -F: '$2=="wireguard"{print $1; exit}'
+}
 
-# Proton pushes its own DNS (10.2.0.1) onto proton0 with DefaultRoute scope,
-# which bypasses the local NextDNS stub (127.0.0.1) for all queries while
-# connected. Re-point proton0 at the stub so NextDNS filtering still applies.
-fix_dns() {
-  if command -v resolvectl >/dev/null 2>&1 && ip link show "$VPN_IFACE" >/dev/null 2>&1; then
-    if resolvectl dns "$VPN_IFACE" 127.0.0.1 >/dev/null 2>&1; then
-      log "dns: $VPN_IFACE -> 127.0.0.1 (NextDNS)"
-    else
-      log "dns: failed to re-point $VPN_IFACE to NextDNS"
-    fi
+status() {
+  local conn
+  conn=$(_find_conn)
+  if [[ -z "$conn" ]]; then
+    echo "Status: Disconnected"
+    return 0
+  fi
+  local ip state
+  ip=$(nmcli -g IP4.ADDRESS connection show "$conn" 2>/dev/null | cut -d/ -f1)
+  state=$(nmcli -g GENERAL.STATE connection show "$conn" 2>/dev/null)
+  echo "Status: Connected"
+  echo "Connection: $conn"
+  echo "Interface: $VPN_IFACE"
+  echo "IP: ${ip:-unknown}"
+  echo "State: ${state:-unknown}"
+}
+
+ip_pub() {
+  # Shows both explicitly rather than one bare address -- a plain `curl
+  # ifconfig.me` picks whichever protocol it prefers (usually IPv6 when
+  # both resolve), which looked like a leak on 2026-08-26 when it was
+  # actually correct: this native app properly full-tunnels IPv6 too
+  # (confirmed live via `ip -6 rule`/`ip -6 route table all`, exit IP
+  # belongs to Proton's own CDN77 egress infra, not the real ISP).
+  local v4 v6
+  v4=$(curl -s --max-time 5 -4 ifconfig.me)
+  v6=$(curl -s --max-time 5 -6 ifconfig.me)
+  echo "IPv4: ${v4:-unavailable}"
+  echo "IPv6: ${v6:-unavailable}"
+}
+
+killswitch() {
+  local f="$HOME/.config/Proton/VPN/settings.json"
+  if [[ ! -f "$f" ]]; then
+    echo "arc-vpn: settings.json not found -- launch the app + log in at least once first" >&2
+    return 1
+  fi
+  local ks
+  ks=$(python3 -c "import json; print(json.load(open('$f')).get('killswitch', '?'))" 2>/dev/null)
+  if [[ "$ks" == "0" ]]; then
+    echo "Kill Switch: OFF -- flip it in the app (Settings -> Kill Switch)"
+  else
+    echo "Kill Switch: ON (mode $ks)"
   fi
 }
 
-usage() {
-  cat <<'EOF'
+case "${1:-status}" in
+  status)
+    status
+    ;;
+  ip)
+    ip_pub
+    ;;
+  killswitch)
+    killswitch
+    ;;
+  refresh)
+    # No CLI left to drive an actual reconnect -- this is now just a
+    # ground-truth DNS re-check, same as arc-dns check, kept as an alias
+    # since that's what people will remember to type after a GUI reconnect.
+    "$HOME/.local/bin/arc-dns" check
+    ;;
+  connect|disconnect|reconnect|countries|cities|info)
+    echo "arc-vpn: '$1' is GUI-only -- use the ProtonVPN app (protonvpn-app, native package) directly." >&2
+    exit 1
+    ;;
+  -h|--help|help)
+    cat <<'EOF'
 arc vpn <command>
 
-  connect [country|--p2p|--tor]   connect (default: fastest server)
-  disconnect                      drop connection
-  status                          connection status
-  reconnect                       disconnect then reconnect to fastest
-  ip                              current public IP only
+  status      real connection state, read from NetworkManager (works with the GUI)
+  ip          current public IP only
+  killswitch  check whether Proton's own Kill Switch setting is on/off
+  refresh     re-check DNS routing/leak status (alias for arc dns check)
+
+connect/disconnect/reconnect/countries/cities/info are GUI-only --
+use the ProtonVPN app directly.
 EOF
-}
-
-case "${1:-status}" in
-  connect)
-    shift
-    target="${1:-}"
-    if [ -z "$target" ]; then
-      args=()
-    elif [[ "$target" == --* ]]; then
-      args=("$target")
-    else
-      args=(--country "$target")
-    fi
-    tmp=$(mktemp)
-    ok=0
-    "$BIN" connect "${args[@]}" >"$tmp" 2>&1 || ok=$?
-    cat "$tmp"; rm -f "$tmp"
-    log "connect ${args[*]:-fastest} rc=$ok"
-    if [ "$ok" -eq 0 ]; then
-      fix_dns
-      notify-send -a arc-vpn "VPN" "connected: ${args[*]:-fastest}" 2>/dev/null || true
-    else
-      notify-send -a arc-vpn -u critical "VPN" "connect FAILED: ${args[*]:-fastest} (rc=$ok)" 2>/dev/null || true
-    fi
-    exit "$ok"
     ;;
-
-  disconnect)
-    "$BIN" disconnect
-    log "disconnect"
-    notify-send -a arc-vpn "VPN" "disconnected" 2>/dev/null || true
-    ;;
-
-  reconnect)
-    "$BIN" disconnect >/dev/null 2>&1 || true
-    "$BIN" connect
-    fix_dns
-    log "reconnect"
-    ;;
-
-  status)
-    "$BIN" status
-    ;;
-
-  ip)
-    curl -s ifconfig.me
-    echo
-    ;;
-
-  -h|--help|help)
-    usage
-    ;;
-
   *)
     echo "arc-vpn: unknown command '$1'" >&2
-    usage
     exit 1
     ;;
 esac

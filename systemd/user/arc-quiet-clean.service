@@ -1,0 +1,6 @@
+[Unit]
+Description=arc-quiet-clean — silent periodic maintenance
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/arc-quiet-clean

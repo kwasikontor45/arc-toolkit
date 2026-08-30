@@ -1,0 +1,35 @@
+#!/bin/bash
+# kbd-backlight — MacBook keyboard-backlight step control, bound to Fn F5/F6.
+# usage: kbd-backlight up|down|<0-255>
+#
+# XFCE has no native GUI for this device at all (checked every -settings.desktop
+# entry on this machine, 2026-08-26 -- nothing, unlike display brightness/volume
+# which xfce4-power-manager and xfce4-pulseaudio-plugin already handle). The
+# sysfs node itself (/sys/class/leds/smc::kbd_backlight/brightness) is root:root
+# 644 with no uaccess ACL granted on this system, so a plain user-owned write
+# fails outright -- confirmed live, not assumed. Fixed the same way
+# xfce4-power-manager already fixes the identical problem for display
+# brightness: systemd-logind's own privileged SetBrightness D-Bus method,
+# gated by the active-session grant every desktop session already has (same
+# category as the reboot-without-sudo grant), not a udev rule or sudoers entry.
+
+set -euo pipefail
+
+DEV="/sys/class/leds/smc::kbd_backlight"
+MAX=$(cat "$DEV/max_brightness")
+CUR=$(cat "$DEV/brightness")
+STEP=$(( MAX / 10 ))
+(( STEP < 1 )) && STEP=1
+
+case "${1:-}" in
+  up)   NEW=$(( CUR + STEP )) ;;
+  down) NEW=$(( CUR - STEP )) ;;
+  ''|*[!0-9]*) echo "usage: kbd-backlight up|down|<0-${MAX}>" >&2; exit 1 ;;
+  *)    NEW="$1" ;;
+esac
+
+(( NEW < 0 ))   && NEW=0
+(( NEW > MAX )) && NEW=$MAX
+
+busctl call org.freedesktop.login1 /org/freedesktop/login1/session/self \
+  org.freedesktop.login1.Session SetBrightness ssu "leds" "smc::kbd_backlight" "$NEW"

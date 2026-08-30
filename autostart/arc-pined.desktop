@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=arc-pined
+Comment=Notification logger/speaker daemon
+Exec=/home/architect-of-chaos/.local/bin/arc-pined
+X-GNOME-Autostart-Delay=5
+NoDisplay=true

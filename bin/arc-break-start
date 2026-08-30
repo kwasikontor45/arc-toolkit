@@ -1,0 +1,13 @@
+#!/bin/bash
+# arc-break-start — idempotent daemon start, for the genmon panel widget's
+# click action (arc-break-panel). Does nothing if already running -- clicking
+# an already-running timer's panel widget shouldn't restart it.
+#
+# Runs via systemd --user (not nohup/disown) so it survives closing any
+# terminal -- nohup only blocks SIGHUP, it doesn't detach from the terminal's
+# session, and desktop/terminal-emulator session teardown can still reap it.
+PID_F="$HOME/.local/share/arc-break/arc-break.pid"
+if [[ -f "$PID_F" ]] && kill -0 "$(cat "$PID_F" 2>/dev/null)" 2>/dev/null; then
+    exit 0
+fi
+systemctl --user start arc-break.service

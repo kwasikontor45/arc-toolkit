@@ -1,0 +1,45 @@
+#!/bin/bash
+# arc-nextdns-healthcheck — periodic, event-independent NextDNS health
+# check. Closes a real gap flagged 2026-08-01 and never built: the
+# NetworkManager dispatcher hook (90-nextdns-heal) only fires on interface
+# up/down events, so a spontaneous hang with no interface flap (confirmed
+# to happen at least once before -- an ~8+ minute silent outage) went
+# completely uncaught. This is the complementary timer-based piece.
+#
+# Notify-wired 2026-08-26 -- this ran as a root systemd service every 5min
+# with a real failure path ("restart did NOT fix it") that had *zero*
+# notification, only a log line in /var/log/nextdns-heal.log nobody was
+# reading. Same su/env bridge arc-suricata-watch already uses to reach the
+# desktop session from a root context (arc-pine-notify itself needs
+# XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS for the real user session, not
+# root's, which doesn't have one).
+set -uo pipefail
+
+LOG="/var/log/nextdns-heal.log"
+log() { printf '%s  timer-check  %s\n' "$(date -Is)" "$1" >> "$LOG"; }
+
+TARGET_USER="architect-of-chaos"
+TARGET_UID=1000
+notify() {
+  local urgency="$1" summary="$2" body="$3"
+  local env="DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${TARGET_UID}/bus"
+  su "$TARGET_USER" -c "$env /home/architect-of-chaos/.local/bin/arc-pine-notify $urgency arc-nextdns-healthcheck \"$summary\" \"$body\"" \
+    >/dev/null 2>&1 || true
+}
+
+systemctl is-active --quiet nextdns 2>/dev/null || { log "nextdns not active, skipping"; exit 0; }
+
+if dig +short +time=3 nextdns.io @127.0.0.1 2>/dev/null | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+  exit 0
+fi
+
+log "query failed, restarting nextdns"
+systemctl restart nextdns
+sleep 1
+if dig +short +time=3 nextdns.io @127.0.0.1 2>/dev/null | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+  log "restart fixed it"
+  notify low "NextDNS: self-healed" "hung, restarted automatically, working again"
+else
+  log "restart did NOT fix it — needs a human look"
+  notify critical "NextDNS: still down" "restart did not fix it — needs a human look, check: systemctl status nextdns"
+fi

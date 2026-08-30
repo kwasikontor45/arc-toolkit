@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# emoji-pick — rofi-based emoji search UI. Reads ~/.config/emoji-pick/emojis.txt
+# (one entry per line: "<emoji> word1 word2 ..."), lets you fuzzy-search by
+# word, then types the picked emoji into whatever window had focus.
+#
+# Rebuilt 2026-08-22 — the original (script, list, and Alt+E keybinding) had
+# all been silently wiped by an OS-level event sometime after 2026-05-28,
+# same pattern as several other things found this session. rofi itself was
+# also missing (flagged back on discovery, never installed until now).
+set -euo pipefail
+
+LIST="$HOME/.config/emoji-pick/emojis.txt"
+
+if [[ ! -s "$LIST" ]]; then
+  notify-send -a emoji-pick "emoji-pick" "list is empty — run: arc emoji add <emoji> <words>" 2>/dev/null || true
+  exit 1
+fi
+
+# rofi -dmenu shows one line per option; we show "emoji  words" and pick
+# just the emoji (first field) back out of whichever line was chosen.
+chosen=$(cat "$LIST" | rofi -dmenu -i -p "emoji" -format s 2>/dev/null) || exit 0
+[[ -z "$chosen" ]] && exit 0
+
+emoji="${chosen%% *}"
+[[ -z "$emoji" ]] && exit 0
+
+echo -n "$emoji" | xclip -selection clipboard
+sleep 0.1
+xdotool key --clearmodifiers ctrl+v

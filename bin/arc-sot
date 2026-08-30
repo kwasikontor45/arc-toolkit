@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+# arc-sot — canonical single-source-of-truth manager for this machine's
+# personal tooling. The repo (~/khaos-lab/arc-toolkit) IS the live tooling,
+# not a copy of it: every script under bin/ is symlinked from ~/.local/bin,
+# so editing either path edits the same file, and `git status` in the repo
+# always tells you the real truth about uncommitted changes -- no separate
+# "did I remember to sync" step for scripts.
+#
+# Three things can't be symlinked and DO need an explicit snapshot step:
+# crontab (not a file), systemd units (live under /etc or need root to get
+# there), and sudoers fragments (same). Those are the only real drift risk
+# in this design -- see check_drift() below, which arc-heal calls on its
+# normal cadence so this is caught continuously, not just when someone
+# remembers to look.
+#
+# Built 2026-08-29 per direct request: "wire an arc wrapper with update of
+# its own... single canonical SOT... pull/update my pc or any other new pc."
+set -uo pipefail
+
+REPO="$HOME/khaos-lab/arc-toolkit"
+BIN="$REPO/bin"
+USB_MIRROR="/mnt/storage/Persistent/arc-toolkit-mirror"
+LOCAL_BIN="$HOME/.local/bin"
+
+R=$'\033[0;31m'; G=$'\033[0;32m'; Y=$'\033[0;33m'; C=$'\033[0;36m'
+D=$'\033[0;90m'; B=$'\033[1m'; N=$'\033[0m'
+HR="${D}────────────────────────────────────────────────${N}"
+
+# ── shared: read a manifest file's list of tracked script names ───────────
+_tracked_scripts() {
+  grep -v '^#' "$BIN/perms.txt" 2>/dev/null | awk '{print $2}'
+}
+
+# ── drift check (called by arc-heal too) ───────────────────────────────────
+check_drift() {
+  local broke=0 fixed=0
+  for name in $(_tracked_scripts); do
+    local live="$LOCAL_BIN/$name" target="$BIN/$name"
+    if [[ ! -e "$target" ]]; then
+      # Real bug found+fixed 2026-08-29: perms.txt can outlive a script
+      # that was deliberately removed from bin/ (this happened for real,
+      # first run -- arc-aws-killswitch, arc-ip-sync, auto-move-large-files
+      # were all retired earlier the same day but perms.txt still listed
+      # them from before). Just a stale-manifest note, nothing to fix here
+      # -- `arc sot snapshot` regenerates perms.txt from bin/'s real
+      # contents and clears this on its own.
+      echo "  ${D}·${N}  ${name}: in perms.txt but not in bin/ -- stale manifest entry, snapshot will clear it"
+      continue
+    fi
+    if [[ ! -e "$live" && ! -L "$live" ]]; then
+      # Deliberately NOT auto-recreated. "Missing" is genuinely ambiguous --
+      # it could mean someone deleted it by accident, or it could mean a
+      # script was intentionally retired and bin/ just hasn't been cleaned
+      # up yet. Resurrecting a deliberately-killed tool (which is exactly
+      # what happened testing this the first time) is a worse failure mode
+      # than leaving a real gap flagged for a human to look at once.
+      echo "  ${R}✗${N}  ${name}: exists in the repo but missing from ~/.local/bin -- if this is deliberate, remove it from bin/ and re-run 'arc sot snapshot'; if not: ln -s $target $live"
+      broke=$((broke+1))
+    elif [[ -L "$live" ]]; then
+      local dest; dest=$(readlink -f "$live" 2>/dev/null)
+      local want; want=$(readlink -f "$target" 2>/dev/null)
+      if [[ "$dest" != "$want" ]]; then
+        echo "  ${Y}!${N}  ${name}: symlink points somewhere else (${dest:-broken})"
+        ln -sf "$target" "$live" && { echo "  ${G}✓${N}  ${name}: re-pointed at the repo"; fixed=$((fixed+1)); }
+      fi
+    elif [[ -f "$live" && ! -L "$live" ]]; then
+      # Real fix, not just a flag: something replaced the symlink with a
+      # real file (an atomic mv-based overwrite, most likely) -- that
+      # content is a genuine, uncommitted edit, not garbage. Recover it
+      # into the repo instead of discarding it, then restore the symlink.
+      echo "  ${Y}!${N}  ${name}: symlink was replaced by a real file -- recovering the edit into the repo"
+      if ! diff -q "$live" "$target" >/dev/null 2>&1; then
+        cp "$live" "$target"
+        echo "  ${D}  (content differed from the repo -- repo updated, not discarded; review with: cd $REPO && git diff -- bin/$name)${N}"
+      fi
+      rm -f "$live"
+      ln -s "$target" "$live"
+      echo "  ${G}✓${N}  ${name}: symlink restored, edit preserved"
+      fixed=$((fixed+1))
+    fi
+  done
+  if (( fixed == 0 && broke == 0 )); then
+    echo "  ${G}✓${N}  all $(_tracked_scripts | wc -l) tracked scripts correctly symlinked"
+  fi
+  return $(( broke > 0 ? 1 : 0 ))
+}
+
+# ── snapshot: capture live state into the repo, commit, push, mirror ──────
+cmd_snapshot() {
+  echo -e "$HR\n  ${C}${B}arc sot snapshot${N}\n$HR\n"
+  cd "$REPO" || { echo "${R}✗${N} repo missing: $REPO"; return 1; }
+
+  echo "  scripts: already live (symlinked) -- nothing to copy"
+
+  echo -n "  crontab... "
+  crontab -l 2>/dev/null > "$REPO/crontab.txt"
+  echo "captured"
+
+  echo -n "  perms.txt... "
+  {
+    grep '^#' "$BIN/perms.txt" 2>/dev/null
+    for f in "$BIN"/*; do
+      local n; n=$(basename "$f")
+      [[ -f "$f" && "$n" != "perms.txt" ]] && stat -c "%a %n" "$n"
+    done
+  } > "$BIN/perms.txt.new" && mv "$BIN/perms.txt.new" "$BIN/perms.txt"
+  echo "refreshed"
+
+  echo "  sudoers fragments..."
+  for f in "$REPO"/sudoers/*; do
+    local n; n=$(basename "$f")
+    [[ "$n" == "README"* ]] && continue
+    if sudo -n test -f "/etc/sudoers.d/$n" 2>/dev/null; then
+      sudo -n cat "/etc/sudoers.d/$n" > "$f" 2>/dev/null && echo "    ${G}✓${N} $n"
+    fi
+  done
+
+  echo "  systemd units..."
+  for f in "$REPO"/systemd/system/*; do
+    local n; n=$(basename "$f")
+    [[ "$n" == enabled-state.txt ]] && continue
+    sudo -n test -f "/etc/systemd/system/$n" 2>/dev/null && \
+      sudo -n cat "/etc/systemd/system/$n" > "$f" 2>/dev/null
+  done
+  for f in "$REPO"/systemd/user/*; do
+    local n; n=$(basename "$f")
+    [[ -f "$HOME/.config/systemd/user/$n" ]] && cp "$HOME/.config/systemd/user/$n" "$f"
+  done
+  {
+    grep '^#' "$REPO/systemd/enabled-state.txt" 2>/dev/null
+    systemctl list-unit-files 2>/dev/null | grep -iE "^arc-|^khaos" | awk '{print "system", $2, $1}'
+    systemctl --user list-unit-files 2>/dev/null | grep -iE "^arc-|^khaos" | awk '{print "user", $2, $1}'
+  } > "$REPO/systemd/enabled-state.txt.new" && mv "$REPO/systemd/enabled-state.txt.new" "$REPO/systemd/enabled-state.txt"
+  echo "    ${G}✓${N} enabled-state.txt refreshed"
+
+  if [[ -z "$(git status --porcelain)" ]]; then
+    echo -e "\n  ${D}·${N}  no changes since last snapshot"
+  else
+    echo -e "\n  changes:"
+    git status --short | sed 's/^/    /'
+    git add -A
+    git commit -q -m "snapshot: $(date -Iseconds)"
+    echo "  ${G}✓${N}  committed"
+
+    echo -n "  pushing (both remotes)... "
+    if git push origin main >/dev/null 2>&1; then
+      echo "${G}done${N}"
+    else
+      echo "${R}push had a problem${N} -- run: cd $REPO && git push"
+    fi
+
+    # Verify both remotes actually landed the same commit -- "pushed" and
+    # "in sync" aren't the same claim. Falls back to `arc mirror` if not.
+    local head_sha primary_sha k6_sha
+    head_sha=$(git rev-parse HEAD)
+    primary_sha=$(git ls-remote git@github.com:kwasikontor45/arc-toolkit.git main 2>/dev/null | awk '{print $1}')
+    k6_sha=$(git ls-remote git@github-k6:k6-bleedin6ed6e-k6/arc-toolkit.git main 2>/dev/null | awk '{print $1}')
+    if [[ "$primary_sha" == "$head_sha" && "$k6_sha" == "$head_sha" ]]; then
+      echo "  ${G}✓${N}  both remotes confirmed in sync (${head_sha:0:7})"
+    else
+      echo "  ${Y}!${N}  remotes diverged -- primary=${primary_sha:0:7} k6=${k6_sha:0:7} local=${head_sha:0:7}"
+      echo "  ${D}  running arc mirror to catch up...${N}"
+      (cd "$REPO" && arc mirror) 2>&1 | sed 's/^/    /'
+    fi
+  fi
+
+  if mountpoint -q /mnt/storage 2>/dev/null; then
+    mkdir -p "$(dirname "$USB_MIRROR")"
+    echo -n "  USB mirror... "
+    rsync -a --delete "$REPO/" "$USB_MIRROR/" 2>&1 | tail -1
+    echo "  ${G}✓${N}  mirrored to $USB_MIRROR (offline bootstrap source)"
+  else
+    echo "  ${D}·${N}  USB vault not mounted -- skipped (plug it in and re-run for an offline copy)"
+  fi
+  echo -e "\n$HR"
+}
+
+# ── status: drift only, no changes made unless auto-heal triggers ─────────
+cmd_status() {
+  echo -e "$HR\n  ${C}${B}arc sot status${N}\n$HR\n"
+  cd "$REPO" 2>/dev/null || { echo "${R}✗${N} repo missing: $REPO"; return 1; }
+
+  echo "  repo (script changes):"
+  if [[ -z "$(git status --porcelain)" ]]; then
+    echo "    ${G}✓${N}  clean -- nothing to snapshot"
+  else
+    git status --short | sed 's/^/    /'
+    echo "    ${D}(run: arc sot snapshot)${N}"
+  fi
+
+  echo -e "\n  symlink integrity:"
+  check_drift | sed 's/^/  /'
+
+  echo -e "\n  non-symlinkable drift (crontab/systemd/sudoers):"
+  local live_cron repo_cron
+  live_cron=$(crontab -l 2>/dev/null)
+  repo_cron=$(cat "$REPO/crontab.txt" 2>/dev/null)
+  if [[ "$live_cron" == "$repo_cron" ]]; then
+    echo "    ${G}✓${N}  crontab matches last snapshot"
+  else
+    echo "    ${Y}!${N}  crontab has changed since last snapshot"
+  fi
+  echo -e "\n$HR"
+}
+
+# ── pull: bring THIS machine's install up to date with the repo ───────────
+cmd_pull() {
+  echo -e "$HR\n  ${C}${B}arc sot pull${N}\n$HR\n"
+  cd "$REPO" 2>/dev/null || { echo "${R}✗${N} repo missing -- clone first: git clone git@github.com:kwasikontor45/arc-toolkit.git $REPO"; return 1; }
+
+  if [[ -n "$(git status --porcelain)" ]]; then
+    echo "  ${R}✗${N}  uncommitted local changes -- snapshot or stash first (arc sot snapshot)"
+    return 1
+  fi
+  echo -n "  git pull... "
+  git pull -q origin main && echo "${G}done${N}" || { echo "${R}failed${N}"; return 1; }
+
+  echo -e "\n  installing scripts (symlinks):"
+  mkdir -p "$LOCAL_BIN"
+  for name in $(_tracked_scripts); do
+    ln -sf "$BIN/$name" "$LOCAL_BIN/$name"
+  done
+  echo "    ${G}✓${N}  $(_tracked_scripts | wc -l) scripts linked into $LOCAL_BIN"
+
+  echo -e "\n  applying permissions:"
+  while read -r mode name; do
+    [[ "$mode" =~ ^# ]] && continue
+    chmod "$mode" "$BIN/$name" 2>/dev/null
+  done < "$BIN/perms.txt"
+  echo "    ${G}✓${N}  perms.txt applied"
+
+  echo -e "\n  the following need your explicit go-ahead (system-level changes):"
+  echo "    ${D}arc sot install-crontab${N}   -- review + install crontab.txt"
+  echo "    ${D}arc sot install-systemd${N}   -- install + enable systemd units (needs sudo)"
+  echo "    ${D}arc sot install-sudoers${N}   -- install sudoers fragments (needs sudo, visudo -c validated)"
+  echo "    ${D}arc sot install-autostart${N} -- install XDG autostart entries + khaos-lab's app-menu entry"
+  echo -e "\n$HR"
+}
+
+cmd_install_crontab() {
+  echo -e "$HR\n  ${C}${B}arc sot install-crontab${N}\n$HR\n"
+  echo "  current crontab:"
+  crontab -l 2>/dev/null | sed 's/^/    /' || echo "    (none)"
+  echo -e "\n  repo's crontab.txt:"
+  sed 's/^/    /' "$REPO/crontab.txt"
+  echo
+  read -r -p "  Replace your current crontab with the repo's version? [y/N] " ans
+  if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
+    crontab "$REPO/crontab.txt" && echo "  ${G}✓${N}  installed"
+  else
+    echo "  ${D}·${N}  skipped -- merge by hand if you want to keep both sets"
+  fi
+}
+
+cmd_install_sudoers() {
+  echo -e "$HR\n  ${C}${B}arc sot install-sudoers${N}\n$HR\n"
+  for f in "$REPO"/sudoers/*; do
+    local n; n=$(basename "$f")
+    echo -n "  $n: "
+    if sudo visudo -c -f "$f" >/dev/null 2>&1; then
+      sudo install -m 0440 -o root -g root "$f" "/etc/sudoers.d/$n" \
+        && echo "${G}✓ installed${N}" || echo "${R}✗ install failed${N}"
+    else
+      echo "${R}✗ fails visudo -c -- NOT installed, check the file${N}"
+    fi
+  done
+  sudo visudo -c >/dev/null 2>&1 && echo "  ${G}✓${N}  full sudoers config still parses clean" \
+    || echo "  ${R}✗${N}  sudoers config has a problem -- check: sudo visudo -c"
+}
+
+cmd_install_systemd() {
+  echo -e "$HR\n  ${C}${B}arc sot install-systemd${N}\n$HR\n"
+  mkdir -p "$HOME/.config/systemd/user"
+  for f in "$REPO"/systemd/system/*; do
+    local n; n=$(basename "$f")
+    [[ "$n" == "enabled-state.txt" ]] && continue
+    sudo install -m 0644 -o root -g root "$f" "/etc/systemd/system/$n" && echo "  ${G}✓${N} (system) $n"
+  done
+  for f in "$REPO"/systemd/user/*; do
+    cp "$f" "$HOME/.config/systemd/user/$(basename "$f")" && echo "  ${G}✓${N} (user) $(basename "$f")"
+  done
+  sudo systemctl daemon-reload
+  systemctl --user daemon-reload
+  echo -e "\n  applying enabled/disabled state from the source machine:"
+  while read -r scope state unit; do
+    [[ "$scope" =~ ^# ]] && continue
+    if [[ "$state" == "enabled" ]]; then
+      if [[ "$scope" == "system" ]]; then
+        sudo systemctl enable --now "$unit" >/dev/null 2>&1 && echo "    ${G}✓${N} enabled (system) $unit"
+      else
+        systemctl --user enable --now "$unit" >/dev/null 2>&1 && echo "    ${G}✓${N} enabled (user) $unit"
+      fi
+    fi
+  done < "$REPO/systemd/enabled-state.txt"
+  echo "  ${D}(static/disabled units left as-is -- e.g. arc-break.service is deliberately manual-start-only)${N}"
+}
+
+cmd_install_autostart() {
+  echo -e "$HR\n  ${C}${B}arc sot install-autostart${N}\n$HR\n"
+  mkdir -p "$HOME/.config/autostart" "$HOME/.local/share/applications" \
+    "$HOME/.local/share/khaos-lab" "$HOME/.local/share/icons/hicolor/256x256/apps"
+  for f in "$REPO"/autostart/*; do
+    cp "$f" "$HOME/.config/autostart/$(basename "$f")" && echo "  ${G}✓${N} $(basename "$f")"
+  done
+  cp "$REPO"/desktop-entries/khaos-lab.desktop "$HOME/.local/share/applications/"
+  cp "$REPO"/assets/khaos-lab/*.png "$HOME/.local/share/khaos-lab/"
+  cp "$REPO"/assets/icons/khaos-lab-hicolor-256.png "$HOME/.local/share/icons/hicolor/256x256/apps/khaos-lab.png"
+  update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+  echo "  ${G}✓${N}  khaos-lab app-menu entry + icons installed"
+  local rc
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [[ -f "$rc" ]] || continue
+    grep -q 'source "\$HOME/.config/arc/shell-init.sh"' "$rc" 2>/dev/null || \
+      echo -e '\nsource "$HOME/.config/arc/shell-init.sh"' >> "$rc"
+  done
+  mkdir -p "$HOME/.config/arc"
+  cp "$REPO"/config/greeting.sh "$REPO"/config/shell-init.sh "$REPO"/config/motd "$HOME/.config/arc/"
+  echo "  ${G}✓${N}  shell greeting wired into .bashrc/.zshrc"
+}
+
+# ── bootstrap: fresh machine, nothing installed yet ────────────────────────
+cmd_bootstrap() {
+  local src="${1:-git@github.com:kwasikontor45/arc-toolkit.git}"
+  echo -e "$HR\n  ${C}${B}arc sot bootstrap${N}  —  fresh-machine setup\n$HR\n"
+  if [[ -d "$REPO/.git" ]]; then
+    echo "  ${Y}!${N}  $REPO already exists -- use 'arc sot pull' instead"
+    return 1
+  fi
+  mkdir -p "$(dirname "$REPO")"
+  echo "  cloning from: $src"
+  git clone "$src" "$REPO" || { echo "  ${R}✗${N} clone failed"; return 1; }
+  cmd_pull
+  echo -e "\n  Run these next, in order, reviewing each before confirming:"
+  echo "    arc sot install-sudoers"
+  echo "    arc sot install-systemd"
+  echo "    arc sot install-crontab"
+  echo "    arc sot install-autostart"
+  echo -e "\n  ${Y}Cannot be automated -- do these yourself:${N}"
+  echo "    · SSH keys (~/.ssh/id_ed25519*) -- generate or restore from your own backup"
+  echo "    · GitHub auth: gh auth login (both accounts if you use the k6 mirror pattern)"
+  echo "    · VPN credentials (ProtonVPN app login)"
+  echo "    · The LUKS passphrase for your encrypted USB vault, if you use one"
+  echo "    · Any .env files docker-compose labs read (soc-lab/.env etc.) -- never in this repo, by design"
+  echo -e "\n$HR"
+}
+
+case "${1:-}" in
+  snapshot)          cmd_snapshot ;;
+  pull)               cmd_pull ;;
+  status)             cmd_status ;;
+  drift)              check_drift ;;
+  bootstrap)          cmd_bootstrap "${2:-}" ;;
+  install-crontab)    cmd_install_crontab ;;
+  install-sudoers)    cmd_install_sudoers ;;
+  install-systemd)    cmd_install_systemd ;;
+  install-autostart)  cmd_install_autostart ;;
+  '')
+    echo -e "$HR\n  ${C}${B}arc sot${N}  —  canonical SOT for this user's tooling\n$HR\n"
+    echo "  ${D}arc sot snapshot${N}          capture live state, commit, push, mirror to USB"
+    echo "  ${D}arc sot pull${N}              bring this machine's scripts up to date with the repo"
+    echo "  ${D}arc sot status${N}            show drift (uncommitted edits, broken symlinks, cron drift)"
+    echo "  ${D}arc sot bootstrap [src]${N}   fresh machine: clone + install (defaults to GitHub, pass a path for USB)"
+    echo -e "\n$HR"
+    ;;
+  *)
+    echo "${R}unknown:${N} arc sot $1"
+    ;;
+esac

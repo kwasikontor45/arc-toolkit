@@ -1,0 +1,6 @@
+[Unit]
+Description=arc-rkhunter-check — daily rootkit scan, notifies only on findings
+
+[Service]
+Type=oneshot
+ExecStart=/home/architect-of-chaos/.local/bin/arc-rkhunter-check

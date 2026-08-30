@@ -91,26 +91,39 @@ case "$CMD" in
         fi
         PROFILE=$(_profile_id)
         [ -n "$PROFILE" ] && echo "  profile:         $PROFILE" || echo "  profile:         not set"
-        UPSTREAM=$(resolvectl status 2>/dev/null | grep -E 'DNS Servers' | head -1 | awk '{print $NF}')
-        echo "  upstream:        ${UPSTREAM:-unknown}"
-        if [ "$UPSTREAM" = "127.0.0.1" ]; then
+        # resolvectl (systemd-resolved) is no longer present on this machine
+        # as of some point after 2026-08-02 -- nextdns manages
+        # /etc/resolv.conf directly instead now, so that's the real source
+        # of truth for "what resolver does this box actually use," not a
+        # tool that no longer exists.
+        RESOLVER=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null)
+        echo "  resolv.conf:     ${RESOLVER:-none}"
+        if [ "$RESOLVER" = "127.0.0.1" ]; then
             echo "  mode:            NextDNS ACTIVE"
-        elif [ -n "$UPSTREAM" ]; then
-            echo "  mode:            direct → $UPSTREAM"
+        elif [ -n "$RESOLVER" ]; then
+            echo "  mode:            direct → $RESOLVER"
         else
             echo "  mode:            unknown"
         fi
-        resolvectl status 2>/dev/null | grep -E 'Current DNS|DNS Servers' | head -2 | sed 's/^/  /'
         echo "  ────────────────────────────────────────"
         echo ""
         ;;
 
     flush)
-        echo "  flushing DNS cache..."
-        if sudo resolvectl flush-caches 2>&1; then
-            echo "  ✓  cache cleared"
+        # nextdns's own caching is disabled on this profile (cache-size 0) --
+        # confirmed via `nextdns config`, not assumed -- and resolvectl
+        # (which used to own the OS-level cache-flush path) doesn't exist on
+        # this system anymore. There is genuinely no DNS cache layer left to
+        # flush. Closest real, honest equivalent: restart the daemon, which
+        # clears any in-memory state and forces fresh upstream connections.
+        echo "  no DNS cache layer exists to flush (nextdns caching is off, resolvectl is gone) —"
+        echo "  restarting the daemon instead, the closest real equivalent..."
+        sudo systemctl restart nextdns
+        sleep 1
+        if systemctl is-active --quiet nextdns 2>/dev/null; then
+            echo "  ✓  nextdns restarted"
         else
-            echo "  ✗  flush failed"
+            echo "  ✗  restart failed — run: arc dns status"
         fi
         ;;
 
@@ -133,59 +146,66 @@ case "$CMD" in
         else
             echo "  daemon:    STOPPED"
         fi
-        # Check every link that actually holds +DefaultRoute DNS scope, not
-        # a single link inferred from `ip route show default` -- a per-link
-        # DNS override (from DHCP, if NetworkManager's ipv4.ignore-auto-dns
-        # is "no") takes priority over the Global 127.0.0.1 fallback for
-        # actual resolution. Checking Global alone gave a false "wired"
-        # reading on 2026-07-31 while queries leaked to the ISP in the clear.
-        #
-        # Inferring "the" DNS link from the main routing table also breaks
-        # under policy-routed VPN clients (e.g. Proton's WireGuard CLI): the
-        # main table keeps the physical NIC as default for compatibility
-        # even while a VPN interface is the real +DefaultRoute DNS scope, so
-        # that approach checked the wrong link entirely once VPN was up
-        # (2026-07-31). Multiple links (docker0, a VPN iface, etc.) can hold
-        # +DefaultRoute at once -- flag a leak if ANY of them isn't 127.0.0.1.
-        #
-        # resolvectl only prints "Current DNS Server:" when a link has
-        # multiple servers to disambiguate; with a single server (our normal
-        # steady state -- just the NextDNS stub) it prints only
-        # "DNS Servers:", so fall back to that when the former is absent.
-        DEFAULT_LINKS=$(resolvectl status 2>/dev/null | awk '
-            /^Link [0-9]+ \(/ {
-                if (iface != "" && has_default) print iface, (server != "" ? server : "?")
-                s=$0; sub(/^.*\(/,"",s); sub(/\).*$/,"",s); iface=s
-                has_default=0; server=""
-                next
-            }
-            /\+DefaultRoute/ { has_default=1 }
-            /Current DNS Server/ { server=$NF }
-            /DNS Servers/ && server=="" { server=$NF }
-            END { if (iface != "" && has_default) print iface, (server != "" ? server : "?") }
-        ')
-        LEAKS=""
-        WIRED=""
-        while read -r ln srv; do
-            [ -z "$ln" ] && continue
-            if [ "$srv" = "127.0.0.1" ]; then
-                WIRED="${WIRED}${ln} "
-            else
-                LEAKS="${LEAKS}${ln}→${srv:-none} "
-            fi
-        done <<< "$DEFAULT_LINKS"
-        if [ -n "$LEAKS" ]; then
-            echo "  routing:   NOT wired  (leaking via: ${LEAKS}— real queries may bypass NextDNS)"
-        elif [ -n "$WIRED" ]; then
-            echo "  routing:   wired → NextDNS  (link: ${WIRED% })"
+        RESOLVER=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null)
+        if [ "$RESOLVER" = "127.0.0.1" ]; then
+            echo "  resolv.conf: wired → NextDNS stub"
         else
-            echo "  routing:   NOT wired  (no link holds default DNS scope)"
+            echo "  resolv.conf: NOT wired  (nameserver: ${RESOLVER:-none} — queries may bypass NextDNS)"
+        fi
+        # Real leak check, rewritten 2026-08-22 -- resolvectl (which the old
+        # version of this check depended on entirely) no longer exists on
+        # this system. Rewritten around ground truth instead of a specific
+        # tool: if a WireGuard-type interface is up (ProtonVPN or similar),
+        # confirm nextdns's own live upstream connections are actually
+        # sourced from that tunnel's IP, not the physical interface's --
+        # verified this exact technique live against a real ProtonVPN
+        # connection on 2026-08-22 (source IP correctly matched proton0's
+        # assigned address). Tool-independent: works whether or not
+        # systemd-resolved, NetworkManager, or any specific VPN client is
+        # what's managing the network at the time.
+        VPN_IFACE=$(ip -o link show type wireguard 2>/dev/null | awk -F': ' '{print $2}' | head -1)
+        NEXTDNS_PID=$(systemctl show nextdns --property=MainPID --value 2>/dev/null)
+        if [ -n "$VPN_IFACE" ]; then
+            VPN_IP=$(ip -4 -o addr show dev "$VPN_IFACE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+            if [ -z "$NEXTDNS_PID" ] || [ "$NEXTDNS_PID" = "0" ]; then
+                echo "  routing:   can't check — nextdns daemon not running"
+            else
+                # Confirmed live (2026-08-22): unprivileged ss -tnp doesn't
+                # reliably show the process-owner column on this system --
+                # needs sudo -n unconditionally, no unprivileged-first
+                # attempt (that silently returned empty rather than an
+                # error, which had masked this). Grep "ESTAB" from the
+                # plain (unfiltered) command rather than `ss ... state
+                # established`, which drops the leading State column from
+                # its output and shifts every field left by one -- $4 would
+                # silently grab the PEER address instead of Local, a real
+                # bug caught live the first time this ran. IPv4-only (-4):
+                # IPv6 addresses are bracketed with their own internal
+                # colons ([addr]:port), which the IPv4-style "cut -d: -f1"
+                # mangles, and this VPN client's IPv6 traffic never
+                # establishes anyway (blocked by its own leak-prevention
+                # dummy interface).
+                CONN_SRCS=$(sudo -n ss -4tnp 2>/dev/null | grep "ESTAB.*pid=$NEXTDNS_PID" | awk '{print $4}' | cut -d: -f1 | sort -u)
+                N_SRCS=$(printf '%s\n' "$CONN_SRCS" | grep -c .)
+                if [ -z "$CONN_SRCS" ]; then
+                    echo "  routing:   VPN up ($VPN_IFACE) — no active nextdns connections to check right now, try after a query"
+                elif [ "$N_SRCS" -eq 1 ] && [ "$CONN_SRCS" = "$VPN_IP" ]; then
+                    echo "  routing:   wired → all NextDNS traffic correctly routed through $VPN_IFACE ($VPN_IP)"
+                elif printf '%s\n' "$CONN_SRCS" | grep -qx "$VPN_IP"; then
+                    OTHER=$(printf '%s\n' "$CONN_SRCS" | grep -vx "$VPN_IP" | tr '\n' ',' | sed 's/,$//')
+                    echo "  routing:   PARTIAL LEAK — some NextDNS connections still on ${OTHER} (pre-dates the VPN connecting, TCP doesn't migrate) — fix: arc dns restart"
+                else
+                    echo "  routing:   NOT wired  — VPN is up but nextdns traffic is sourced from ${CONN_SRCS} instead of ${VPN_IFACE}'s ${VPN_IP} (real leak)"
+                fi
+            fi
+        else
+            echo "  routing:   no VPN active — NextDNS traffic goes via the physical interface (expected)"
         fi
         result=$(dig +short +time=3 nextdns.io @127.0.0.1 2>/dev/null | head -1)
-        if [ -n "$result" ]; then
+        if printf '%s' "$result" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "  query:     OK  ($result)"
         else
-            echo "  query:     FAILED"
+            echo "  query:     FAILED${result:+ ($result)}"
         fi
         echo "  ────────────────────────────────────────"
         echo ""

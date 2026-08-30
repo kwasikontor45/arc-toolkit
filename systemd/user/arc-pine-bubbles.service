@@ -1,0 +1,12 @@
+[Unit]
+Description=arc-pine-bubbles — bubble notification renderer for arc-pine's watcher family
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/arc-pine-bubbles
+Restart=on-failure
+RestartSec=3
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=default.target

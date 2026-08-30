@@ -1,0 +1,13 @@
+[Unit]
+Description=arc-clamav-watch — desktop notifications for real ClamAV on-access detections
+Requires=clamav-clamonacc.service
+After=clamav-clamonacc.service
+
+[Service]
+Type=simple
+ExecStart=/home/architect-of-chaos/.local/bin/arc-clamav-watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

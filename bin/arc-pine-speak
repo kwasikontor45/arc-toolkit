@@ -10,58 +10,26 @@ Usage:
   arc-pine-speak "text"     — speak arbitrary text directly (low-level,
                                bypasses the notification pipeline entirely)
 """
-import json
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
-CONFIG_PATH = Path.home() / ".config/arc-pine/config.json"
-PIPER_BIN   = Path.home() / ".local/bin/piper"
-PIPER_VOICE = Path.home() / ".local/share/piper/voices/en_US-lessac-medium.onnx"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _arc_pine_common as pine
 
-DEFAULT_CONFIG = {
-    "sound_enabled": True,
-    "sound_file": "/usr/share/sounds/freedesktop/stereo/bell.oga",
-    "speak_enabled": True,
-    "speak_apps": ["arc-break"],
-    "ignored_apps": [],
-}
-
-
-def load_config():
-    if CONFIG_PATH.exists():
-        try:
-            with open(CONFIG_PATH) as f:
-                return {**DEFAULT_CONFIG, **json.load(f)}
-        except Exception:
-            pass
-    return DEFAULT_CONFIG.copy()
-
-
-def save_config(cfg):
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
-
-
-def speak_direct(text):
-    if not PIPER_BIN.exists() or not PIPER_VOICE.exists():
-        print("piper not installed — nothing to speak with", file=sys.stderr)
-        sys.exit(1)
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        wav_path = tmp.name
-    subprocess.run(
-        [str(PIPER_BIN), "-m", str(PIPER_VOICE), "-f", wav_path],
-        input=text.encode(), capture_output=True, timeout=15,
-    )
-    subprocess.run(["paplay", wav_path], capture_output=True, timeout=30)
-    Path(wav_path).unlink(missing_ok=True)
+# speak_direct() used to be its own local implementation here -- a plain
+# `subprocess.run(["paplay", wav_path], ...)` with none of pine.speak()'s
+# WirePlumber force-unmute workaround. Real, live bug this carried as a
+# result: this low-level bypass mode was still exposed to the exact
+# "paplay reports success, WirePlumber has it permanently remembered as
+# muted, total silence" incident that was already found and fixed twice
+# elsewhere (arc-pined, arc-pine-notify) -- just never here, since it was
+# never sharing their fix. Refactored 2026-08-26 onto the shared module for
+# exactly this reason, not just to deduplicate.
 
 
 def main():
     args = sys.argv[1:]
-    cfg = load_config()
+    cfg = pine.load_config()
 
     if not args:
         print(f"speak_enabled: {cfg.get('speak_enabled', True)}")
@@ -71,14 +39,17 @@ def main():
     arg = args[0]
     if arg == "on":
         cfg["speak_enabled"] = True
-        save_config(cfg)
+        pine.save_config(cfg)
         print("TTS enabled")
     elif arg == "off":
         cfg["speak_enabled"] = False
-        save_config(cfg)
+        pine.save_config(cfg)
         print("TTS disabled")
     else:
-        speak_direct(" ".join(args))
+        if not pine.PIPER_BIN.exists() or not pine.PIPER_VOICE.exists():
+            print("piper not installed — nothing to speak with", file=sys.stderr)
+            sys.exit(1)
+        pine.speak(" ".join(args))
 
 
 if __name__ == "__main__":

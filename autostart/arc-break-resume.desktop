@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=arc-break resume check
+Comment=Only starts arc-break if a real session was already running before shutdown/reboot -- never starts a fresh one (manual-start-only policy)
+Exec=/home/architect-of-chaos/.local/bin/arc-break boot-check
+X-GNOME-Autostart-Delay=5
+NoDisplay=true

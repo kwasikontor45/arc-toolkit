@@ -36,11 +36,11 @@ def _user_home() -> Path:
     import pwd
     euid = os.getuid()
     if euid != 0:
-        # Real effective user -- covers `sudo -u <other>` de-escalation from a
-        # root-native session (e.g. an admin Claude Code session running as
-        # root). SUDO_USER always names who *typed* sudo, not who the process
-        # now runs as, so for `sudo -u <other>` it's backwards for this case.
-        # Trust the euid first.
+        # Real effective user -- covers `sudo -u architect-of-chaos` de-escalation
+        # from a root-native session (this machine's Claude Code sessions run as
+        # root). SUDO_USER always names who *typed* sudo, not who the process now
+        # runs as, so for `sudo -u <other>` it's backwards for this case -- it'd
+        # say "root" even though euid is correctly 1000 here. Trust the euid first.
         try:
             return Path(pwd.getpwuid(euid).pw_dir)
         except KeyError:
@@ -252,31 +252,6 @@ def is_agent_id(aid: str) -> bool:
     return aid in ("claude", "kimi") or bool(os.environ.get("AGENT_ID"))
 
 
-def _stale_claude_session_hint() -> str:
-    """If CLAUDE_CODE_SESSION_ID/CLAUDE_CODE_BRIDGE_SESSION_ID is set but the
-    Claude Code process that originally set it (CLAUDE_PID) is no longer
-    running, this is almost always a terminal emulator that was launched
-    from inside a Claude Code session and then kept open long after that
-    session exited -- env vars are inherited at fork time and don't expire
-    on their own, so every new tab/window it spawns keeps looking like an
-    agent forever. Confirmed live 2026-08-06: a genuinely fresh mate-terminal
-    tab still showed CLAUDE_CODE_SESSION_ID from a session whose PID was
-    long dead. Returns a one-line hint, or "" if nothing looks stale."""
-    pid = os.environ.get("CLAUDE_PID")
-    if not pid:
-        return ""
-    comm_path = Path(f"/proc/{pid}/comm")
-    try:
-        if not comm_path.exists() or "claude" not in comm_path.read_text().strip().lower():
-            return (f"{D}hint: CLAUDE_PID={pid} isn't a running Claude process -- this looks like a "
-                    f"stale env var inherited from a terminal emulator launched inside an old Claude "
-                    f"Code session, not a live agent. Fully close this terminal window (not just the "
-                    f"tab) and open a fresh one.{N}")
-    except (OSError, ValueError):
-        pass
-    return ""
-
-
 def run(cmd: list, check: bool = False, capture: bool = True) -> tuple:
     try:
         if capture:
@@ -449,8 +424,6 @@ def cmd_gate_check() -> bool:
         print("bypass active")
         return True
 
-    init_db()
-
     gp_ok = _gameplan_today_has_starting()
     today = datetime.now().strftime("%Y-%m-%d")
     aid = agent_id()
@@ -517,9 +490,6 @@ def cmd_gate_bypass():
         # 2026-07-30, user's explicit call. Matching uid alone is not
         # sufficient here.
         print(f"{R}✗{N}  refused — agent bypass is never allowed, regardless of uid. Detected: {aid}")
-        hint = _stale_claude_session_hint()
-        if hint:
-            print(f"  {hint}")
         _notify("SOP gate bypass REFUSED", f"Agent tried to bypass: {aid} (uid {os.getuid()}, {_current_username()})", urgency="critical")
         sys.exit(1)
     if not _is_gate_owner():
@@ -536,9 +506,6 @@ def cmd_gate_enable():
     aid = agent_id()
     if is_agent_id(aid):
         print(f"{R}✗{N}  refused — agent cannot manage gate enforcement, regardless of uid. Detected: {aid}")
-        hint = _stale_claude_session_hint()
-        if hint:
-            print(f"  {hint}")
         _notify("SOP gate enable REFUSED", f"Agent tried to re-enable: {aid} (uid {os.getuid()}, {_current_username()})", urgency="critical")
         sys.exit(1)
     if not _is_gate_owner():

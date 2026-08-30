@@ -1,27 +1,29 @@
 #!/usr/bin/env bash
-# arc-heal — self-healing watchdog for a personal Linux workstation.
-# Standalone: no dependency on the arc script or any other object — safe to
-# delete alone, safe to run alone.
+# arc-heal — self-healing watchdog for the real architecture (Cloudflare,
+# local machine). Standalone: no dependency on the arc script or any other
+# object — safe to delete alone, safe to run alone.
+#
+# AWS wiring fully removed 2026-08-17 -- py-bite (the only AWS workload) was
+# migrated off to PythonAnywhere and the EC2 instance terminated. No more
+# --profile arc-killswitch calls, no EC2 lookups, no py-bite SSH key anywhere
+# in this file.
 #
 # Philosophy (deliberately NOT Chaos Monkey): this never breaks anything on
 # its own. It checks real state, fixes what's safe and mechanical to fix
 # (restart a stopped service, remount the vault), and only ever FLAGS
 # anything that needs a real decision or a password.
-#
-# Customize DNS_HOSTS and CRON_WATCH below for your own setup -- both are
-# empty by default so this runs cleanly with zero configuration.
 set -uo pipefail
 
 # Cron runs this without XDG_RUNTIME_DIR — an interactive login session sets it
 # automatically, cron doesn't. Without it, pactl can't find the user's
 # PulseAudio socket (/run/user/<uid>/pulse/native) and silently returns
 # nothing, which check_audio_profile below misread as "no sound card found"
-# even when audio is completely healthy.
+# even when audio is completely healthy — found 2026-08-02, false positive,
+# not a real hardware/audio issue.
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 
 # SOP gate bridge: same audit policy as interactive shells, non-blocking --
-# never gates automation, just logs it under the same DB the gate reads (see
-# arc-sop). No-op if arc-sop isn't installed.
+# never gates automation, just logs it under the same DB the gate reads.
 { command -v arc-sop >/dev/null 2>&1 && arc-sop ack-auto "arc-heal" >/dev/null 2>&1; } || true
 
 LOG_DIR="$HOME/khaos-lab/arc-heal-log"
@@ -35,26 +37,182 @@ FINDINGS=()   # each: "OK|HEALED|FLAG::component::message"
 
 note() { FINDINGS+=("$1"); }
 
-_notify() { notify-send -u "$1" -i "$2" "arc-heal" "$3" 2>/dev/null || true; }
+# Rewired 2026-08-22 to call arc-pine-notify instead of notify-send --
+# same reasoning as the other watchers (see arc-suricata-watch), plus it
+# means arc-heal's own findings get logged into the same shared history.
+# Called directly, no su wrapping -- unlike the root-run watcher services,
+# arc-heal runs via this user's own crontab (confirmed: `crontab -l`, not
+# `sudo crontab -l`), so it's already the right user. The socket
+# arc-pine-notify talks to doesn't need X11/DISPLAY at all (it's a plain
+# Unix socket, not an X connection) -- only sound/voice inside
+# arc-pine-notify need DISPLAY indirectly via paplay, and XDG_RUNTIME_DIR
+# (already exported at the top of this file) is what those actually need.
+_notify() { /home/architect-of-chaos/.local/bin/arc-pine-notify "$1" arc-heal "$3" "" 2>/dev/null || true; }
 
-# Hostnames to check for a basic 200/reachable response -- e.g. sites you
-# host, tunnels, or Pages/Workers deployments. Empty by default.
-DNS_HOSTS=()
+# ── py-bite: now a fully-managed PythonAnywhere app, not our EC2 box ───────
+# AWS instance i-0555e364aad4b6296 terminated 2026-08-17 (migrated off AWS
+# entirely). No more Docker container to restart, no SSH key, no EC2 lookup --
+# PythonAnywhere manages the process itself. This is now a plain reachability
+# check through the real request path: py-bite.kwasikontor.dev -> Cloudflare
+# Page Rule redirect -> b6ones6aw.pythonanywhere.com.
+check_py_bite() {
+  local http; http=$(curl -skL -o /dev/null -w "%{http_code}" --max-time 8 "https://py-bite.kwasikontor.dev" 2>/dev/null)
+  if [[ "$http" == "200" ]]; then note "OK::py-bite::site 200"; return; fi
+  note "FLAG::py-bite::site returned HTTP ${http:-no response} -- check PythonAnywhere dashboard (b6ones6aw) and the Cloudflare Page Rule"
+}
 
 check_local_stack() {
-  systemctl is-active cloudflared >/dev/null 2>&1 && note "OK::cloudflared::active" \
-    || { systemctl restart cloudflared 2>/dev/null && note "HEALED::cloudflared::was down, restarted"; }
+  # cloudflared check removed 2026-08-18 -- no cloudflared systemd unit has
+  # existed on this machine for a long time (user dropped the CF tunnel
+  # requirement earlier this session), so this always failed and the
+  # `systemctl restart cloudflared` fallback triggered a real polkit password
+  # prompt on every single arc-heal run (every 3h via cron, plus every manual
+  # invocation) trying to restart a unit that was never registered -- polkit
+  # authorizes the *action* before checking whether the unit exists at all.
   systemctl is-active fail2ban >/dev/null 2>&1 && note "OK::fail2ban::active" || note "FLAG::fail2ban::not active, needs sudo to fix — can't self-heal"
   nextdns status 2>/dev/null | grep -q running && note "OK::nextdns::running" || note "FLAG::nextdns::not running, check 'arc dns status'"
-  if [[ -d /mnt/storage ]]; then note "OK::usb-vault::mounted"; else note "OK::usb-vault::not mounted (fine if unplugged on purpose)"; fi
+  if [[ -d /mnt/storage/dev-notes ]]; then note "OK::usb-vault::mounted"; else note "OK::usb-vault::not mounted (fine if unplugged on purpose)"; fi
 }
 
 check_dns() {
-  [[ ${#DNS_HOSTS[@]} -eq 0 ]] && return
-  for h in "${DNS_HOSTS[@]}"; do
+  # ssh.kontor.studio / desktop.kontor.studio removed 2026-08-22 -- both
+  # are part of the remote-access setup the user explicitly backlogged
+  # (no live cloudflared tunnel exists right now), and both were false
+  # positives here: a Cloudflare Access application gates the request at
+  # the edge and returns a real-looking response (302 to a login page)
+  # regardless of whether anything is actually listening behind it, so
+  # this check was reporting "OK" for a feature that isn't live. Confirmed
+  # live 2026-08-22, not assumed.
+  for h in athena.kontor.studio kontor.studio; do
     local code; code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 6 "https://${h}" 2>/dev/null)
     [[ -n "$code" && "$code" != "000" ]] && note "OK::dns:${h}::responds ($code)" || note "FLAG::dns:${h}::no response — check DNS/tunnel/CF Pages status directly"
   done
+}
+
+check_dns_leak() {
+  # Real gap closed 2026-08-22: nextdns keeps long-lived upstream
+  # connections open, and they don't migrate to a newly-appeared route
+  # just because one exists -- connecting/disconnecting the VPN can leave
+  # a genuine mixed connection pool (some queries still flowing via the
+  # physical interface, bypassing NextDNS) even while a basic "is nextdns
+  # running" check keeps reporting healthy. Reuses arc-dns's own
+  # ground-truth check rather than duplicating the logic.
+  local out
+  out=$("$HOME/.local/bin/arc-dns" check 2>/dev/null)
+  if echo "$out" | grep -q "NOT wired\|PARTIAL LEAK"; then
+    sudo -n systemctl restart nextdns 2>/dev/null
+    sleep 2
+    out=$("$HOME/.local/bin/arc-dns" check 2>/dev/null)
+    if echo "$out" | grep -q "NOT wired\|PARTIAL LEAK"; then
+      note "FLAG::dns-leak::NextDNS traffic not fully routed through the VPN tunnel, restart didn't fix it — run: arc dns check"
+    else
+      note "HEALED::dns-leak::NextDNS had a real leak (stale pre-VPN connections), restart fixed it"
+    fi
+  else
+    note "OK::dns-leak::none"
+  fi
+}
+
+check_mirror_freshness() {
+  # Real gap found 2026-08-26: `arc`'s own help text calls this "the
+  # automated sync-mirrors job", but nothing on this machine actually
+  # schedules it (no cron entry, no systemd timer) -- found the hard way
+  # while auditing scripts for this same principle, not because anyone
+  # noticed. Last real run on record was 8 days stale at the time this was
+  # written. Self-heals the same way check_cron_health does: if it's been
+  # too long, just run it directly instead of only reporting the gap --
+  # sync-mirrors is idempotent (a clean k45==k6 repo is just logged OK, no
+  # side effect) and safe to run out of band.
+  local logf="$HOME/.local/share/sync-mirrors/sync-mirrors.log"
+  local max_hours=48
+  if [[ ! -f "$logf" ]]; then
+    note "FLAG::mirrors::no sync-mirrors log at all — never run? try: sync-mirrors"
+    return
+  fi
+  local last_line last_epoch now_epoch age_hours
+  last_line=$(grep "=== sync-mirrors start ===" "$logf" | tail -1)
+  last_epoch=$(date -d "$(echo "$last_line" | grep -oP '(?<=\[)[^\]]+')" +%s 2>/dev/null || echo 0)
+  now_epoch=$(date +%s)
+  age_hours=$(( (now_epoch - last_epoch) / 3600 ))
+  if (( last_epoch > 0 && age_hours <= max_hours )); then
+    note "OK::mirrors::last synced ${age_hours}h ago"
+    return
+  fi
+  local orig_age_hours=$age_hours
+  if command -v sync-mirrors >/dev/null 2>&1 || [[ -x "$HOME/.local/bin/sync-mirrors" ]]; then
+    "$HOME/.local/bin/sync-mirrors" >/dev/null 2>&1
+    last_line=$(grep "=== sync-mirrors start ===" "$logf" | tail -1)
+    last_epoch=$(date -d "$(echo "$last_line" | grep -oP '(?<=\[)[^\]]+')" +%s 2>/dev/null || echo 0)
+    local new_age_hours=$(( ($(date +%s) - last_epoch) / 3600 ))
+    if (( last_epoch > 0 && new_age_hours <= 1 )); then
+      note "HEALED::mirrors::was ${orig_age_hours}h stale (nothing schedules this at all — worth deciding whether to add a timer), ran it directly — fresh now"
+    else
+      note "FLAG::mirrors::${orig_age_hours}h stale, ran it directly, still no fresh log entry — check: sync-mirrors"
+    fi
+  else
+    note "FLAG::mirrors::${orig_age_hours}h stale and sync-mirrors isn't executable — can't self-heal"
+  fi
+}
+
+check_watcher_daemons() {
+  # Real gap found 2026-08-26: none of these always-on watcher daemons were
+  # ever checked for "is it actually still running" -- if one silently
+  # died (crash, OOM, whatever), nothing here would have noticed. Self-heal
+  # is a plain `systemctl restart` -- safe, these are all supervised,
+  # idempotent services with no state to lose by restarting.
+  #
+  # System-scope restarts need the NOPASSWD rule in
+  # /etc/sudoers.d/arc-heal-watchers -- if that isn't in place yet (pending
+  # user approval as of this writing), the restart attempt below just fails
+  # quietly and this correctly falls through to FLAG instead of HEALED, not
+  # a crash or a false OK.
+  local sys_units=(arc-clamav-watch arc-fail2ban-watch arc-sagan-watch
+                    arc-suricata-watch "arc-log-bridge@auth" "arc-log-bridge@ufw")
+  local u
+  for u in "${sys_units[@]}"; do
+    if systemctl is-active --quiet "$u"; then
+      note "OK::watcher:${u}::active"
+    else
+      sudo -n systemctl restart "$u" 2>/dev/null
+      sleep 1
+      if systemctl is-active --quiet "$u"; then
+        note "HEALED::watcher:${u}::was down, restarted"
+      else
+        note "FLAG::watcher:${u}::down, restart failed or needs sudo — check: systemctl status ${u}"
+      fi
+    fi
+  done
+
+  # User-scope, no sudo needed.
+  if systemctl --user is-active --quiet arc-pine-bubbles; then
+    note "OK::watcher:arc-pine-bubbles::active"
+  else
+    systemctl --user restart arc-pine-bubbles 2>/dev/null
+    sleep 1
+    if systemctl --user is-active --quiet arc-pine-bubbles; then
+      note "HEALED::watcher:arc-pine-bubbles::was down, restarted"
+    else
+      note "FLAG::watcher:arc-pine-bubbles::down, restart failed — check: systemctl --user status arc-pine-bubbles"
+    fi
+  fi
+}
+
+check_docker_health() {
+  # Real gap closed 2026-08-22: sagan sat crash-looping (122 restarts,
+  # stale pidfile bug) with nothing catching it until a manual check
+  # happened to notice. Docker's own restart:unless-stopped policy keeps
+  # retrying forever without ever surfacing that anything's wrong.
+  # Flags any container currently in a Restarting state (a real,
+  # in-progress crash loop) -- doesn't touch stopped/intentionally-down
+  # containers (soc-lab is meant to be stopped when not in use).
+  command -v docker >/dev/null 2>&1 || return 0
+  local restarting
+  restarting=$(docker ps --filter "status=restarting" --format '{{.Names}}' 2>/dev/null)
+  if [[ -n "$restarting" ]]; then
+    note "FLAG::docker::crash-looping: ${restarting//$'\n'/, } — check: docker logs <name>"
+  else
+    note "OK::docker::no containers crash-looping"
+  fi
 }
 
 check_audio_profile() {
@@ -63,9 +221,9 @@ check_audio_profile() {
   [[ -z "$card" ]] && { note "FLAG::audio-profile::no sound card found via pactl"; return; }
   active=$(pactl list cards 2>/dev/null | grep "Active Profile" | awk '{print $NF}')
   if [[ "$active" == "pro-audio" ]]; then
-    # Some apps (video conferencing tools especially) can push PipeWire into
-    # Pro Audio profile, which exposes raw multichannel sub-devices instead
-    # of the real speaker output -- symptom: audio far quieter than normal.
+    # Zoom (and similar apps) can push PipeWire into Pro Audio profile, which
+    # exposes raw multichannel sub-devices instead of the real speaker output
+    # — real symptom hit 2026-07-23: audio far quieter than normal. Revert.
     pactl set-card-profile "$card" output:analog-stereo+input:analog-stereo 2>/dev/null
     sleep 1
     local recheck; recheck=$(pactl list cards 2>/dev/null | grep "Active Profile" | awk '{print $NF}')
@@ -79,32 +237,76 @@ check_audio_profile() {
   fi
 }
 
-# Cron jobs to watch for staleness -- format "name:logfile:max_age_minutes".
-# Empty by default.
-CRON_WATCH=()
-
 check_cron_health() {
-  [[ ${#CRON_WATCH[@]} -eq 0 ]] && return
-  for pair in "${CRON_WATCH[@]}"; do
-    local name="${pair%%:*}"
-    local rest="${pair#*:}"
-    local logf="${rest%%:*}"
-    local max_min="${rest##*:}"
-    if [[ -f "$logf" ]]; then
-      local age_min=$(( ( $(date +%s) - $(stat -c %Y "$logf") ) / 60 ))
-      [[ "$age_min" -le "$max_min" ]] && note "OK::cron:${name}::last log ${age_min}m ago" \
-        || note "FLAG::cron:${name}::last log ${age_min}m ago (expected within ${max_min}m) — cron may be stuck"
+  # Self-heals now (2026-08-26, design principle: fix it, don't just flag
+  # it) -- if a watched cron job's log is overdue, run it directly right
+  # now instead of only reporting "cron may be stuck". These are cheap,
+  # idempotent, side-effect-safe scripts (a read-only check + maybe one
+  # notification), so running one out of band is safe. This also covers
+  # the very common real case for free -- the machine rebooted and the
+  # cron cadence hasn't caught back up yet -- without needing to tell that
+  # apart from an actually-stuck cron: running it now fixes either one.
+  local specs=(
+    "arc-cf-watch:/home/architect-of-chaos/.local/state/arc-cf-watch.log:180:/home/architect-of-chaos/.local/bin/arc-cf-watch"
+  )
+  local spec name rest logf max_min exe age_min new_age
+  for spec in "${specs[@]}"; do
+    name="${spec%%:*}"; rest="${spec#*:}"
+    logf="${rest%%:*}"; rest="${rest#*:}"
+    max_min="${rest%%:*}"; exe="${rest#*:}"
+    age_min=9999
+    [[ -f "$logf" ]] && age_min=$(( ( $(date +%s) - $(stat -c %Y "$logf") ) / 60 ))
+    if [[ "$age_min" -le "$max_min" ]]; then
+      note "OK::cron:${name}::last log ${age_min}m ago"
+      continue
+    fi
+    if [[ -x "$exe" ]]; then
+      "$exe" >/dev/null 2>&1
+      new_age=9999
+      [[ -f "$logf" ]] && new_age=$(( ( $(date +%s) - $(stat -c %Y "$logf") ) / 60 ))
+      if [[ "$new_age" -le 2 ]]; then
+        note "HEALED::cron:${name}::log was ${age_min}m stale, ran it directly — fresh now"
+      else
+        note "FLAG::cron:${name}::log ${age_min}m stale, tried running it directly, still no fresh log — check: $exe"
+      fi
     else
-      note "FLAG::cron:${name}::no log file yet"
+      note "FLAG::cron:${name}::log ${age_min}m stale and $exe isn't executable — can't self-heal"
     fi
   done
 }
 
+check_arc_hq_drift() {
+  # Self-heal (2026-08-29): the canonical-SOT repo (~/khaos-lab/arc-toolkit)
+  # symlinks every personal script from ~/.local/bin -- the one real risk
+  # in that design is something replacing a symlink with a real file via
+  # an atomic overwrite (mv, not a normal edit-in-place save), silently
+  # disconnecting that script from the repo. `arc-sot drift` both detects
+  # AND fixes this (recovers the divergent content into the repo as a real
+  # edit, restores the symlink) -- reusing arc-sot's own logic rather than
+  # duplicating it here, so there's exactly one place this check lives.
+  [[ -x "$HOME/.local/bin/arc-sot" ]] || { note "OK::arc-sot::not installed yet, nothing to check"; return; }
+  local out rc
+  out=$("$HOME/.local/bin/arc-sot" drift 2>&1); rc=$?
+  if (( rc != 0 )); then
+    note "FLAG::arc-sot-drift::one or more symlinks couldn't be auto-repaired -- run: arc sot drift"
+  elif echo "$out" | grep -qE "✗|!"; then
+    note "HEALED::arc-sot-drift::$(echo "$out" | grep -c "✓") symlink(s) fixed -- see: arc sot status"
+  else
+    note "OK::arc-sot-drift::all tracked scripts correctly symlinked"
+  fi
+}
+
 # ── run everything ───────────────────────────────────────────────────────
+check_py_bite
 check_local_stack
 check_audio_profile
 check_dns
+check_dns_leak
+check_mirror_freshness
+check_watcher_daemons
+check_docker_health
 check_cron_health
+check_arc_hq_drift
 
 RUN_END=$(date +%s)
 DURATION=$(( RUN_END - RUN_START ))

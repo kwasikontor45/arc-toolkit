@@ -1,0 +1,810 @@
+#!/usr/bin/env python3
+"""
+khaos-lab — central control panel for the arc toolkit.
+Renamed twice 2026-08-26 (control panel -> khaos-panel -> khaos-klinik ->
+khaos-lab), user's own call each time -- keep it simple stuck.
+
+A lightweight GUI front-end over the `arc` CLI you already have. Every
+button here shells out to the exact same `arc <subcommand>` (or a small,
+well-understood handful of raw commands for live status) already built,
+tested, and running on this machine -- this does not reimplement any
+logic, it's a dashboard/launcher over what already works.
+
+Manual-start only, same principle as arc-break/arc-pine/darkstat/zap --
+no autostart entry, nothing brings this up on its own.
+
+Layout: left sidebar picks a category, right side shows that category's
+actions, bottom is a shared output console (every action's real stdout/
+stderr lands there) plus a free-form command box for anything not
+covered by a button.
+"""
+
+import calendar
+import re
+import subprocess
+import threading
+import time
+import tkinter as tk
+from pathlib import Path
+from tkinter import font as tkfont
+
+HEADER_ICON_PATH = Path.home() / ".local/share/khaos-lab/header-icon.png"
+HEADER_BG_PATH   = Path.home() / ".local/share/khaos-lab/header-bg.png"
+SIDEBAR_BG_PATH  = Path.home() / ".local/share/khaos-lab/sidebar-bg.png"
+CONTENT_BG_PATH  = Path.home() / ".local/share/khaos-lab/content-bg.png"
+TASKBAR_ICON_PATH = Path.home() / ".local/share/khaos-lab/taskbar-icon.png"
+HEAL_LOG_PATH    = Path.home() / "khaos-lab/arc-heal-log/latest-status.md"
+# Taskbar-icon bug (2026-08-27, real root cause found 2026-08-29): the
+# window-list entry showed a generic icon instead of khaos-lab's own art.
+# className="khaos-lab" (below) was a real, separate correctness fix
+# (WM_CLASS was genuinely just generic "Tk") but didn't move the taskbar
+# icon on its own. The actual cause: iconphoto()'s image was 256x256 --
+# too large for a single _NET_WM_ICON X11 property write. Verified directly
+# via `xprop`: at 256x256 the property came back completely empty (silent
+# failure, no error anywhere); at 48x48, the exact same call produces a
+# real, correctly-sized icon block and the taskbar picks it up immediately
+# -- no panel restart needed at all, the plugin just reads live window
+# state. TASKBAR_ICON_PATH is a pre-shrunk 48x48 copy of icon.png for
+# this reason -- iconphoto() needs a small image, the hicolor
+# icon-theme install (still 256x256, correct for that use) is unrelated.
+# This WM theme also turns out not to render any titlebar-corner icon at
+# all (confirmed via a zoomed screenshot) -- the earlier "blank icon for
+# the titlebar" workaround was solving a problem that didn't exist here,
+# and is gone now that the real icon just works.
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def strip_ansi(text):
+    """arc's own subcommands print real ANSI color codes for terminal use
+    -- a plain Tkinter Text/Label renders those as literal garbage
+    characters instead of interpreting them. Strip before ever displaying
+    command output anywhere in this GUI."""
+    return _ANSI_RE.sub("", text)
+
+
+def load_image(path):
+    """Load a PhotoImage, or None if the file's missing/unreadable. Every
+    themed image in this app (header icon/bg, sidebar bg, content bg, the
+    blank titlebar icon) used to repeat the same 5-line try/except around
+    this -- trimmed 2026-08-27 into one place, same behavior, less to keep
+    in sync. Caller must keep the returned object referenced (a local that
+    goes out of scope gets garbage-collected and the image just vanishes,
+    a classic Tkinter gotcha) -- unchanged from before, this helper doesn't
+    change that contract, just the loading boilerplate."""
+    if not path.exists():
+        return None
+    try:
+        return tk.PhotoImage(file=str(path))
+    except Exception:
+        return None
+
+
+def strip_banner(text, cmd=None):
+    """Most `arc` subcommands wrap their real output in a decorative
+    header/footer (a horizontal-rule line, the command's own name as a
+    repeated title, another rule) meant for full-width terminal display.
+    Dumped raw into a small dashboard tile it just looks like clutter --
+    drop any line that's purely box-drawing/dash characters, any blank
+    lines, and the title-echo line (the command's own name, which arc's
+    banner style always repeats verbatim) if `cmd` is given."""
+    title = cmd.strip().lower() if cmd else None
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if all(ch in "─-—= " for ch in stripped):
+            continue
+        if title and stripped.lower() == title:
+            continue
+        lines.append(stripped)
+    return "\n".join(lines)
+
+# ── Rose Pine Moon (exact values, matching arc-break/arc-pine) ─────────────
+BG       = "#232136"
+SURFACE  = "#2a273f"
+OVERLAY  = "#393552"
+FG       = "#e0def4"
+FG_MUTED = "#6e6a86"
+GOLD     = "#f6c177"
+ROSE     = "#eb6f92"
+PINE     = "#3e8fb0"
+TEAL     = "#9ccfd8"
+
+def run(cmd, timeout=30):
+    """Run a shell command, return (ok, output). Never raises."""
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        out = (r.stdout or "") + (r.stderr or "")
+        return r.returncode == 0, strip_ansi(out).strip()
+    except subprocess.TimeoutExpired:
+        return False, f"(timed out after {timeout}s -- command may still be running in the background)"
+    except Exception as e:
+        return False, f"(error launching command: {e})"
+
+
+def launch_detached(cmd):
+    """For actions that open a *persistent* GUI window (arc-break gui,
+    arc-pine, emoji picker, TOTP app) rather than run-and-exit. This is
+    NOT the same as run() with a trailing `&` -- a classic Python
+    subprocess gotcha, confirmed live: subprocess.run(shell=True,
+    capture_output=True) creates a pipe that a backgrounded grandchild
+    process inherits, and .communicate() then blocks waiting for that
+    pipe's write end to close, which never happens as long as the GUI
+    window stays open -- even with `&>/dev/null` in the shell command
+    itself. Popen with stdio all DEVNULL avoids the pipe entirely, so this
+    returns instantly regardless of how long the launched window stays
+    open.
+
+    Deliberately NOT passing start_new_session=True here -- a second real
+    bug found live: that setsid()'s the child into a new session outside
+    systemd-logind's tracking of this login session, and logind reaped it
+    consistently around 4-5s in (confirmed by direct timed observation,
+    with vs. without the flag). Plain DEVNULL-redirected Popen, still
+    inside the normal session, doesn't have this problem and the window
+    stays open exactly as long as the user keeps it open."""
+    try:
+        subprocess.Popen(
+            cmd, shell=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+        )
+        return True, "launched"
+    except Exception as e:
+        return False, f"(error launching: {e})"
+
+
+class Action:
+    """One button: a label, the real command it runs, whether it needs a
+    confirm step first (destructive/system-changing actions only -- plain
+    status/read-only checks run immediately), and whether it's a
+    detached GUI launch (see launch_detached()) rather than a normal
+    run-and-capture-output command."""
+    def __init__(self, label, cmd, confirm=False, timeout=30, detach=False):
+        self.label = label
+        self.cmd = cmd
+        self.confirm = confirm
+        self.timeout = timeout
+        self.detach = detach
+
+
+CATEGORIES = {
+    "Status": [],  # special-cased: live dashboard, not a button list
+    "Network": [
+        Action("VPN status",        "arc vpn status"),
+        Action("VPN public IP",     "arc vpn ip"),
+        Action("VPN kill switch",   "arc vpn killswitch"),
+        Action("DNS status",        "arc dns status"),
+        Action("DNS leak check",    "arc dns check", timeout=15),
+        Action("Restart NextDNS",   "arc dns restart", confirm=True),
+        Action("Network stats",     "arc net stats"),
+    ],
+    "Security": [
+        Action("SOP status",        "arc sop status"),
+        Action("SOP violations",    "arc sop violations"),
+        Action("SOP compliance check", "arc sop check"),
+        Action("SOP baseline (re-hash SOP files)", "arc sop baseline", confirm=True),
+        Action("System heal check", "arc heal", timeout=60),
+        Action("Lynis audit (slow)", "arc sec lynis", confirm=True, timeout=180),
+        # "start" deliberately not here -- it needs a real TTY for the sudo
+        # password prompt, which this console's subprocess doesn't have.
+        # Run `arc sudo start` from an actual terminal instead.
+        Action("Sudo keepalive: status", "arc sudo status"),
+        Action("Sudo keepalive: stop",   "arc sudo stop"),
+        Action("Mic status",        "arc mic status"),
+        Action("Mic: toggle on/off", "arc mic toggle"),
+    ],
+    # SOC -- every local Docker + monitor interface with a real UI, lab or
+    # not (2026-08-29 -- widened from IDS/IPS-only per explicit request:
+    # "wire all docker interfaces... lab or not"). One place to reach
+    # nearly all of them without opening a browser tab first; each has a
+    # single explicit "open in browser" action for the ones that genuinely
+    # need their full graphical UI (EveBox search, Splunk).
+    "SOC": [
+        Action("IDS/IPS: full status", "bash -c \"echo '-- suricata --'; systemctl status suricata --no-pager -l | head -6; echo; echo '-- sagan --'; arc sagan status; echo; echo '-- evebox --'; arc evebox status\"", timeout=20),
+        Action("Sagan: recent alerts (native, no browser)", "arc sagan alerts", timeout=15),
+        Action("Restart Sagan + EveBox", "bash -c 'arc sagan restart && arc evebox restart'", confirm=True, timeout=30),
+        Action("Open EveBox dashboard (browser)", "arc evebox open"),
+        # soc-lab: Splunk + SQL Server training containers -- Splunk has a
+        # real web UI (8000), SQL Server is a bare DB port (1433, no
+        # browser interface possible). Both stopped by default (~4 days
+        # exited as of 2026-08-29) -- start is confirm-gated and given a
+        # longer timeout since a cold Splunk container genuinely takes a
+        # while to initialize.
+        Action("soc-lab: status (Splunk + SQL Server)", "arc soc-lab status"),
+        Action("soc-lab: start",    "arc soc-lab start", confirm=True, timeout=120),
+        Action("soc-lab: stop",     "arc soc-lab stop", confirm=True, timeout=30),
+        Action("Open Splunk dashboard (browser)", "arc soc-lab open"),
+        # darkstat: live traffic dashboard, loopback-only web UI. start/stop
+        # need root (systemd unit) -- NOPASSWD sudoers rule added 2026-08-29
+        # (arc-darkstat) specifically so this button doesn't hang waiting on
+        # a password prompt with no TTY to answer it.
+        Action("Darkstat: status",  "arc darkstat status"),
+        Action("Darkstat: start",   "arc darkstat start", confirm=True, timeout=15),
+        Action("Darkstat: stop",    "arc darkstat stop", confirm=True, timeout=15),
+        Action("Open darkstat dashboard (browser)", "arc darkstat open"),
+        # ZAP's real day-to-day "interface" is its desktop GUI app, not a
+        # browser tab -- daemon mode (arc zap start) is an API-only scan
+        # backend for `arc zap spider/active <target>`, out of scope for a
+        # one-click GUI button (needs a real target argument, and first-run
+        # addon install can take minutes). Status only for the daemon,
+        # `gui` launches the actual app people look at.
+        Action("ZAP: status",       "arc zap status"),
+        Action("ZAP: open desktop app", "arc zap gui", detach=True),
+        # Kismet: real wireless recon monitor, but genuinely disruptive --
+        # takes the only WiFi adapter into monitor mode, dropping WiFi/VPN
+        # for as long as it runs (confirmed in arc-kismet's own header
+        # comment, plus a real 2026-08-23 incident where a crash left wlan0
+        # dead until reboot). Warning lives right in the button label, not
+        # just the confirm dialog -- confirm=True alone wasn't judged
+        # enough given the history here.
+        Action("Kismet: status",    "arc kismet status"),
+        Action("Kismet: start (drops WiFi/VPN while running!)", "arc kismet start", confirm=True, timeout=15),
+        Action("Kismet: stop (restores WiFi/VPN)", "arc kismet stop", confirm=True, timeout=20),
+        Action("Open Kismet dashboard (browser)", "xdg-open http://127.0.0.1:2501"),
+    ],
+    "Maintenance": [
+        Action("Disk overview",     "arc disk"),
+        Action("System health",     "arc health"),
+        Action("Git repo audit",    "arc audit", timeout=60),
+        Action("Deep clean (cache/apt/journal)", "arc clean", confirm=True, timeout=120),
+        Action("Update system (apt)", "arc update", confirm=True, timeout=300),
+        Action("Backup now",        "arc backup", confirm=True, timeout=60),
+    ],
+    "Personal": [
+        Action("Break timer status", "arc break status"),
+        Action("Break: start",      "arc break start"),
+        Action("Break: stop",       "arc break stop"),
+        # These three launch a *persistent* GUI window that stays open
+        # until the user closes it -- `arc break gui` in particular calls
+        # Tkinter's own mainloop() directly (blocking) -- launched via
+        # launch_detached() (Popen with DEVNULL-redirected stdio), not the
+        # normal run()/capture_output path, which was confirmed live to
+        # hang indefinitely on any backgrounded GUI process regardless of
+        # shell-level `&`/`nohup` (a real Python subprocess pipe-inheritance
+        # gotcha, not an arc-break-specific issue).
+        Action("Break: open GUI",   "arc-break gui", detach=True),
+        Action("Open arc-pine (notification history/settings)", "arc-pine", detach=True),
+        Action("Emoji picker",      "arc emoji", detach=True),
+        Action("TOTP authenticator", "arc auth", detach=True),
+    ],
+}
+
+
+def main():
+    # className explicit, not left at Tk's own default -- real bug found
+    # 2026-08-27: WM_CLASS was actually just generic "Tk" this whole time
+    # (confirmed via `xprop WM_CLASS`), never "khaos-lab" as the .desktop
+    # file's StartupWMClass=khaos-lab assumed it would be. A genuine
+    # correctness fix on its own, independent of the taskbar-icon bug
+    # (see TASKBAR_ICON_PATH's comment above for that one).
+    root = tk.Tk(className="khaos-lab")
+    root.title("khaos☠️lab")
+    root.configure(bg=BG)
+    # 660, not the original 600 -- the Status view grew a 4th tile row
+    # (self-heal) 2026-08-27 and 600 didn't leave room to actually show it,
+    # confirmed live via screenshot (tile was silently clipped, not visibly
+    # broken -- easy to miss without actually looking).
+    #
+    # Real regression found 2026-08-29: the forced "+40+40" position, combined
+    # with xfwm4 adding its own ~50px of decoration offset on top of that
+    # (confirmed live via `xdotool getwindowgeometry` -- actual placed y
+    # ended up 92, not the requested 40), pushed the window's bottom edge to
+    # y=792 -- past the real usable desktop area (`_NET_WORKAREA` confirmed
+    # 766px tall, the bottom 34px reserved by the taskbar panel). The
+    # bottom-most widget (the free-form "arc <cmd>" entry row) rendered
+    # right where the panel covers it -- invisible, not removed. Dropping
+    # the forced position lets xfwm4's own placement algorithm keep the
+    # whole window on-screen (it already accounts for panel struts when
+    # given the choice), which a hardcoded position can't -- verified live,
+    # confirmed the command row is visible again with this change.
+    root.geometry("860x700")
+    root.minsize(720, 480)
+
+    _taskbar_icon = load_image(TASKBAR_ICON_PATH)
+    if _taskbar_icon:
+        root.iconphoto(True, _taskbar_icon)
+
+    try:
+        # DejaVu Sans, not JetBrains Mono, specifically for the header title --
+        # confirmed live (throwaway test window, 2026-08-26) that JetBrains
+        # Mono (a code font) has no glyph for the skull-and-crossbones
+        # character at all, so Tk just rendered blank space for it -- not a
+        # transparency/color issue, a missing-glyph one. DejaVu Sans has real
+        # coverage for it (confirmed via `fc-match ":charset=2620"`), and Tk
+        # doesn't do automatic per-character font fallback the way a browser
+        # or GTK app would, so the font itself had to change, not just retry.
+        big_font    = tkfont.Font(family="DejaVu Sans", size=14, weight="bold")
+        label_font  = tkfont.Font(family="JetBrains Mono", size=10)
+        small_font  = tkfont.Font(family="JetBrains Mono", size=9)
+        mono_font   = tkfont.Font(family="JetBrains Mono", size=9)
+        nav_font    = tkfont.Font(family="JetBrains Mono", size=10)
+    except Exception:
+        big_font = label_font = small_font = mono_font = nav_font = tkfont.Font(size=10)
+
+    # ── Header ──────────────────────────────────────────────────────────────
+    header = tk.Frame(root, bg=BG)
+    header.pack(fill="x", padx=14, pady=(12, 6))
+
+    # Background watermark first (place(), not pack()) so the icon/title/
+    # clock -- all packed normally below -- stack visually on top of it and
+    # keep their own correct left/right-anchored resize behavior. relwidth/
+    # relheight=1 means it re-fills the header automatically on resize,
+    # unlike a Canvas here would need manual <Configure> tracking for.
+    _header_bg = load_image(HEADER_BG_PATH)
+    if _header_bg:
+        tk.Label(header, image=_header_bg, bg=BG).place(relx=0, rely=0, relwidth=1, relheight=1)
+
+    _header_icon = load_image(HEADER_ICON_PATH)
+    if _header_icon:
+        tk.Label(header, image=_header_icon, bg=BG).pack(side="left", padx=(0, 8))
+
+    tk.Label(header, text="khaos", font=big_font, bg=BG, fg=GOLD).pack(side="left")
+    tk.Label(header, text="☠️", font=big_font, bg=BG, fg=ROSE).pack(side="left")
+    tk.Label(header, text="lab", font=big_font, bg=BG, fg=GOLD).pack(side="left")
+    clock_lbl = tk.Label(header, text="", font=small_font, bg=BG, fg=FG_MUTED)
+    clock_lbl.pack(side="right")
+
+    tk.Frame(root, bg=OVERLAY, height=1).pack(fill="x", padx=14)
+
+    # ── Body/console split, drag-resizable ───────────────────────────────────
+    # Real layout complaint (2026-08-29): the console was fixed at
+    # height=9 lines and packed fill="x" only (no expand) -- every extra
+    # pixel from resizing the window went entirely to body (sidebar+
+    # content), so the output area could never grow no matter how the
+    # window was resized. A PanedWindow with a draggable sash fixes this
+    # properly instead of just picking a different fixed split: the user
+    # can grow the console themselves whenever they want more room to
+    # read output, and shrink it back for more sidebar/content room.
+    main_pane = tk.PanedWindow(
+        root, orient="vertical", bg=OVERLAY, sashwidth=6, sashrelief="flat",
+        bd=0, showhandle=False, opaqueresize=True,
+    )
+    main_pane.pack(fill="both", expand=True, padx=14, pady=10)
+
+    # ── Body: sidebar + content ────────────────────────────────────────────
+    body = tk.Frame(main_pane, bg=BG)
+    # height=460 is just the INITIAL split (roughly matching the old fixed
+    # proportions so the status tiles aren't clipped by default) -- the
+    # sash is fully drag-resizable from here, this isn't a new fixed value.
+    main_pane.add(body, minsize=240, height=460)
+
+    # Canvas, not Frame -- lets the watermark image sit behind the nav
+    # buttons. Tk buttons are opaque (bg=BG is a solid fill, no real alpha),
+    # so the image only actually shows through in the empty space below the
+    # 5 nav buttons, not underneath them -- that's by design, not a bug: a
+    # background image directly behind clickable buttons would just be
+    # invisible anyway, covered edge-to-edge by each button's own fill.
+    sidebar = tk.Canvas(body, bg=BG, width=150, highlightthickness=0)
+    sidebar.pack(side="left", fill="y")
+
+    _sidebar_bg = load_image(SIDEBAR_BG_PATH)
+    if _sidebar_bg:
+        sidebar.create_image(0, 0, anchor="nw", image=_sidebar_bg)
+
+    # Canvas, not Frame -- same reasoning as the sidebar: lets the watermark
+    # show behind the actual view (status tiles / action rows), visible in
+    # whatever margin/gap those don't opaquely cover. Each view-builder
+    # embeds its own frame via _embed_content() below instead of .pack(),
+    # and that helper keeps it stretched to the canvas's current size on
+    # resize (a plain create_window() child doesn't auto-follow the canvas
+    # growing/shrinking the way a packed fill="both" child would).
+    content = tk.Canvas(body, bg=SURFACE, highlightthickness=0)
+    # Real bug found+fixed 2026-08-29: the SOC category grew to 18 actions
+    # while _embed_content forced the embedded frame to the canvas's exact
+    # visible height (see below) -- with no scrollbar, anything past
+    # Darkstat's row was clipped with zero way to reach it. Same underlying
+    # class of bug as the cmd_row disappearance earlier the same day, just
+    # a bigger instance of it. Real fix, not a bandage: a real scrollbar,
+    # wired to a canvas scrollregion that's kept honest by the embedded
+    # widget's own actual required size, not an assumed/guessed number.
+    content_scroll = tk.Scrollbar(
+        body, orient="vertical", command=content.yview,
+        bg=OVERLAY, troughcolor=BG, activebackground=TEAL,
+        bd=0, highlightthickness=0, width=12,
+    )
+    # Not packed yet -- starts hidden, _set_scrollbar_visible() below packs
+    # it in only when a view's content actually overflows the viewport.
+    content.configure(yscrollcommand=content_scroll.set)
+    content.pack(side="left", fill="both", expand=True, padx=(10, 0))
+
+    _content_bg = load_image(CONTENT_BG_PATH)
+    if _content_bg:
+        content.create_image(0, 0, anchor="nw", image=_content_bg)
+
+    def _set_scrollbar_visible(visible):
+        # "keep it clean and simple" -- only show the scrollbar on views
+        # that actually overflow (SOC, currently). Status and the smaller
+        # categories don't need one cluttering the edge.
+        if visible:
+            if not content_scroll.winfo_ismapped():
+                content_scroll.pack(side="right", fill="y")
+        else:
+            if content_scroll.winfo_ismapped():
+                content_scroll.pack_forget()
+
+    def _embed_content(widget, pad=16, scrollable=False):
+        # pad on all sides -- also what lets the watermark actually show
+        # (a widget filling the canvas edge-to-edge would hide it entirely).
+        item = content.create_window(pad, pad, anchor="nw", window=widget)
+        def _resize(event, item=item, pad=pad):
+            w = max(event.width - 2 * pad, 1)
+            content.itemconfigure(item, width=w)
+            if scrollable:
+                # Let the widget grow to whatever height its real content
+                # needs (not forced to the visible viewport) -- scrolling
+                # is what makes the overflow reachable instead of hidden.
+                widget.update_idletasks()
+                req_h = max(widget.winfo_reqheight(), event.height - 2 * pad)
+                content.configure(scrollregion=(0, 0, event.width, req_h + 2 * pad))
+                _set_scrollbar_visible(req_h + 2 * pad > event.height)
+            else:
+                h = max(event.height - 2 * pad, 1)
+                content.itemconfigure(item, height=h)
+                content.configure(scrollregion=(0, 0, event.width, event.height))
+                _set_scrollbar_visible(False)
+        content.bind("<Configure>", _resize)
+        if scrollable:
+            def _on_wheel(evt):
+                content.yview_scroll(-1 if (evt.num == 4 or evt.delta > 0) else 1, "units")
+            content.bind_all("<Button-4>", _on_wheel)
+            content.bind_all("<Button-5>", _on_wheel)
+            content.bind_all("<MouseWheel>", _on_wheel)
+        else:
+            content.unbind_all("<Button-4>")
+            content.unbind_all("<Button-5>")
+            content.unbind_all("<MouseWheel>")
+            _set_scrollbar_visible(False)
+
+    def _refresh_scrollregion(widget, pad=16):
+        # Called once after a category view finishes packing all of its
+        # rows -- _embed_content's own <Configure>-driven resize only
+        # fires on canvas resize, not when rows are added to an
+        # already-correctly-sized canvas (switching between categories
+        # doesn't resize anything, so nothing would otherwise trigger a
+        # recompute here).
+        widget.update_idletasks()
+        w = content.winfo_width()
+        viewport_h = content.winfo_height()
+        req_h = max(widget.winfo_reqheight(), viewport_h - 2 * pad)
+        content.configure(scrollregion=(0, 0, w, req_h + 2 * pad))
+        content.yview_moveto(0)
+        _set_scrollbar_visible(req_h + 2 * pad > viewport_h)
+
+    def _clear_content():
+        for w in content.winfo_children():
+            w.destroy()
+
+    # ── Output console (shared, bottom pane -- drag the sash above to resize) ─
+    # Real bug found+fixed 2026-08-29: the free-form "arc <cmd>" entry row
+    # that used to live below the console got silently squeezed out of
+    # existence once the console pane could shrink (confirmed via
+    # `xwininfo -tree` -- it stopped existing as a real X window at all,
+    # not just clipped). Removed rather than fought -- it only ever
+    # duplicated typing the same command in an actual terminal, and the
+    # user offered this as the preferred fallback themselves.
+    console_frame = tk.Frame(main_pane, bg=BG)
+    # minsize=110 is a real floor, not decoration -- the 2026-08-29
+    # cmd_row bug happened because a pane's content could demand more
+    # than the pane's actual allocated height with nothing stopping it;
+    # the fix there was removing the widget that could silently vanish,
+    # this floor is the second layer -- whatever's left (label + Text)
+    # only ever shrinks the Text's visible lines, never disappears.
+    main_pane.add(console_frame, minsize=110, height=190)
+
+    tk.Label(console_frame, text="output", font=small_font, bg=BG, fg=FG_MUTED).pack(anchor="w")
+    console = tk.Text(
+        console_frame, bg=SURFACE, fg=FG, insertbackground=FG,
+        font=mono_font, relief="flat", padx=8, pady=6, wrap="word",
+    )
+    console.pack(fill="both", expand=True)
+    console.configure(state="disabled")
+
+    def log(text, color=FG):
+        console.configure(state="normal")
+        console.insert("end", text + "\n")
+        console.tag_add(f"c{len(text)}", "end-2l", "end-1l")
+        console.tag_config(f"c{len(text)}", foreground=color)
+        console.see("end")
+        console.configure(state="disabled")
+
+    def run_async(cmd, timeout=30, on_done=None):
+        log(f"$ {cmd}", TEAL)
+
+        def worker():
+            ok, out = run(cmd, timeout=timeout)
+            def finish():
+                if out:
+                    log(out, FG if ok else ROSE)
+                log(f"[{'ok' if ok else 'failed'}]", PINE if ok else ROSE)
+                if on_done:
+                    on_done()
+            root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def launch_detached_async(cmd):
+        log(f"$ {cmd}  (opens its own window)", TEAL)
+        ok, msg = launch_detached(cmd)
+        log(f"[{'ok' if ok else 'failed'}] {msg}", PINE if ok else ROSE)
+
+
+    # ── Confirm modal ──────────────────────────────────────────────────────
+    def confirm(label, cmd, timeout, on_yes_done=None):
+        popup = tk.Toplevel(root)
+        popup.title("confirm")
+        popup.configure(bg=BG)
+        popup.resizable(False, False)
+        popup.attributes("-topmost", True)
+        popup.geometry(f"+{root.winfo_x()+120}+{root.winfo_y()+150}")
+
+        tk.Label(
+            popup, text=f"run: {label}?", font=label_font, bg=BG, fg=FG,
+        ).pack(padx=20, pady=(16, 4))
+        tk.Label(
+            popup, text=cmd, font=small_font, bg=BG, fg=FG_MUTED,
+        ).pack(padx=20, pady=(0, 14))
+
+        row = tk.Frame(popup, bg=BG)
+        row.pack(pady=(0, 16))
+
+        def do_yes():
+            popup.destroy()
+            run_async(cmd, timeout=timeout, on_done=on_yes_done)
+
+        tk.Button(
+            row, text="yes, run it", command=do_yes, font=small_font,
+            bg=SURFACE, fg=ROSE, activebackground=OVERLAY, activeforeground=ROSE,
+            relief="flat", bd=0, padx=12, pady=6,
+        ).pack(side="left", padx=6)
+        tk.Button(
+            row, text="cancel", command=popup.destroy, font=small_font,
+            bg=SURFACE, fg=FG_MUTED, activebackground=OVERLAY, activeforeground=FG_MUTED,
+            relief="flat", bd=0, padx=12, pady=6,
+        ).pack(side="left", padx=6)
+
+    # ── Status dashboard (live tiles) ──────────────────────────────────────
+    status_tiles = {}
+
+    def build_status_view():
+        _clear_content()
+        status_tiles.clear()
+
+        grid = tk.Frame(content, bg=SURFACE)
+        _embed_content(grid)
+
+        def tile(row, col, key, title):
+            f = tk.Frame(grid, bg=OVERLAY)
+            f.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
+            grid.columnconfigure(col, weight=1)
+            tk.Label(f, text=title, font=small_font, bg=OVERLAY, fg=FG_MUTED).pack(
+                anchor="w", padx=12, pady=(10, 2))
+            val = tk.Label(f, text="checking…", font=label_font, bg=OVERLAY, fg=FG, justify="left")
+            val.pack(anchor="w", padx=12, pady=(0, 10))
+            status_tiles[key] = val
+
+        tile(0, 0, "vpn", "VPN")
+        tile(0, 1, "dns", "DNS")
+        tile(1, 0, "break", "Break timer")
+        tile(1, 1, "disk", "Disk")
+        tile(2, 0, "services", "Failed services")
+        tile(2, 1, "uptime", "Uptime / load")
+        tile(3, 0, "selfheal", "Self-heal (arc-heal)")
+        tile(3, 1, "idsips", "IDS/IPS")
+
+        refresh_status()
+
+    def refresh_status():
+        def worker():
+            checks = {}
+            ok, out = run("arc vpn status", timeout=8)
+            checks["vpn"] = out.replace("Status: ", "") if ok or out else "unavailable"
+
+            ok, out = run("arc dns status", timeout=8)
+            mode_line = next((l for l in out.splitlines() if "mode:" in l), "")
+            checks["dns"] = mode_line.split("mode:")[-1].strip() if mode_line else (out[:60] or "unavailable")
+
+            ok, out = run("arc break status", timeout=8)
+            checks["break"] = strip_banner(out, cmd="arc break status") or "unavailable"
+
+            ok, out = run("df -h / --output=used,avail,pcent", timeout=8)
+            lines = out.splitlines()
+            checks["disk"] = lines[-1].strip() if len(lines) > 1 else "unavailable"
+
+            ok1, out1 = run("systemctl --failed --no-legend", timeout=8)
+            ok2, out2 = run("systemctl --user --failed --no-legend", timeout=8)
+            n = len([l for l in (out1 + "\n" + out2).splitlines() if l.strip()])
+            checks["services"] = f"{n} failed" if n else "all healthy"
+
+            ok, out = run("uptime -p && uptime | grep -oP 'load average: \\K.*'", timeout=8)
+            checks["uptime"] = out.replace("\n", "  ·  ") or "unavailable"
+
+            # Self-heal, on today's design principle: surface arc-heal's own
+            # last result right on the main dashboard instead of making the
+            # user remember to click into Security -- a plain file read, not
+            # a fresh `arc heal` run (that takes 5-10s+, too heavy for this
+            # 15s auto-refresh; the cron job already runs it every 3h, this
+            # just shows what it last found).
+            checks["selfheal"] = "no runs on record yet"
+            try:
+                text = HEAL_LOG_PATH.read_text()
+                ts_match = re.search(r"— (\d{8}T\d{6}Z)", text)
+                summary_match = re.search(r"Run took .*", text)
+                summary = summary_match.group(0) if summary_match else "unrecognized log format"
+                if ts_match:
+                    epoch = calendar.timegm(time.strptime(ts_match.group(1), "%Y%m%dT%H%M%SZ"))
+                    age_min = max(0, int((time.time() - epoch) / 60))
+                    age_str = f"{age_min}m ago" if age_min < 120 else f"{age_min // 60}h ago"
+                    checks["selfheal"] = f"{summary}  ·  {age_str}"
+                else:
+                    checks["selfheal"] = summary
+            except Exception:
+                pass
+
+            # IDS/IPS -- the real, live security monitoring stack (Suricata
+            # engine + Sagan correlation + EveBox alert viewer), not the
+            # soc-lab training containers (those stay Security-category-only,
+            # manual-launch, never shown here). Plain status reads, cheap
+            # enough for the 15s auto-refresh -- native, so a glance at the
+            # dashboard covers what used to need a browser tab.
+            ok, out = run("systemctl is-active suricata", timeout=5)
+            suricata_state = out.strip() or "unknown"
+            ok, out = run("docker inspect --format '{{.State.Status}}' sagan", timeout=5)
+            sagan_state = out.strip() if ok else "missing"
+            ok, out = run("docker inspect --format '{{.State.Status}}' evebox", timeout=5)
+            evebox_state = out.strip() if ok else "missing"
+            checks["idsips"] = f"suricata {suricata_state}  ·  sagan {sagan_state}  ·  evebox {evebox_state}"
+
+            def apply():
+                for key, val in checks.items():
+                    if key in status_tiles:
+                        color = FG
+                        if key == "services" and "failed" in val and "0 failed" not in val:
+                            color = ROSE
+                        if key == "vpn" and "Disconnected" in val:
+                            color = FG_MUTED
+                        if key == "vpn" and "Connected" in val:
+                            color = TEAL
+                        if key == "selfheal":
+                            flagged = re.search(r"(\d+) flagged", val)
+                            healed = re.search(r"(\d+) healed", val)
+                            if flagged and int(flagged.group(1)) > 0:
+                                color = ROSE
+                            elif healed and int(healed.group(1)) > 0:
+                                color = TEAL
+                        if key == "idsips":
+                            # Exact-word checks, not substring -- "inactive"
+                            # contains the substring "active", which a naive
+                            # `"active" in val` would wrongly call healthy.
+                            healthy = (
+                                "suricata active" in val
+                                and val.count("running") == 2
+                            )
+                            color = TEAL if healthy else ROSE
+                        status_tiles[key].configure(text=val, fg=color)
+            root.after(0, apply)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ── Category action view ───────────────────────────────────────────────
+    def build_category_view(name):
+        _clear_content()
+
+        wrap = tk.Frame(content, bg=SURFACE)
+        _embed_content(wrap, scrollable=True)
+
+        for action in CATEGORIES[name]:
+            row = tk.Frame(wrap, bg=SURFACE)
+            row.pack(fill="x", pady=3)
+            tk.Label(
+                row, text=action.label, font=label_font, bg=SURFACE, fg=FG, anchor="w",
+            ).pack(side="left", fill="x", expand=True)
+
+            def make_cmd(a=action):
+                def go():
+                    if a.detach:
+                        launch_detached_async(a.cmd)
+                    elif a.confirm:
+                        confirm(a.label, a.cmd, a.timeout, on_yes_done=refresh_status)
+                    else:
+                        run_async(a.cmd, timeout=a.timeout, on_done=refresh_status)
+                return go
+
+            tk.Button(
+                row, text="run", command=make_cmd(), font=small_font,
+                bg=OVERLAY, fg=TEAL, activebackground=BG, activeforeground=TEAL,
+                relief="flat", bd=0, padx=14, pady=4, cursor="hand2",
+            ).pack(side="right")
+
+        # Rows are all packed by now -- safe to measure the frame's real
+        # required height and size the scrollbar to match. Doing this
+        # inside the loop above would measure a partially-built frame.
+        _refresh_scrollregion(wrap)
+
+    # ── Sidebar nav ─────────────────────────────────────────────────────────
+    nav_buttons = {}
+    current_cat = tk.StringVar(value="Status")
+
+    def select(name):
+        current_cat.set(name)
+        for n, b in nav_buttons.items():
+            b.configure(bg=OVERLAY if n == name else BG, fg=GOLD if n == name else FG_MUTED)
+        if name == "Status":
+            build_status_view()
+        else:
+            build_category_view(name)
+
+    # create_window, not pack -- sidebar is a Canvas now (see above), so its
+    # children are positioned manually instead of auto-stacked.
+    _nav_y = 0
+    for cat in CATEGORIES:
+        b = tk.Button(
+            sidebar, text=cat, font=nav_font, bg=BG, fg=FG_MUTED,
+            activebackground=OVERLAY, activeforeground=GOLD,
+            relief="flat", bd=0, anchor="w", padx=12, pady=8, cursor="hand2",
+            command=lambda c=cat: select(c),
+        )
+        sidebar.create_window(0, _nav_y, anchor="nw", window=b, width=150)
+        b.update_idletasks()
+        _nav_y += b.winfo_reqheight() + 1
+        nav_buttons[cat] = b
+
+    select("Status")
+
+    # ── Clock + auto status refresh ────────────────────────────────────────
+    def tick():
+        clock_lbl.configure(text=time.strftime("%H:%M:%S"))
+        root.after(1000, tick)
+
+    def auto_refresh():
+        if current_cat.get() == "Status":
+            refresh_status()
+        root.after(15000, auto_refresh)
+
+    # Self-heal (2026-08-29): keep the window fully inside the real usable
+    # desktop area, not just the raw screen. A forced position once put
+    # this window's bottom edge under the taskbar panel, silently hiding
+    # the last-packed widget (see that day's GAMEPLAN entry) -- dropping
+    # the forced position fixed the one-time startup case, but nothing
+    # stopped the same class of problem recurring if the window's ever
+    # dragged (or a future WM/panel config change) puts it off-area
+    # again. Queries `_NET_WORKAREA` directly -- what the window manager
+    # itself publishes as the real usable area -- rather than guessing
+    # screen height minus an assumed panel size, which would silently go
+    # stale on a different monitor/panel setup. Runs periodically, not
+    # just once at launch, so this keeps correcting itself for as long
+    # as the window stays open.
+    def geometry_watchdog():
+        ok, out = run("xprop -root _NET_WORKAREA", timeout=3)
+        if ok and out:
+            nums = [int(n) for n in re.findall(r"-?\d+", out)]
+            if len(nums) >= 4:
+                wx, wy, ww, wh = nums[:4]
+                root.update_idletasks()
+                x, y = root.winfo_x(), root.winfo_y()
+                w, h = root.winfo_width(), root.winfo_height()
+                new_x, new_y = x, y
+                if x < wx:
+                    new_x = wx
+                elif x + w > wx + ww:
+                    new_x = max(wx, wx + ww - w)
+                if y < wy:
+                    new_y = wy
+                elif y + h > wy + wh:
+                    new_y = max(wy, wy + wh - h)
+                if (new_x, new_y) != (x, y):
+                    root.geometry(f"+{new_x}+{new_y}")
+        root.after(10000, geometry_watchdog)
+
+    tick()
+    root.after(15000, auto_refresh)
+    # 500ms delay on the first run -- gives the WM time to finish its own
+    # initial placement first (confirmed live 2026-08-27/29: xfwm4 doesn't
+    # finalize window position instantly on map).
+    root.after(500, geometry_watchdog)
+
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

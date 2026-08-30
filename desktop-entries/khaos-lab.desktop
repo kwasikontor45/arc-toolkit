@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=khaos☠️lab
+GenericName=Control Panel
+Comment=Dashboard/launcher for the arc toolkit — status tiles + quick actions for VPN, DNS, break timer, security, maintenance
+Exec=/home/architect-of-chaos/.local/bin/khaos-lab
+Icon=align-vertical-node
+Terminal=false
+Categories=Utility;
+StartupWMClass=khaos-lab
+Path=
+StartupNotify=true

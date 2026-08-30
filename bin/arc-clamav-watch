@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""arc-clamav-watch — tails clamonacc's on-access scan log and fires a real
+desktop notification when it actually finds and quarantines something.
+Built 2026-08-22, the 4th and last of the originally-prioritized notification
+gaps (auditd/Sagan/eero-vpn-dns/ClamAV real-time). clamonacc itself only
+logs to file -- it has no notification mechanism of its own, same gap every
+other watcher in this family started from.
+
+Only "FOUND" lines are real detections worth a popup; "moved to" lines are
+just clamonacc's own quarantine-confirmation for the same event a moment
+later, so they're folded into the same notification rather than doubled.
+"""
+import json
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _arc_watch_common as watch
+
+LOG = "/var/log/clamav/clamonacc.log"
+TARGET_USER = "architect-of-chaos"
+TARGET_UID = 1000
+
+FOUND_RE = re.compile(r"^(.+): (.+) FOUND$")
+
+
+def notify(summary: str, body: str, urgency: str):
+    env = f"DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{TARGET_UID}/bus"
+    cmd = f"{env} /home/architect-of-chaos/.local/bin/arc-pine-notify {urgency} arc-clamav {json.dumps(summary)} {json.dumps(body)}"
+    subprocess.run(["su", TARGET_USER, "-c", cmd], check=False)
+
+
+def main():
+    for line in watch.follow(LOG):
+        if not line:
+            continue
+        line = line.strip()
+        m = FOUND_RE.match(line)
+        if m:
+            path, signature = m.group(1), m.group(2)
+            notify(
+                "ClamAV real-time detection",
+                f"{signature}\n{path}\nmoved to /root/quarantine",
+                "critical",
+            )
+
+
+if __name__ == "__main__":
+    main()

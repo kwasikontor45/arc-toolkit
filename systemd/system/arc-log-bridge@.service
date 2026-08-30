@@ -1,0 +1,12 @@
+[Unit]
+Description=arc-log-bridge (%i) — lightweight journald to flat-file bridge for Sagan
+After=systemd-journald.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/arc-log-bridge %i
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

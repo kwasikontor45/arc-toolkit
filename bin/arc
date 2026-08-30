@@ -1,0 +1,5181 @@
+#!/bin/bash
+# arc — your system architect
+# usage: arc [command]
+
+# ── Colors ─────────────────────────────────────────────────────────────────────
+C='\033[0;36m'   # cyan
+G='\033[0;32m'   # green
+R='\033[0;31m'   # red
+Y='\033[1;33m'   # yellow
+D='\033[0;90m'   # dim
+W='\033[0;37m'   # white
+M='\033[38;5;250m'   # silver-grey (matches architect-of-chaos)
+GOLD='\033[38;5;183m'  # iris — butterfly top
+ART='\033[1;38;5;222m' # gold bold — butterfly bottom
+B='\033[1m'      # bold
+N='\033[0m'      # reset
+
+HR="${D}────────────────────────────────────────────────${N}"
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+disk_used()  { df -h / | awk 'NR==2 {print $3}'; }
+disk_total() { df -h / | awk 'NR==2 {print $2}'; }
+disk_free()  { df -h / | awk 'NR==2 {print $4}'; }
+disk_pct()   { df /   | awk 'NR==2 {print $5}'; }
+disk_kb()    { df /   | awk 'NR==2 {print $4}'; }
+
+# Real I/O test — mountpoint alone lies after USB disconnect/port-change
+# (dm-crypt mapper stays alive but reads fail). This actually touches the fs.
+storage_ok() { mountpoint -q /mnt/storage 2>/dev/null && ls /mnt/storage/ >/dev/null 2>&1; }
+
+saved_mb() {
+  local start="$1" end="$2"
+  local diff=$(( end - start ))
+  if (( diff > 0 )); then
+    echo "scale=1; $diff / 1024" | bc 2>/dev/null || echo "?"
+  else
+    echo "0"
+  fi
+}
+
+# Scan home subdirs + USB repos dirs for git repos
+scan_repos() {
+  for d in "$HOME"/*/; do
+    [[ -d "$d/.git" ]] && echo "$d"
+  done
+  # Real projects live nested one level under khaos-lab/ (athena, kataleya,
+  # arc-toolkit-public, arc-private, etc.) -- a plain $HOME/*/ scan never saw
+  # them. Found 2026-08-17: "no repos found" despite 6 real repos existing,
+  # once codex/ (the old location this originally scanned) emptied out.
+  for d in "$HOME"/khaos-lab/*/; do
+    [[ -d "$d/.git" ]] && echo "$d"
+  done
+  for usb_dir in "/mnt/storage/codex" "/mnt/storage/forge"; do
+    if [[ -d "$usb_dir" ]]; then
+      for d in "$usb_dir"/*/; do
+        [[ -d "$d/.git" ]] && echo "$d"
+      done
+    fi
+  done
+}
+
+# ── Status ─────────────────────────────────────────────────────────────────────
+cmd_status() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc${N}  ${D}·${N}  ${GOLD}$(whoami)${D}@${N}${ART}$(hostname)${N}"
+  echo -e "$HR"
+  echo -e "  ${C}disk${N}    ${M}$(disk_used)${N} used  ${D}·${N}  ${M}$(disk_free)${N} free  ${D}/  ${M}$(disk_total)  ($(disk_pct))${N}"
+
+  if storage_ok; then
+    local uu uf
+    uu=$(df -h /mnt/storage | awk 'NR==2 {print $3}')
+    uf=$(df -h /mnt/storage | awk 'NR==2 {print $4}')
+    echo -e "  ${C}usb ${N}    ${M}${uu}${N} used  ${D}·${N}  ${M}${uf}${N} free  ${D}/ /mnt/storage${N}"
+  else
+    echo -e "  ${C}usb ${N}    ${R}not accessible${N}  ${D}— run arc mount${N}"
+  fi
+
+  if mountpoint -q /fortress 2>/dev/null && ls /fortress/ >/dev/null 2>&1; then
+    local fu ff
+    fu=$(df -h /fortress | awk 'NR==2 {print $3}')
+    ff=$(df -h /fortress | awk 'NR==2 {print $4}')
+    echo -e "  ${C}fortress${N}  ${M}${fu}${N} used  ${D}·${N}  ${M}${ff}${N} free  ${D}/ /fortress${N}"
+  else
+    echo -e "  ${C}fortress${N}  ${R}not accessible${N}"
+  fi
+
+  # Was reading /var/cache/vault-last-backup, a path vault-backup-mega never
+  # wrote to -- it logs real completions to /var/log/vault-mega.log as
+  # "<timestamp> sync complete". This showed "no backup on record" forever,
+  # even with real nightly backups genuinely succeeding. Found 2026-08-17.
+  local vault_log="/var/log/vault-mega.log"
+  local last_line
+  last_line=$(grep "sync complete$" "$vault_log" 2>/dev/null | tail -1)
+  if [[ -n "$last_line" ]]; then
+    local vault_date days_ago
+    vault_date=$(echo "$last_line" | awk '{print $1, $2}')
+    days_ago=$(( ( $(date +%s) - $(date -d "$vault_date" +%s 2>/dev/null || echo 0) ) / 86400 ))
+    echo -e "  ${C}vault${N}   ${M}${vault_date}${N}  ${D}(${days_ago}d ago)${N}"
+    echo -e "          ${D}mega:/vault${N}"
+  else
+    echo -e "  ${C}vault${N}   ${Y}no backup on record${N}  ${D}— run arc sync${N}"
+  fi
+
+  echo -e "$HR"
+  echo -e "  ${C}repos${N}"
+
+  local found=0
+  while IFS= read -r d; do
+    [[ -z "$d" ]] && continue
+    found=1
+    local name branch short ahead last status_str ahead_str
+    name=$(basename "$d")
+    branch=$(git -C "$d" branch --show-current 2>/dev/null)
+    short=$(git -C "$d" status --short 2>/dev/null)
+    ahead=$(git -C "$d" rev-list @{u}..HEAD 2>/dev/null | wc -l | tr -d ' ')
+    last=$(git -C "$d" log -1 --format="%cr" 2>/dev/null || echo "no commits")
+
+    if [[ -n "$short" ]]; then
+      status_str="${Y}uncommitted${N}"
+    else
+      status_str="${G}clean${N}"
+    fi
+
+    ahead_str=""
+    (( ahead > 0 )) && ahead_str="  ${D}·${N}  ${C}${ahead} ahead${N}"
+
+    printf "  ${D}·${N}  ${M}%-20s${N}  ${D}[%s]${N}  %b%b  ${D}%s${N}\n" \
+      "$name" "$branch" "$status_str" "$ahead_str" "$last"
+  done < <(scan_repos)
+
+  (( found == 0 )) && echo -e "  ${D}no repos found${N}"
+
+  # mirrors last sync
+  local MIRROR_LOG="$HOME/.local/share/sync-mirrors/sync-mirrors.log"
+  if [[ -s "$MIRROR_LOG" ]]; then
+    local last_run in_sync errors
+    last_run=$(grep "=== sync-mirrors start ===" "$MIRROR_LOG" | tail -1 | cut -d']' -f1 | tr -d '[')
+    local last_block
+    last_block=$(awk '/=== sync-mirrors start ===/{ buf="" } { buf=buf"\n"$0 } END{print buf}' "$MIRROR_LOG")
+    in_sync=$(echo "$last_block" | grep -c "^.*OK " || true)
+    errors=$(echo "$last_block" | grep -c "^.*ERR " || true)
+    if [[ "$errors" -gt 0 ]]; then
+      printf "  ${D}mirrors${N}  ${R}%s err${N}  ${D}· last run %s${N}\n" "$errors" "$last_run"
+    else
+      printf "  ${D}mirrors${N}  ${G}%s in sync${N}  ${D}· last run %s${N}\n" "$in_sync" "$last_run"
+    fi
+  else
+    echo -e "  ${D}mirrors${N}  ${D}no sync on record — arc mirrors run${N}"
+  fi
+
+  echo -e "$HR"
+}
+
+# ── Health ─────────────────────────────────────────────────────────────────────
+cmd_health() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc health${N}  —  system health"
+  echo -e "$HR\n"
+
+  # Disks
+  echo -e "  ${C}disks${N}"
+  local iu if_ it ip
+  iu=$(df -h / | awk 'NR==2 {print $3}')
+  if_=$(df -h / | awk 'NR==2 {print $4}')
+  it=$(df -h / | awk 'NR==2 {print $2}')
+  ip=$(df / | awk 'NR==2 {print $5}')
+  echo -e "  ${D}·${N}  internal    ${iu} used · ${if_} free / ${it}  ${D}(${ip})${N}"
+
+  if storage_ok; then
+    local uu uf ut up
+    uu=$(df -h /mnt/storage | awk 'NR==2 {print $3}')
+    uf=$(df -h /mnt/storage | awk 'NR==2 {print $4}')
+    ut=$(df -h /mnt/storage | awk 'NR==2 {print $2}')
+    up=$(df /mnt/storage | awk 'NR==2 {print $5}')
+    echo -e "  ${G}·${N}  usb         ${uu} used · ${uf} free / ${ut}  ${D}(${up})${N}"
+  else
+    echo -e "  ${R}·${N}  usb         not accessible  ${D}— arc mount${N}"
+  fi
+
+  # RAM
+  echo ""
+  echo -e "  ${C}memory${N}"
+  local rm_used rm_avail rm_total
+  rm_used=$(free -h | awk '/Mem:/ {print $3}')
+  rm_avail=$(free -h | awk '/Mem:/ {print $7}')
+  rm_total=$(free -h | awk '/Mem:/ {print $2}')
+  echo -e "  ${D}·${N}  ram         ${rm_used} used · ${rm_avail} available / ${rm_total}"
+
+  local sw_used sw_total
+  sw_used=$(free -h | awk '/Swap:/ {print $3}')
+  sw_total=$(free -h | awk '/Swap:/ {print $2}')
+  echo -e "  ${D}·${N}  swap        ${sw_used} used / ${sw_total}"
+
+  # Encryption layers
+  echo ""
+  echo -e "  ${C}encryption${N}"
+
+  # Home (ecryptfs)
+  if grep -q ecryptfs /proc/mounts 2>/dev/null; then
+    echo -e "  ${G}✓${N}  home        ecryptfs active"
+  else
+    echo -e "  ${Y}?${N}  home        ecryptfs not detected"
+  fi
+
+  # Swap (luks)
+  if swapon --show 2>/dev/null | grep -q mapper; then
+    echo -e "  ${G}✓${N}  swap        LUKS encrypted"
+  else
+    echo -e "  ${D}·${N}  swap        ${D}(not luks or not active)${N}"
+  fi
+
+  # USB (luks) — check mapper device, then verify actual I/O
+  if [[ -b /dev/mapper/storage_crypt ]]; then
+    if storage_ok; then
+      echo -e "  ${G}✓${N}  usb         LUKS open · accessible"
+    else
+      echo -e "  ${Y}!${N}  usb         LUKS open · stale  ${D}(USB unplugged? run arc mount)${N}"
+    fi
+  else
+    echo -e "  ${R}✗${N}  usb         LUKS not open"
+  fi
+
+  echo -e "\n$HR"
+}
+
+# ── Mount ──────────────────────────────────────────────────────────────────────
+cmd_mount() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc mount${N}  —  manual USB remount"
+  echo -e "$HR\n"
+
+  if mountpoint -q /mnt/storage 2>/dev/null; then
+    if storage_ok; then
+      local uu uf
+      uu=$(df -h /mnt/storage | awk 'NR==2 {print $3}')
+      uf=$(df -h /mnt/storage | awk 'NR==2 {print $4}')
+      echo -e "  ${G}✓${N}  already mounted  —  ${uu} used · ${uf} free"
+      echo -e "$HR"
+      return 0
+    else
+      echo -e "  ${Y}!${N}  stale mount detected — USB disconnected or port changed. repairing..."
+      sudo umount -l /mnt/storage 2>/dev/null || true
+      sudo cryptsetup close storage_crypt 2>/dev/null || true
+      sleep 0.5
+    fi
+  fi
+
+  local PARTUUID="b00feb5b-4ef4-4a01-a58d-2a6543cbaa90"
+  local DEV="/dev/disk/by-partuuid/$PARTUUID"
+  local KEY="/etc/luks/storage.key"
+
+  if [[ ! -e "$DEV" ]]; then
+    echo -e "  ${R}✗${N}  drive not found — is the USB plugged in?"
+    echo -e "  ${D}PARTUUID: ${PARTUUID}${N}"
+    echo -e "$HR"
+    return 1
+  fi
+
+  # Stale mapper entry guard (2026-06-01 incident: cryptsetup refuses to open when
+  # /dev/mapper/storage_crypt exists but has no live dm table — e.g. after an unclean
+  # USB disconnect). Clear it first so open doesn't fail with "already exists".
+  if [[ -e /dev/mapper/storage_crypt ]] && ! sudo dmsetup table storage_crypt &>/dev/null; then
+    echo -e "  ${Y}!${N}  stale mapper entry detected — clearing before open"
+    sudo rm -f /dev/mapper/storage_crypt
+  fi
+
+  echo -e "  ${C}opening LUKS container...${N}"
+  if sudo cryptsetup open "$DEV" storage_crypt --key-file "$KEY"; then
+    echo -e "  ${G}✓${N}  LUKS opened"
+  else
+    echo -e "  ${R}✗${N}  cryptsetup failed — key file issue?"
+    echo -e "  ${D}key: ${KEY}${N}"
+    echo -e "$HR"
+    return 1
+  fi
+
+  echo -e "  ${C}mounting /mnt/storage...${N}"
+  if sudo mount /dev/mapper/storage_crypt /mnt/storage; then
+    echo -e "  ${G}✓${N}  mounted at /mnt/storage"
+  else
+    echo -e "  ${Y}!${N}  trying with exec flag..."
+    sudo mount /dev/mapper/storage_crypt /mnt/storage -o exec
+    echo -e "  ${G}✓${N}  mounted (exec)"
+  fi
+
+  echo -e "\n$HR"
+}
+
+# ── Update ─────────────────────────────────────────────────────────────────────
+cmd_update() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc update${N}  —  system refresh"
+  echo -e "$HR\n"
+
+  local start
+  start=$(disk_kb)
+
+  echo -e "${C}packages...${N}"
+  sudo apt update \
+    && sudo DEBIAN_FRONTEND=noninteractive apt upgrade -y \
+      -o Dpkg::Options::="--force-confdef" \
+      -o Dpkg::Options::="--force-confold"
+
+  echo -e "\n${C}cleanup...${N}"
+  sudo apt autoremove -y && sudo apt clean
+
+  local end mb
+  end=$(disk_kb)
+  mb=$(saved_mb "$start" "$end")
+
+  echo -e "\n$HR"
+  echo -e "  ${G}done${N}  ${D}·${N}  ${G}+${mb} MB reclaimed${N}"
+  echo -e "  ${C}disk${N}    $(disk_used) used  ${D}·${N}  $(disk_free) free"
+  echo -e "$HR"
+}
+
+# ── Clean ──────────────────────────────────────────────────────────────────────
+cmd_clean() {
+  if [[ -n "${1:-}" ]]; then
+    echo -e "${R}unknown:${N} arc clean $1"
+    echo -e "${D}arc clean takes no arguments — it always runs the full deep clean.${N}"
+    echo -e "${D}looking for browser caches? that's ${C}arc browser-clean${N}${D}.${N}"
+    return 1
+  fi
+
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc clean${N}  —  deep clean"
+  echo -e "$HR\n"
+
+  local start
+  start=$(disk_kb)
+
+  # Home sweep first — moves junk, packs it, purges the pack
+  if command -v arc-home-sweep &>/dev/null; then
+    echo -e "${C}home sweep...${N}"
+    arc-home-sweep --purge
+    echo ""
+  fi
+
+  echo -e "${C}user cache...${N}"
+  rm -rf ~/.cache/*
+
+  echo -e "${C}trash...${N}"
+  # If it's trash, it's trash — actually empty it, don't just hide it from
+  # backups. gio handles the real XDG trash spec (files/ + info/ + any other
+  # registered trash dirs), not just this one path.
+  local trash_before trash_after
+  trash_before=$(du -sb ~/.local/share/Trash 2>/dev/null | cut -f1)
+  gio trash --empty 2>/dev/null || rm -rf ~/.local/share/Trash/files/* ~/.local/share/Trash/info/* 2>/dev/null
+  trash_after=$(du -sb ~/.local/share/Trash 2>/dev/null | cut -f1)
+  if [[ -n "$trash_before" ]] && (( trash_before > trash_after )); then
+    echo -e "  ${G}✓${N}  emptied ($(( (trash_before - trash_after) / 1048576 )) MB freed)"
+  else
+    echo -e "  ${D}·${N}  already empty"
+  fi
+
+  echo -e "${C}session logs...${N}"
+  rm -f ~/.xsession-errors ~/.xsession-errors.old ~/nohup.out
+
+  echo -e "${C}home junk...${N}"
+  find "$HOME" -maxdepth 1 -type f -name "*.log" -delete
+  find "$HOME" -maxdepth 1 -type f -empty ! -name ".ICEauthority" ! -name ".bash_history" ! -name ".bash_logout" -delete
+
+  echo -e "${C}tmp...${N}"
+  # Only clean user-owned files in /tmp older than 2h — never touch ssh sockets,
+  # systemd-private dirs, chromium/claude runtime dirs, or other users' files
+  local tmp_cleaned=0
+  while IFS= read -r f; do
+    rm -rf "$f" 2>/dev/null && (( tmp_cleaned++ ))
+  done < <(find /tmp -maxdepth 1 -user "$USER" -mmin +120 \
+    ! -name 'ssh-*' \
+    ! -name 'claude-*' \
+    ! -name 'org.chromium.*' \
+    ! -name 'systemd-private-*' \
+    2>/dev/null)
+  if (( tmp_cleaned > 0 )); then
+    echo -e "  ${G}✓${N}  removed ${tmp_cleaned} stale tmp item(s)"
+  else
+    echo -e "  ${D}·${N}  nothing stale to clean"
+  fi
+
+  echo -e "${C}apt...${N}"
+  sudo apt autoremove -y && sudo apt clean
+
+  local end mb
+  end=$(disk_kb)
+  mb=$(saved_mb "$start" "$end")
+
+  echo -e "\n$HR"
+  echo -e "  ${G}done${N}  ${D}·${N}  ${G}+${mb} MB reclaimed${N}"
+  echo -e "  ${C}disk${N}    $(disk_used) used  ${D}·${N}  $(disk_free) free"
+  echo -e "$HR"
+}
+
+# ── Sweep ──────────────────────────────────────────────────────────────────────
+cmd_sweep() {
+  local sub="${1:-}"
+  case "$sub" in
+    dry|--dry-run) arc-home-sweep --dry-run ;;
+    purge)         arc-home-sweep --purge ;;
+    status)        arc-home-sweep --status ;;
+    '')            arc-home-sweep ;;
+    *)
+      echo -e "${R}unknown:${N} arc sweep $sub"
+      echo -e "${D}options: dry · purge · status${N}"
+      ;;
+  esac
+}
+
+# ── Disk ───────────────────────────────────────────────────────────────────────
+_disk_top() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc disk${N}  —  top space consumers"
+  echo -e "$HR\n"
+
+  echo -e "  ${C}filesystem${N}"
+  df -h / | awk 'NR==1{printf "  %s\n",$0} NR==2{printf "  %s\n",$0}'
+
+  echo -e "\n  ${C}home  ${D}(top 15)${N}"
+  du -sh "$HOME"/* "$HOME"/.[!.]* 2>/dev/null | sort -rh | head -15 \
+    | while IFS=$'\t' read -r sz path; do
+        printf "  ${M}%-8s${N} ${D}%s${N}\n" "$sz" "$(basename "$path")"
+      done
+
+  if command -v flatpak &>/dev/null; then
+    echo -e "\n  ${C}flatpak${N}  ${D}$(du -sh /var/lib/flatpak 2>/dev/null | cut -f1) total${N}"
+    flatpak list --columns=application,size 2>/dev/null | while IFS=$'\t' read -r app sz; do
+      printf "  ${M}%-10s${N} ${D}%s${N}\n" "$sz" "$app"
+    done
+  fi
+
+  echo -e "\n  ${C}kernels${N}"
+  local running old_found=0
+  running=$(uname -r)
+  while read -r img; do
+    [[ -z "$img" ]] && continue
+    echo -e "  ${Y}!${N}  ${img}  ${D}(not running — candidate for removal)${N}"
+    old_found=1
+  done < <(dpkg -l 'linux-image-[0-9]*' 2>/dev/null | awk '/^ii/{print $2}' | grep -v "$running")
+  (( old_found == 0 )) && echo -e "  ${D}·${N}  only the active kernel (${running}) is installed"
+
+  echo -e "\n$HR"
+  echo -e "  ${D}arc disk caches${N}   ${M}known reclaimable caches, sized${N}"
+  echo -e "  ${D}arc disk clean${N}    ${M}reclaim the safe ones${N}"
+  echo -e "$HR"
+}
+
+_disk_caches() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc disk caches${N}  —  reclaimable, nothing touched"
+  echo -e "$HR\n"
+
+  local sz
+
+  if [[ -d "$HOME/.npm" ]]; then
+    sz=$(du -sh "$HOME/.npm" 2>/dev/null | cut -f1)
+    echo -e "  ${M}${sz}${N}  ${W}npm cache${N}          ${D}arc disk clean  (clears _cacache + _npx)${N}"
+  fi
+
+  if [[ -d "$HOME/.cache/pip" ]]; then
+    sz=$(du -sh "$HOME/.cache/pip" 2>/dev/null | cut -f1)
+    echo -e "  ${M}${sz}${N}  ${W}pip cache${N}          ${D}pip cache purge${N}"
+  fi
+
+  if [[ -d "$HOME/.local/share/claude/versions" ]]; then
+    local current old_total=0
+    current=$(claude --version 2>/dev/null | awk '{print $1}')
+    for v in "$HOME/.local/share/claude/versions"/*; do
+      [[ -e "$v" ]] || continue
+      [[ "$(basename "$v")" == "$current" ]] && continue
+      old_total=$(( old_total + $(du -k "$v" 2>/dev/null | cut -f1) ))
+    done
+    if (( old_total > 0 )); then
+      sz=$(echo "scale=1; $old_total/1024" | bc 2>/dev/null)
+      echo -e "  ${M}${sz}M${N}  ${W}superseded Claude Code CLI versions${N}  ${D}(keeping ${current})${N}"
+    fi
+  fi
+
+  local brave_total=0
+  local BRAVE_BASE="$HOME/.config/BraveSoftware/Brave-Browser/Default"
+  for d in Cache "Code Cache" GPUCache DawnGraphiteCache DawnWebGPUCache CacheStorage "Service Worker"; do
+    [[ -d "$BRAVE_BASE/$d" ]] && brave_total=$(( brave_total + $(du -sk "$BRAVE_BASE/$d" 2>/dev/null | cut -f1) ))
+  done
+  if (( brave_total > 0 )); then
+    sz=$(echo "scale=1; $brave_total/1024" | bc 2>/dev/null)
+    echo -e "  ${M}${sz}M${N}  ${W}browser cache (brave + firefox)${N}  ${D}arc browser-clean${N}"
+  fi
+
+  if [[ -d /var/cache/apt/archives ]]; then
+    sz=$(du -sh /var/cache/apt/archives 2>/dev/null | cut -f1)
+    echo -e "  ${M}${sz}${N}  ${W}apt archive cache${N}     ${D}sudo apt clean${N}"
+  fi
+
+  if command -v flatpak &>/dev/null; then
+    local unused
+    unused=$(flatpak list --app --columns=application 2>/dev/null | wc -l)
+    echo -e "  ${D}?${N}     ${W}unused flatpak runtimes${N}   ${D}arc disk clean  (size varies, safe — only prunes orphaned runtimes)${N}"
+  fi
+
+  echo -e "\n$HR"
+  echo -e "  ${D}arc disk clean${N}  reclaims all of the above except pip/apt (run those directly)"
+  echo -e "$HR"
+}
+
+_disk_clean() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc disk clean${N}  —  reclaim safe, known caches"
+  echo -e "$HR\n"
+
+  local start end mb
+  start=$(disk_kb)
+
+  if command -v npm &>/dev/null; then
+    echo -e "  ${C}npm cache...${N}"
+    npm cache clean --force &>/dev/null
+    rm -rf "$HOME/.npm/_npx"/* 2>/dev/null
+    echo -e "  ${G}✓${N}  cleaned (_cacache + _npx)"
+  fi
+
+  if [[ -d "$HOME/.local/share/claude/versions" ]]; then
+    echo -e "  ${C}superseded Claude Code CLI versions...${N}"
+    local current removed=0
+    current=$(claude --version 2>/dev/null | awk '{print $1}')
+    for v in "$HOME/.local/share/claude/versions"/*; do
+      [[ -e "$v" ]] || continue
+      [[ "$(basename "$v")" == "$current" ]] && continue
+      rm -f "$v" && (( removed++ ))
+    done
+    (( removed > 0 )) && echo -e "  ${G}✓${N}  removed ${removed} old version(s), kept ${current}" \
+      || echo -e "  ${D}·${N}  nothing superseded"
+  fi
+
+  if command -v flatpak &>/dev/null; then
+    echo -e "  ${C}unused flatpak runtimes...${N}"
+    local fp_out
+    fp_out=$(flatpak uninstall -y --unused 2>&1)
+    if [[ "$fp_out" == *"Nothing unused"* ]]; then
+      echo -e "  ${D}·${N}  nothing unused"
+    else
+      echo -e "  ${G}✓${N}  pruned"
+    fi
+  fi
+
+  end=$(disk_kb)
+  mb=$(saved_mb "$start" "$end")
+
+  echo -e "\n$HR"
+  echo -e "  ${G}done${N}  ${D}·${N}  ${G}+${mb} MB reclaimed${N}"
+  echo -e "  ${C}disk${N}    $(disk_used) used  ${D}·${N}  $(disk_free) free"
+  echo -e "  ${D}still growing? try:${N}  ${C}arc browser-clean${N}  ·  ${C}sudo apt clean${N}"
+  echo -e "$HR"
+}
+
+cmd_disk() {
+  local sub="${1:-}"
+  case "$sub" in
+    ''|top)  _disk_top ;;
+    caches)  _disk_caches ;;
+    clean)   _disk_clean ;;
+    *)
+      echo -e "${R}unknown:${N} arc disk ${sub}"
+      echo -e "${D}options: top (default) · caches · clean${N}"
+      ;;
+  esac
+}
+
+# ── Audit ──────────────────────────────────────────────────────────────────────
+cmd_audit() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc audit${N}  —  git repository audit"
+  echo -e "$HR"
+
+  local found=0
+  while IFS= read -r d; do
+    [[ -z "$d" ]] && continue
+    found=1
+    local name branch short ahead behind last
+    name=$(basename "$d")
+    branch=$(git -C "$d" branch --show-current 2>/dev/null)
+    last=$(git -C "$d" log -1 --format="%cr" 2>/dev/null || echo "no commits")
+    short=$(git -C "$d" status --short 2>/dev/null)
+
+    echo -e "\n${C}fetching ${name}...${N}" >&2
+    git -C "$d" fetch --prune &>/dev/null
+
+    ahead=$(git -C "$d" rev-list @{u}..HEAD 2>/dev/null | wc -l | tr -d ' ')
+    behind=$(git -C "$d" rev-list HEAD..@{u} 2>/dev/null | wc -l | tr -d ' ')
+
+    if [[ -n "$short" ]]; then
+      echo -e "\n  ${Y}⚠${N}  ${W}${name}${N}  ${D}[${branch}]${N}  ${D}·  ${last}${N}"
+      echo "$short" | while IFS= read -r line; do
+        echo -e "       ${D}${line}${N}"
+      done
+    else
+      echo -e "\n  ${G}✓${N}  ${W}${name}${N}  ${D}[${branch}]${N}  ${D}·  ${last}${N}"
+    fi
+
+    (( ahead  > 0 )) && echo -e "       ${C}${ahead} commit(s) ahead of remote — push when ready${N}"
+    (( behind > 0 )) && echo -e "       ${R}${behind} commit(s) behind remote — consider pulling${N}"
+  done < <(scan_repos)
+
+  (( found == 0 )) && echo -e "  ${D}no repos found${N}"
+  echo -e "\n$HR"
+}
+
+# ── Setup ──────────────────────────────────────────────────────────────────────
+cmd_setup() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc setup${N}  —  git + ssh first-time configuration"
+  echo -e "$HR\n"
+
+  echo -e "${C}installing git...${N}"
+  sudo apt update && sudo apt install git -y
+
+  echo ""
+  read -rp "  github username: " git_user
+  read -rp "  github email:    " git_email
+
+  git config --global user.name  "$git_user"
+  git config --global user.email "$git_email"
+  git config --global core.excludesfile ~/.gitignore_global
+  git config --global init.defaultBranch main
+
+  echo -e "\n${C}global gitignore...${N}"
+  for entry in '.env' '*.env.local' '*.log' 'node_modules/' '.DS_Store' '__pycache__/' '*.pyc' '.expo/'; do
+    grep -qxF "$entry" ~/.gitignore_global 2>/dev/null || echo "$entry" >> ~/.gitignore_global
+  done
+
+  local key_is_new=0
+  if [[ ! -f ~/.ssh/id_ed25519 ]]; then
+    echo -e "\n${C}generating ssh key (ed25519)...${N}"
+    ssh-keygen -t ed25519 -C "$git_email" -f ~/.ssh/id_ed25519 -N ""
+    eval "$(ssh-agent -s)"
+    ssh-add ~/.ssh/id_ed25519
+    key_is_new=1
+  else
+    echo -e "\n${D}ssh key already exists — skipping keygen${N}"
+  fi
+
+  echo -e "\n$HR"
+  if (( key_is_new )); then
+    echo -e "  ${C}add this key to github.com › Settings › SSH keys${N}"
+  else
+    echo -e "  ${D}your existing key — only add to GitHub if not already done${N}"
+  fi
+  echo -e "$HR"
+  cat ~/.ssh/id_ed25519.pub
+  echo -e "$HR"
+  echo -e "  ${D}test with:  ssh -T git@github.com${N}"
+  echo -e "$HR"
+}
+
+# ── Keys ───────────────────────────────────────────────────────────────────────
+_KEYS_LIST=(
+  "$HOME/.ssh/id_ed25519:kwasikontor45 (primary)"
+  "$HOME/.ssh/id_ed25519_k6:k6-bleedin6ed6e-k6 (contingency)"
+)
+
+_keys_guard() {
+  local quiet=0
+  [[ "${1:-}" == "--quiet" ]] && quiet=1
+
+  ssh-add -l &>/dev/null
+  local rc=$?
+  if (( rc == 2 )); then
+    (( quiet )) || { echo -e "  ${R}✗${N}  no ssh-agent reachable"; }
+    return 1
+  fi
+
+  (( quiet )) || { echo -e "$HR"; echo -e "  ${C}${B}arc keys guard${N}  —  ensure GitHub keys load with confirm-on-use"; echo -e "$HR\n"; }
+
+  local loaded_fps; loaded_fps=$(ssh-add -l 2>/dev/null | awk '{print $2}')
+
+  for entry in "${_KEYS_LIST[@]}"; do
+    local path="${entry%%:*}" label="${entry##*:}"
+    [[ -f "$path" ]] || continue
+    local fp; fp=$(ssh-keygen -lf "$path" 2>/dev/null | awk '{print $2}')
+    if [[ -n "$fp" ]] && grep -q "$fp" <<< "$loaded_fps"; then
+      (( quiet )) || echo -e "  ${D}·${N}  ${label} already loaded"
+    else
+      if ssh-add -c "$path" &>/dev/null; then
+        echo -e "  ${G}✓${N}  ${label} loaded with confirm-on-use"
+      else
+        (( quiet )) || echo -e "  ${R}✗${N}  ${label} failed to load"
+      fi
+    fi
+  done
+
+  (( quiet )) || echo -e "$HR"
+}
+
+cmd_keys() {
+  local sub="${1:-}"
+  case "$sub" in
+    guard)
+      _keys_guard
+      ;;
+    guard-quiet)
+      _keys_guard --quiet
+      ;;
+    '')
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc keys${N}  —  SSH public keys"
+      echo -e "$HR\n"
+
+      for entry in "${_KEYS_LIST[@]}"; do
+        local path="${entry%%:*}"
+        local label="${entry##*:}"
+        echo -e "  ${C}${label}${N}"
+        if [[ -f "${path}.pub" ]]; then
+          echo -e "  ${G}✓${N}  ${path}.pub"
+          echo -e "  ${D}$(cat "${path}.pub")${N}"
+          echo -e "  ${D}test: ssh -T git@github.com${N}"
+        else
+          echo -e "  ${R}✗${N}  ${path}.pub not found"
+        fi
+        echo ""
+      done
+
+      echo -e "  ${D}to add a key: github.com › Settings › SSH and GPG keys › New SSH key${N}"
+      echo -e "  ${D}arc keys guard         ${N}${D}— load both into the agent with confirm-on-use${N}"
+      echo -e "  ${D}arc keys guard-quiet   ${N}${D}— same, silent unless it loads something (manual — no longer auto-run at shell startup, too disruptive in practice)${N}"
+      echo -e "$HR"
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc keys ${sub}"
+      echo -e "${D}options: guard · guard-quiet${N}"
+      ;;
+  esac
+}
+
+# ── Expo ───────────────────────────────────────────────────────────────────────
+cmd_expo() {
+  local mode_arg="${1:-}"
+  local PROJECT_DIR="${ARC_EXPO_DIR:-}"
+
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc expo${N}  —  expo dev server"
+  echo -e "$HR\n"
+
+  if [[ -z "$PROJECT_DIR" ]]; then
+    echo -e "  ${R}ARC_EXPO_DIR is not set${N}"
+    echo -e "  ${D}add to ~/.bashrc:${N}"
+    echo -e "  ${D}export ARC_EXPO_DIR=\"/path/to/expo/project\"${N}"
+    echo -e "$HR"
+    return 1
+  fi
+
+  # Kill stale Metro on 8081
+  local stale
+  stale=$(lsof -ti :8081 2>/dev/null || true)
+  if [[ -n "$stale" ]]; then
+    echo -e "${Y}clearing stale Metro on 8081...${N}"
+    echo "$stale" | xargs kill -9 2>/dev/null || true
+    sleep 1
+  fi
+
+  # Mode: explicit arg > env var > tunnel default
+  local MODE
+  if [[ "$mode_arg" == "lan" ]]; then
+    MODE="lan"
+  elif [[ "$mode_arg" == "tunnel" ]]; then
+    MODE="tunnel"
+  else
+    MODE="${ARC_EXPO_MODE:-tunnel}"
+  fi
+
+  echo -e "  ${D}mode: --${MODE}${N}"
+  echo -e "${C}starting Expo...${N}"
+  echo -e "$HR\n"
+
+  cd "$PROJECT_DIR" || return 1
+
+  local PKG
+  if [[ -f pnpm-lock.yaml ]]; then
+    PKG="pnpm"
+  elif [[ -f yarn.lock ]]; then
+    PKG="yarn"
+  else
+    PKG="npx"
+  fi
+
+  $PKG expo start --$MODE --clear
+}
+
+
+# ── Mirror ─────────────────────────────────────────────────────────────────────
+cmd_mirror() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc mirror${N}  —  push repo to k6 contingency"
+  echo -e "$HR\n"
+
+  local dir
+  dir=$(git rev-parse --show-toplevel 2>/dev/null)
+  if [[ -z "$dir" ]]; then
+    echo -e "  ${R}✗${N}  not inside a git repo"
+    echo -e "  ${D}cd into a repo first, then run arc mirror${N}"
+    echo -e "$HR"
+    return 1
+  fi
+
+  local name
+  name=$(basename "$dir")
+  local remote="git@github-k6:k6-bleedin6ed6e-k6/${name}.git"
+
+  echo -e "  ${C}repo:${N}   ${name}"
+  echo -e "  ${C}target:${N} ${remote}\n"
+
+  echo -e "  ${C}pushing all branches...${N}"
+  git -C "$dir" push "$remote" --all && echo -e "  ${G}✓${N}  branches pushed"
+
+  echo -e "  ${C}pushing tags...${N}"
+  git -C "$dir" push "$remote" --tags && echo -e "  ${G}✓${N}  tags pushed"
+
+  echo -e "\n$HR"
+}
+
+# ── Wire ───────────────────────────────────────────────────────────────────────
+cmd_wire() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc wire${N}  —  wire dual-push for this repo"
+  echo -e "$HR\n"
+
+  local dir
+  dir=$(git rev-parse --show-toplevel 2>/dev/null)
+  if [[ -z "$dir" ]]; then
+    echo -e "  ${R}✗${N}  not inside a git repo"
+    echo -e "$HR"; return 1
+  fi
+
+  local name fetch_url
+  name=$(basename "$dir")
+  fetch_url=$(git -C "$dir" remote get-url origin 2>/dev/null)
+  if [[ -z "$fetch_url" ]]; then
+    echo -e "  ${R}✗${N}  no origin remote found"
+    echo -e "$HR"; return 1
+  fi
+
+  local k6_url="git@github-k6:k6-bleedin6ed6e-k6/${name}.git"
+  echo -e "  ${C}repo:${N}    ${name}"
+  echo -e "  ${C}primary:${N} ${fetch_url}"
+  echo -e "  ${C}k6:${N}      ${k6_url}\n"
+
+  local push_urls
+  push_urls=$(git -C "$dir" remote -v | grep '(push)' | awk '{print $2}')
+  if echo "$push_urls" | grep -q "k6-bleedin6ed6e-k6"; then
+    echo -e "  ${G}✓${N}  dual-push already wired"
+    echo -e "$HR"; return 0
+  fi
+
+  git -C "$dir" remote set-url --push origin "$fetch_url" \
+    && echo -e "  ${G}✓${N}  primary push: ${fetch_url}"
+  git -C "$dir" remote set-url --push --add origin "$k6_url" \
+    && echo -e "  ${G}✓${N}  k6 push:      ${k6_url}"
+
+  echo -e "\n  ${D}verify: git remote -v${N}"
+  echo -e "$HR"
+}
+
+# ── Day ────────────────────────────────────────────────────────────────────────
+cmd_day() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc day${N}  —  morning startup"
+  echo -e "$HR\n"
+
+  # ── SOP ack gate (soft) ────────────────────────────────────────────────────
+  if ! arc-sop ack-today 2>/dev/null; then
+    notify-send -u critical -i dialog-warning "arc · SOP gate" "No SOP acknowledgment recorded today. Run: arc sop ack" 2>/dev/null || true
+    echo -e "  ${Y}⚠${N}  ${B}no SOP acknowledgment recorded today${N}"
+    echo -e "  ${M}agents:${N}  read ${C}~/dev-notes/intel-ops/SOT.md${N}  then run ${C}arc sop ack${N}"
+    echo -e "  ${D}MO V:${N}    log ${C}[STARTING]${N} ${D}in GAMEPLAN.md before any task${N}"
+    echo -e ""
+    printf "  ${D}press Enter to continue · Ctrl-C to abort:${N} "
+    read -r _arc_sop_gate
+    echo ""
+  fi
+
+  echo -e "  ${C}storage drive${N}"
+  if storage_ok; then
+    local usb_used usb_free
+    usb_used=$(df -h /mnt/storage | awk 'NR==2 {print $3}')
+    usb_free=$(df -h /mnt/storage | awk 'NR==2 {print $4}')
+    echo -e "  ${G}✓${N}  /mnt/storage mounted  —  ${usb_used} used · ${usb_free} free"
+  else
+    echo -e "  ${R}✗${N}  USB not accessible — run ${C}arc mount${N}  ${D}(stale mount or unplugged)${N}"
+    echo -e "\n$HR"
+    return 1
+  fi
+
+  local STAMP="$HOME/.usb-bakup/.last-sync"
+  echo ""
+  echo -e "  ${C}backup${N}"
+  if [[ -f "$STAMP" ]]; then
+    echo -e "  ${D}·${N}  last sync: $(cat "$STAMP")"
+  else
+    echo -e "  ${Y}!${N}  no backup on record — run ${C}arc backup${N} before you start"
+  fi
+
+  echo ""
+  echo -e "$HR"
+  cmd_status
+
+  echo ""
+  echo -e "  ${C}SOP compliance check${N}"
+  cmd_arc_check
+}
+
+# ── Backup ─────────────────────────────────────────────────────────────────────
+cmd_backup() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc backup${N}  —  sync local work → USB vault"
+  echo -e "$HR\n"
+
+  local BAKUP_SCRIPT
+  BAKUP_SCRIPT=$(command -v bakup-usb 2>/dev/null)
+  if [[ -z "$BAKUP_SCRIPT" ]]; then
+    for p in "$HOME/local-dev/bakup-usb" "$HOME/.local/bin/bakup-usb"; do
+      [[ -x "$p" ]] && BAKUP_SCRIPT="$p" && break
+    done
+  fi
+
+  if [[ -z "$BAKUP_SCRIPT" ]]; then
+    echo -e "  ${R}bakup-usb not found${N}"
+    echo -e "  ${D}expected at ~/local-dev/bakup-usb${N}"
+    echo -e "$HR"
+    return 1
+  fi
+
+  bash "$BAKUP_SCRIPT"
+  echo -e "$HR"
+}
+
+# ── Sync ───────────────────────────────────────────────────────────────────────
+cmd_sync() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc sync${N}  —  vault → MEGA cloud backup"
+  echo -e "$HR\n"
+
+  if ! storage_ok; then
+    echo -e "  ${R}✗${N}  USB not accessible — cannot sync to MEGA  ${D}(stale mount or unplugged)${N}"
+    echo -e "$HR"
+    return 1
+  fi
+
+  echo -e "  ${C}syncing vault → MEGA...${N}"
+  if sudo /usr/local/bin/vault-backup-mega; then
+    echo -e "  ${G}✓${N}  MEGA vault sync complete"
+    notify-send -i dialog-information "arc sync" "MEGA vault sync complete" 2>/dev/null || true
+
+    local SIZE_LOG="/var/log/vault-mega-sizes.csv"
+    if [[ -r "$SIZE_LOG" ]]; then
+      local cur_bytes prev_bytes cur_gb
+      cur_bytes=$(tail -1 "$SIZE_LOG" 2>/dev/null | cut -d',' -f2)
+      prev_bytes=$(tail -2 "$SIZE_LOG" 2>/dev/null | head -1 | cut -d',' -f2)
+      if [[ "$cur_bytes" =~ ^[0-9]+$ ]]; then
+        cur_gb=$(echo "scale=2; $cur_bytes / 1073741824" | bc 2>/dev/null)
+        if [[ "$prev_bytes" =~ ^[0-9]+$ ]] && (( prev_bytes > 0 )); then
+          local pct=$(( (cur_bytes - prev_bytes) * 100 / prev_bytes ))
+          if (( pct >= 15 )); then
+            echo -e "  ${Y}⚠  vault grew ${pct}% since last sync — now ${cur_gb}G${N}"
+          else
+            echo -e "  ${D}vault size: ${cur_gb}G  (${pct}% vs last sync)${N}"
+          fi
+        else
+          echo -e "  ${D}vault size: ${cur_gb}G${N}"
+        fi
+      fi
+    fi
+  else
+    echo -e "  ${R}✗${N}  MEGA sync failed — check /var/log/vault-mega.log"
+    notify-send -u critical -i dialog-error "arc sync" "MEGA sync failed — check /var/log/vault-mega.log" 2>/dev/null || true
+  fi
+  echo -e "\n$HR"
+}
+
+# ── MEGA browser ───────────────────────────────────────────────────────────────
+cmd_mega() {
+  local sub="${1:-}"
+  local path="${2:-}"
+  local remote="mega:${path:+/$path}"
+
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc mega${N}  —  browse MEGA cloud contents"
+  echo -e "$HR\n"
+
+  case "$sub" in
+    ls)
+      echo -e "  ${D}rclone ls ${remote}${N}\n"
+      rclone ls "$remote"
+      ;;
+    lsd)
+      echo -e "  ${D}rclone lsd ${remote}${N}\n"
+      rclone lsd "$remote"
+      ;;
+    tree)
+      echo -e "  ${D}rclone tree ${remote}${N}\n"
+      rclone tree "$remote"
+      ;;
+    *)
+      echo -e "  ${D}subcommands:${N}"
+      echo -e "  ${C}arc mega ls   ${D}[path]${N}    ${M}list files with sizes${N}"
+      echo -e "  ${C}arc mega lsd  ${D}[path]${N}    ${M}list directories only${N}"
+      echo -e "  ${C}arc mega tree ${D}[path]${N}    ${M}visual tree${N}"
+      echo -e "\n  ${D}examples:${N}"
+      echo -e "  ${D}arc mega ls${N}               ${D}# top-level files${N}"
+      echo -e "  ${D}arc mega lsd${N}              ${D}# top-level dirs${N}"
+      echo -e "  ${D}arc mega tree vault${N}       ${D}# tree of mega:/vault${N}"
+      echo -e "  ${D}arc mega ls vault/forge${N}   ${D}# files in mega:/vault/forge${N}"
+      ;;
+  esac
+
+  echo -e "\n$HR"
+}
+
+# ── Storage unmount kill switch ────────────────────────────────────────────────
+# Auto-clears known/likely blockers before unmounting /mnt/storage so
+# restart/safe-reboot/stop don't stall the way arc safe-reboot did on
+# 2026-07-29 (notes-site.service's server had its cwd inside the mount,
+# PID 3294, required manual diagnosis via lsof). Runs before every umount
+# attempt, not as a retry-after-failure, so the existing umount call just
+# succeeds. Only used by the local restart/reboot/stop workflows below —
+# not a general permission bypass of anything (SOP gate is untouched).
+_kill_storage_blockers() {
+  if systemctl --user is-active --quiet notes-site.service 2>/dev/null; then
+    systemctl --user stop notes-site.service 2>/dev/null \
+      && echo -e "  ${G}✓${N}  stopped notes-site.service (was serving from inside the mount)"
+  fi
+
+  local blockers pid comm
+  blockers=$(sudo lsof -t +D /mnt/storage 2>/dev/null | sort -u)
+  if [[ -n "$blockers" ]]; then
+    for pid in $blockers; do
+      comm=$(ps -p "$pid" -o comm= 2>/dev/null)
+      kill "$pid" 2>/dev/null && echo -e "  ${G}✓${N}  killed blocker: ${comm:-pid $pid} (pid $pid)"
+    done
+    sleep 1
+  fi
+}
+
+# ── Restart ────────────────────────────────────────────────────────────────────
+cmd_restart() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc restart${N}  —  safe warm restart"
+  echo -e "$HR\n"
+
+  pgrep -f "eero-watch.py" &>/dev/null \
+    && pkill -f "eero-watch.py" && echo -e "  ${G}✓${N}  eero-watch stopped"
+
+  local killed=0
+  for pat in "expo start" "metro" "npx expo" "node_modules/.bin/expo"; do
+    if pgrep -f "$pat" &>/dev/null; then
+      pkill -f "$pat" 2>/dev/null && echo -e "  ${G}✓${N}  killed: $pat" && killed=1
+    fi
+  done
+  (( killed == 0 )) && echo -e "  ${D}·${N}  no dev servers running"
+
+  echo ""
+  if mountpoint -q /mnt/storage 2>/dev/null; then
+    echo -e "  ${C}backing up before unmount...${N}"
+    cmd_backup
+    echo ""
+    _kill_storage_blockers
+    echo -e "  ${C}unmounting storage drive...${N}"
+    if sudo umount /mnt/storage 2>/dev/null; then
+      echo -e "  ${G}✓${N}  /mnt/storage unmounted"
+      sudo cryptsetup close storage_crypt 2>/dev/null && \
+        echo -e "  ${G}✓${N}  LUKS container closed"
+    else
+      echo -e "  ${R}✗${N}  unmount failed — check: lsof +D /mnt/storage"
+      echo -e "  ${R}aborting restart${N}"
+      return 1
+    fi
+  else
+    echo -e "  ${D}·${N}  storage not mounted — skipping"
+  fi
+
+  echo ""
+  for i in 5 4 3 2 1; do
+    printf "\r  ${Y}logging out in ${i}s — Ctrl+C to abort${N}  "
+    sleep 1
+  done
+  printf "\n"
+  xfce4-session-logout --logout --fast
+}
+
+# ── Safe reboot ────────────────────────────────────────────────────────────────
+cmd_safe_reboot() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc safe-reboot${N}  —  clean shutdown + system reboot"
+  echo -e "$HR\n"
+
+  pgrep -f "eero-watch.py" &>/dev/null \
+    && pkill -f "eero-watch.py" && echo -e "  ${G}✓${N}  eero-watch stopped"
+
+  local killed=0
+  for pat in "expo start" "metro" "npx expo" "node_modules/.bin/expo"; do
+    if pgrep -f "$pat" &>/dev/null; then
+      pkill -f "$pat" 2>/dev/null && echo -e "  ${G}✓${N}  killed: $pat" && killed=1
+    fi
+  done
+  (( killed == 0 )) && echo -e "  ${D}·${N}  no dev servers running"
+
+  echo ""
+  if mountpoint -q /mnt/storage 2>/dev/null; then
+    echo -e "  ${C}backing up before unmount...${N}"
+    cmd_backup
+    echo ""
+    _kill_storage_blockers
+    echo -e "  ${C}unmounting storage drive...${N}"
+    if sudo umount /mnt/storage 2>/dev/null; then
+      echo -e "  ${G}✓${N}  /mnt/storage unmounted"
+      sudo cryptsetup close storage_crypt 2>/dev/null && \
+        echo -e "  ${G}✓${N}  LUKS container closed"
+    else
+      echo -e "  ${R}✗${N}  unmount failed — check: lsof +D /mnt/storage"
+      echo -e "  ${R}aborting reboot${N}"
+      return 1
+    fi
+  else
+    echo -e "  ${D}·${N}  storage not mounted — skipping"
+  fi
+
+  echo ""
+  for i in 5 4 3 2 1; do
+    printf "\r  ${Y}rebooting in ${i}s — Ctrl+C to abort${N}  "
+    sleep 1
+  done
+  printf "\n"
+  sudo reboot
+}
+
+# ── Browser Cache Clean ────────────────────────────────────────────────────────
+cmd_browser_clean() {
+  local FORCE=0
+  [[ "${1:-}" == "--force" ]] && FORCE=1
+
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc browser-clean${N}  —  clear Brave + Firefox caches"
+  (( FORCE )) && echo -e "  ${Y}·${N}  --force: cleaning even if browsers are open"
+  echo -e "$HR\n"
+
+  local total_before total_after freed
+  total_before=$(df / | awk 'NR==2 {print $3}')
+
+  # ── Brave ──────────────────────────────────────────────────────────────────
+  echo -e "  ${C}brave${N}"
+  local BRAVE_BASE="$HOME/.config/BraveSoftware/Brave-Browser/Default"
+  local BRAVE_CACHE_DIRS=(
+    "Cache"
+    "Code Cache"
+    "GPUCache"
+    "DawnGraphiteCache"
+    "DawnWebGPUCache"
+    "CacheStorage"
+    "Service Worker"
+  )
+
+  if pgrep -x "brave-browser" &>/dev/null || pgrep -f "brave-browser" &>/dev/null; then
+    if (( FORCE )); then
+      echo -e "  ${Y}·${N}  brave is running — forcing clean anyway"
+    else
+      echo -e "  ${Y}·${N}  brave is running — skipping (use --force to override)"
+      echo ""
+    fi
+  fi
+
+  if ! pgrep -f "brave-browser" &>/dev/null || (( FORCE )); then
+    local brave_cleaned=0
+    for d in "${BRAVE_CACHE_DIRS[@]}"; do
+      local full="$BRAVE_BASE/$d"
+      if [[ -d "$full" ]]; then
+        local sz; sz=$(du -sh "$full" 2>/dev/null | cut -f1)
+        rm -rf "$full" 2>/dev/null && \
+          echo -e "  ${G}✓${N}  cleared: ${D}${d}${N}  ${D}(${sz})${N}" && \
+          (( brave_cleaned++ ))
+      fi
+    done
+    (( brave_cleaned == 0 )) && echo -e "  ${D}·${N}  nothing to clean"
+  fi
+
+  # ── Firefox ────────────────────────────────────────────────────────────────
+  echo ""
+  echo -e "  ${C}firefox${N}"
+  local FF_PROFILE="$HOME/.mozilla/firefox"
+
+  if pgrep -x "firefox" &>/dev/null || pgrep -f "firefox-esr" &>/dev/null; then
+    if (( FORCE )); then
+      echo -e "  ${Y}·${N}  firefox is running — forcing clean anyway"
+    else
+      echo -e "  ${Y}·${N}  firefox is running — skipping (use --force to override)"
+      echo ""
+    fi
+  fi
+
+  if ! pgrep -f "firefox" &>/dev/null || (( FORCE )); then
+    local ff_cleaned=0
+    # per-profile cache dirs
+    for profile_dir in "$FF_PROFILE"/*/; do
+      [[ -d "$profile_dir" ]] || continue
+      for subdir in cache2 startupCache minidumps crashes "saved-telemetry-pings" "sessionstore-logs"; do
+        local target="$profile_dir$subdir"
+        if [[ -d "$target" ]]; then
+          local sz; sz=$(du -sh "$target" 2>/dev/null | cut -f1)
+          rm -rf "$target" 2>/dev/null && \
+            echo -e "  ${G}✓${N}  cleared: ${D}$(basename "$profile_dir")/${subdir}${N}  ${D}(${sz})${N}" && \
+            (( ff_cleaned++ ))
+        fi
+      done
+    done
+    # top-level crash and telemetry dirs
+    for d in "Crash Reports" "Pending Pings"; do
+      local target="$FF_PROFILE/$d"
+      if [[ -d "$target" ]]; then
+        local sz; sz=$(du -sh "$target" 2>/dev/null | cut -f1)
+        rm -rf "$target" 2>/dev/null && \
+          echo -e "  ${G}✓${N}  cleared: ${D}${d}${N}  ${D}(${sz})${N}" && \
+          (( ff_cleaned++ ))
+      fi
+    done
+    (( ff_cleaned == 0 )) && echo -e "  ${D}·${N}  nothing to clean"
+  fi
+
+  echo ""
+  total_after=$(df / | awk 'NR==2 {print $3}')
+  freed=$(( total_before - total_after ))
+  echo -e "$HR"
+  if (( freed > 0 )); then
+    echo -e "  ${G}freed: ~${freed}KB${N}"
+  else
+    echo -e "  ${D}freed: 0  (caches already empty or browsers were open)${N}"
+  fi
+  echo -e "$HR"
+}
+
+# ── Stop ───────────────────────────────────────────────────────────────────────
+cmd_stop() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc stop${N}  —  safe end-of-day shutdown"
+  echo -e "$HR\n"
+
+  # ── DONE-balance gate (soft) ────────────────────────────────────────────────
+  if ! arc-sop done-balance 2>/dev/null; then
+    notify-send -u critical -i dialog-warning "arc · stop gate" "Tasks without [DONE] in GAMEPLAN.md. Log before stopping." 2>/dev/null || true
+    echo -e "  ${Y}⚠${N}  ${B}some tasks have no [DONE] entry in GAMEPLAN.md${N}"
+    echo -e "  ${D}MO V: log [DONE] after every task before stopping${N}"
+    echo -e ""
+    printf "  ${D}press Enter to continue · Ctrl-C to go log it:${N} "
+    read -r _arc_done_gate
+    echo ""
+  fi
+
+  local killed=0
+  for pat in "expo start" "metro" "npx expo" "node_modules/.bin/expo"; do
+    if pgrep -f "$pat" &>/dev/null; then
+      pkill -f "$pat" 2>/dev/null && echo -e "  ${G}✓${N}  killed: $pat" && killed=1
+    fi
+  done
+  (( killed == 0 )) && echo -e "  ${D}·${N}  no dev servers running"
+
+  echo ""
+  echo -e "  ${C}running backup before unmount...${N}"
+  cmd_backup
+
+  echo ""
+  if mountpoint -q /mnt/storage 2>/dev/null; then
+    _kill_storage_blockers
+    echo -e "  ${C}unmounting storage drive...${N}"
+    if sudo umount /mnt/storage 2>/dev/null; then
+      echo -e "  ${G}✓${N}  /mnt/storage unmounted"
+      sudo cryptsetup close storage_crypt 2>/dev/null && \
+        echo -e "  ${G}✓${N}  LUKS container closed"
+      echo -e "\n  ${G}safe to unplug the drive.${N}"
+    else
+      echo -e "  ${R}✗${N}  unmount failed — check for open files"
+      echo -e "     ${D}lsof +D /mnt/storage${N}"
+    fi
+  else
+    echo -e "  ${D}·${N}  drive not mounted — nothing to unmount"
+  fi
+
+  echo ""
+  echo -e "  ${C}SOP compliance check${N}"
+  cmd_arc_check
+
+  echo -e "\n$HR"
+}
+
+# ── Break ──────────────────────────────────────────────────────────────────────
+BREAK_BIN="$HOME/.local/bin/arc-break"
+BREAK_PID="$HOME/.local/share/arc-break/arc-break.pid"
+
+cmd_break() {
+  local sub="${1:-status}"
+  shift 2>/dev/null
+
+  case "$sub" in
+    start)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc break start${N}"
+      echo -e "$HR\n"
+      if [[ -f "$BREAK_PID" ]] && kill -0 "$(cat "$BREAK_PID")" 2>/dev/null; then
+        echo -e "  ${Y}!${N}  arc-break already running  —  PID $(cat "$BREAK_PID")"
+        echo -e "$HR"; return 0
+      fi
+      # Runs as a systemd --user unit (not nohup/disown) so it survives the
+      # terminal closing -- nohup only blocks SIGHUP, it doesn't detach from
+      # the terminal's session, and desktop/terminal-emulator session teardown
+      # can still reap it. A user service is supervised independently of any
+      # terminal's lifecycle.
+      systemctl --user start arc-break.service
+      sleep 0.3
+      local pid
+      pid=$(cat "$BREAK_PID" 2>/dev/null || echo "?")
+      echo -e "  ${G}✓${N}  arc-break started  —  PID ${pid}  (survives closing this terminal)"
+      echo -e "  ${D}arc break status  ·  arc break stop  ·  arc break snooze${N}"
+      echo -e "$HR"
+      ;;
+
+    stop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc break stop${N}"
+      echo -e "$HR\n"
+      if [[ -f "$BREAK_PID" ]] && kill -0 "$(cat "$BREAK_PID")" 2>/dev/null; then
+        systemctl --user stop arc-break.service 2>/dev/null
+        echo -e "  ${G}✓${N}  arc-break stopped"
+      else
+        echo -e "  ${D}·${N}  not running"
+      fi
+      echo -e "$HR"
+      ;;
+
+    status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc break status${N}"
+      echo -e "$HR\n"
+      if [[ ! -f "$BREAK_PID" ]] || ! kill -0 "$(cat "$BREAK_PID")" 2>/dev/null; then
+        echo -e "  ${D}·${N}  not running  —  ${C}arc break start${N} to begin"
+        echo -e "$HR"; return 0
+      fi
+      local info
+      info=$(python3 "$BREAK_BIN" status 2>/dev/null)
+      echo -e "  ${G}●${N}  ${M}${info}${N}"
+      echo -e "$HR"
+      ;;
+
+    snooze)
+      local mins="${1:-5}"
+      python3 "$BREAK_BIN" snooze "$mins" 2>/dev/null \
+        && echo -e "  ${G}✓${N}  break snoozed ${mins} min" \
+        || echo -e "  ${R}✗${N}  arc-break not running"
+      ;;
+
+    skip)
+      python3 "$BREAK_BIN" skip 2>/dev/null \
+        && echo -e "  ${G}✓${N}  break skipped — work timer reset" \
+        || echo -e "  ${R}✗${N}  arc-break not running"
+      ;;
+
+    config)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc break config${N}"
+      echo -e "$HR\n"
+      python3 "$BREAK_BIN" config 2>/dev/null | while IFS= read -r line; do
+        echo -e "  ${D}·${N}  ${M}${line}${N}"
+      done
+      echo -e "$HR"
+      ;;
+
+    gui)
+      if pgrep -f "arc-break gui" &>/dev/null; then
+        echo -e "  ${Y}!${N}  arc-break gui already open"
+      else
+        nohup python3 "$BREAK_BIN" gui &>/dev/null &
+        disown
+        echo -e "  ${G}✓${N}  arc-break gui launched"
+      fi
+      ;;
+
+    *)
+      echo -e "  usage: arc break [start|stop|status|snooze [N]|skip|config|gui]"
+      ;;
+  esac
+}
+
+# ── Eero ───────────────────────────────────────────────────────────────────────
+EERO_DIR="$HOME/dev-notes/surgery-tools/eero"
+EERO_MGR="$EERO_DIR/eero-mgr.py"
+EERO_WATCH="$EERO_DIR/eero-watch.py"
+EERO_LOG="$EERO_DIR/eero-watch.log"
+# aiohttp + the local eero/ package live in a venv -- system python3's pip is
+# blocked on this machine (Debian ensurepip restriction), and there's no
+# equivalent apt package for the hand-written eero/client.py module.
+EERO_PY="$EERO_DIR/.venv/bin/python"
+
+cmd_eero() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc eero${N}  —  router manager"
+  echo -e "$HR\n"
+
+  if [[ ! -f "$EERO_MGR" ]]; then
+    echo -e "  ${R}✗${N}  eero-mgr.py not found at ${EERO_MGR}"
+    echo -e "$HR"
+    return 1
+  fi
+
+  "$EERO_PY" "$EERO_MGR"
+}
+
+cmd_eero_watch() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc eero-watch${N}  —  network monitor"
+  echo -e "$HR\n"
+
+  if [[ ! -f "$EERO_WATCH" ]]; then
+    echo -e "  ${R}✗${N}  eero-watch.py not found at ${EERO_WATCH}"
+    echo -e "$HR"
+    return 1
+  fi
+
+  if pgrep -f "eero-watch.py" &>/dev/null; then
+    echo -e "  ${Y}!${N}  monitor already running  —  use ${C}arc stop-eero${N} to stop it"
+    echo -e "$HR"
+    return 0
+  fi
+
+  nohup "$EERO_PY" "$EERO_WATCH" &>/dev/null &
+  local pid=$!
+  disown
+  echo -e "  ${G}✓${N}  monitor started (background)  —  PID ${pid}"
+  echo -e "  ${D}log:  ${EERO_LOG}${N}"
+  echo -e "  ${D}view: arc eero-logs${N}"
+  echo -e "$HR"
+}
+
+cmd_eero_logs() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc eero-logs${N}  —  watch log"
+  echo -e "$HR\n"
+
+  if [[ ! -f "$EERO_LOG" ]]; then
+    echo -e "  ${R}✗${N}  log not found at ${EERO_LOG}"
+    echo -e "$HR"
+    return 1
+  fi
+
+  if [[ ! -s "$EERO_LOG" ]]; then
+    echo -e "  ${D}·${N}  log is empty"
+    echo -e "$HR"
+    return 0
+  fi
+
+  if command -v glow &>/dev/null; then
+    glow "$EERO_LOG"
+  else
+    less "$EERO_LOG"
+  fi
+
+  echo -e "\n$HR"
+  printf "  ${D}[c] clear log  ·  [enter] keep:${N} "
+  read -r choice
+  if [[ "$choice" == "c" ]]; then
+    truncate -s 0 "$EERO_LOG"
+    echo -e "  ${G}✓${N}  log cleared"
+  fi
+  echo -e "$HR"
+}
+
+cmd_stop_eero() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc stop-eero${N}  —  stop network monitor"
+  echo -e "$HR\n"
+
+  if pgrep -f "eero-watch.py" &>/dev/null; then
+    pkill -f "eero-watch.py" && echo -e "  ${G}✓${N}  monitor stopped"
+  else
+    echo -e "  ${D}·${N}  monitor not running"
+  fi
+  echo -e "$HR"
+}
+
+# ── Emoji ──────────────────────────────────────────────────────────────────────
+EMOJI_LIST="$HOME/.config/emoji-pick/emojis.txt"
+EMOJI_PICK="$HOME/.local/bin/emoji-pick"
+
+cmd_emoji() {
+  local sub="${1:-}"
+
+  case "$sub" in
+    add)
+      shift 2>/dev/null
+      local emoji="$1"; shift
+      local words="$*"
+      if [[ -z "$emoji" || -z "$words" ]]; then
+        echo -e "$HR"
+        echo -e "  ${R}usage:${N}  arc emoji add <emoji> <word1> [word2 ...]"
+        echo -e "$HR"
+        return 1
+      fi
+      mkdir -p "$(dirname "$EMOJI_LIST")"
+      echo "$emoji $words" >> "$EMOJI_LIST"
+      echo -e "$HR"
+      echo -e "  ${G}✓${N}  added: ${emoji} ${D}${words}${N}"
+      echo -e "$HR"
+      ;;
+    list)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc emoji list${N}  —  your emoji list"
+      echo -e "$HR\n"
+      if [[ ! -s "$EMOJI_LIST" ]]; then
+        echo -e "  ${D}·${N}  list is empty — try: arc emoji add 🦊 fox animal"
+      else
+        cat "$EMOJI_LIST" | while IFS= read -r line; do
+          echo -e "  ${D}·${N}  $line"
+        done
+      fi
+      echo -e "\n$HR"
+      ;;
+    edit)
+      mkdir -p "$(dirname "$EMOJI_LIST")"
+      touch "$EMOJI_LIST"
+      nano "$EMOJI_LIST"
+      ;;
+    '')
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc emoji${N}  —  emoji picker"
+      echo -e "$HR\n"
+      if [[ ! -f "$EMOJI_PICK" ]]; then
+        echo -e "  ${R}✗${N}  emoji-pick not found at ${EMOJI_PICK}"
+        echo -e "  ${D}install the script first, then re-run${N}"
+        echo -e "$HR"
+        return 1
+      fi
+      "$EMOJI_PICK"
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc emoji $sub  —  try: arc emoji · add · list · edit"
+      return 1
+      ;;
+  esac
+}
+
+# ── Ref ────────────────────────────────────────────────────────────────────────
+cmd_ref() {
+  local ARCHIVE="${ARC_REF_DIR:-$HOME/archive}"
+  local query="${1:-}"
+
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc ref${N}  —  archived references"
+  echo -e "$HR"
+
+  if [[ ! -d "$ARCHIVE" ]]; then
+    echo -e "  ${R}no archive found${N}"
+    echo -e ""
+    echo -e "  create a folder and drop files into it:"
+    echo -e "  ${D}mkdir ~/archive${N}"
+    echo -e ""
+    echo -e "  or point arc at an existing folder:"
+    echo -e "  ${D}export ARC_REF_DIR=\"\$HOME/your-folder\"  # add to ~/.bashrc${N}"
+    echo -e "$HR"
+    return 1
+  fi
+
+  if [[ -z "$query" ]]; then
+    echo ""
+    find "$ARCHIVE" -type f | sort | while IFS= read -r f; do
+      local size rel
+      size=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+      rel="${f#$ARCHIVE/}"
+      printf "  ${D}·${N}  %-48s  ${D}%s b${N}\n" "$rel" "$size"
+    done
+    echo ""
+    echo -e "  ${D}arc ref <name>     — view a file by name${N}"
+    echo -e "  ${D}arc ref <keyword>  — search across all files${N}"
+  else
+    local match
+    match=$(find "$ARCHIVE" -type f -path "*${query}*" 2>/dev/null | head -1)
+    if [[ -n "$match" ]]; then
+      local rel="${match#$ARCHIVE/}"
+      echo -e "\n  ${G}${rel}${N}\n"
+      echo -e "$HR"
+      case "$match" in
+        *.docx|*.doc) echo -e "  ${D}binary — open manually:${N}\n  ${match}" ;;
+        *)            cat "$match" ;;
+      esac
+    else
+      echo -e "\n  ${C}searching: ${query}${N}\n"
+      local hit=0
+      while IFS= read -r f; do
+        hit=1
+        local rel="${f#$ARCHIVE/}"
+        echo -e "  ${D}·${N}  ${W}${rel}${N}"
+        grep -n "$query" "$f" 2>/dev/null | head -3 | while IFS= read -r line; do
+          echo -e "       ${D}${line}${N}"
+        done
+      done < <(grep -rl "$query" "$ARCHIVE" 2>/dev/null)
+      (( hit == 0 )) && echo -e "  ${D}nothing found for: ${query}${N}"
+    fi
+  fi
+  echo -e "$HR"
+}
+
+# ── Find (cross-tree search) ────────────────────────────────────────────────────
+cmd_find() {
+  local query="$1"
+  if [[ -z "$query" ]]; then
+    echo -e "  usage: arc find <query>"
+    return 1
+  fi
+
+  local labels=(arc-lt-cmc dev-notes khaos-lab vault/archive)
+  local dirs=(
+    "$HOME/arc-lt-cmc"
+    "$HOME/dev-notes"
+    "$HOME/khaos-lab"
+    "${ARC_REF_DIR:-$HOME/links/vault/archive}"
+  )
+
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc find${N}  —  searching: ${W}${query}${N}"
+  echo -e "$HR"
+
+  local i found_any=0
+  for i in "${!labels[@]}"; do
+    local label="${labels[$i]}" dir="${dirs[$i]}"
+    [[ -d "$dir" ]] || continue
+
+    local content_hits name_hits
+    content_hits=$(grep -rniI \
+      --exclude-dir='.git' --exclude-dir='node_modules' --exclude-dir='__pycache__' \
+      --exclude-dir='.arc-notes' --exclude-dir='master-archive' \
+      -e "$query" "$dir" 2>/dev/null)
+    name_hits=$(find "$dir" -iname "*${query}*" \
+      -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/master-archive/*' 2>/dev/null)
+
+    if [[ -n "$content_hits" || -n "$name_hits" ]]; then
+      found_any=1
+      echo -e "\n  ${C}${B}${label}${N}"
+
+      if [[ -n "$name_hits" ]]; then
+        echo -e "  ${D}filename matches${N}"
+        while IFS= read -r f; do
+          [[ -z "$f" ]] && continue
+          echo -e "  ${G}·${N}  ${f#$dir/}"
+        done <<< "$name_hits"
+      fi
+
+      if [[ -n "$content_hits" ]]; then
+        echo -e "  ${D}content matches${N}"
+        while IFS=: read -r file line rest; do
+          [[ -z "$file" ]] && continue
+          local snippet
+          snippet=$(echo "$rest" | sed -e 's/^[[:space:]]*//' | cut -c1-80)
+          printf "  ${D}·${N}  %-50s ${D}:%s${N}  %s\n" "${file#$dir/}" "$line" "$snippet"
+        done <<< "$content_hits"
+      fi
+    fi
+  done
+
+  (( found_any == 0 )) && echo -e "\n  ${D}nothing found for: ${query}${N}"
+  echo -e "\n$HR"
+}
+
+# ── Book (compiled reference archive) ───────────────────────────────────────────
+cmd_book() {
+  local sub="${1:-}"
+  local BOOK="$HOME/khaos-lab/master-archive/master-book.md"
+
+  case "$sub" in
+    rebuild)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc book rebuild${N}  —  recompiling master-book.md"
+      echo -e "$HR\n"
+      if [[ -x "$HOME/.local/bin/build-master-book" ]]; then
+        "$HOME/.local/bin/build-master-book"
+      else
+        echo -e "  ${R}✗${N}  build-master-book not found at ~/.local/bin/build-master-book"
+        echo -e "$HR"
+        return 1
+      fi
+      echo -e "\n$HR"
+      ;;
+    *)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc book${N}  —  compiled reference archive"
+      echo -e "$HR\n"
+      if [[ -f "$BOOK" ]]; then
+        local size lines built
+        size=$(du -h "$BOOK" | cut -f1)
+        lines=$(wc -l < "$BOOK")
+        built=$(date -r "$BOOK" "+%Y-%m-%d %H:%M")
+        echo -e "  ${D}path${N}     ${M}${BOOK}${N}"
+        echo -e "  ${D}size${N}     ${M}${size}${N}  ${D}·${N}  ${M}${lines}${N} lines"
+        echo -e "  ${D}built${N}    ${M}${built}${N}"
+      else
+        echo -e "  ${R}not built yet${N}  ${D}— run: arc book rebuild${N}"
+      fi
+      echo -e "\n  ${D}arc book rebuild   — recompile from current dev-notes/khaos-lab/arc-lt-cmc${N}"
+      echo -e "$HR"
+      ;;
+  esac
+}
+
+# ── Site (dashboard + browsable notes, lives in the vault) ──────────────────────
+cmd_site() {
+  local sub="${1:-}"
+  local SITE="/mnt/storage/notes-site"
+
+  case "$sub" in
+    build)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc site build${N}  —  rebuilding dashboard + browse site"
+      echo -e "$HR\n"
+      if ! storage_ok; then
+        echo -e "  ${R}✗${N}  vault not mounted — arc mount first"
+        echo -e "$HR"
+        return 1
+      fi
+      if [[ -x "$HOME/.local/bin/build-notes-site" ]]; then
+        "$HOME/.local/bin/build-notes-site"
+      else
+        echo -e "  ${R}✗${N}  build-notes-site not found at ~/.local/bin/build-notes-site"
+        echo -e "$HR"
+        return 1
+      fi
+      echo -e "\n$HR"
+      ;;
+    open)
+      if [[ ! -f "$SITE/index.html" ]]; then
+        echo -e "  ${R}✗${N}  no site built yet — run: arc site build"
+        return 1
+      fi
+      xdg-open "$SITE/index.html" 2>/dev/null &
+      echo -e "  ${G}✓${N}  opened ${SITE}/index.html"
+      ;;
+    *)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc site${N}  —  dashboard + browsable notes (lives in the vault)"
+      echo -e "$HR\n"
+      if [[ -f "$SITE/index.html" ]]; then
+        local size built
+        size=$(du -sh "$SITE" 2>/dev/null | cut -f1)
+        built=$(date -r "$SITE/index.html" "+%Y-%m-%d %H:%M")
+        echo -e "  ${D}path${N}     ${M}${SITE}${N}"
+        echo -e "  ${D}size${N}     ${M}${size}${N}"
+        echo -e "  ${D}built${N}    ${M}${built}${N}"
+      else
+        echo -e "  ${R}not built yet${N}  ${D}— run: arc site build${N}"
+      fi
+
+      echo ""
+      if systemctl --user is-active --quiet notes-site.service 2>/dev/null; then
+        echo -e "  ${D}local server${N}  ${G}running${N}  ${D}(127.0.0.1:8642)${N}"
+      else
+        echo -e "  ${D}local server${N}  ${R}not running${N}  ${D}— systemctl --user start notes-site${N}"
+      fi
+
+      if systemctl is-active --quiet cloudflared 2>/dev/null; then
+        local code
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 https://notes.kontor.studio 2>/dev/null)
+        if [[ "$code" =~ ^(200|301|302|303)$ ]]; then
+          echo -e "  ${D}tunnel route${N}  ${G}live${N}  ${D}(notes.kontor.studio → ${code})${N}"
+        elif [[ -z "$code" ]]; then
+          echo -e "  ${D}tunnel route${N}  ${Y}unverified${N}  ${D}(no response — check internet or DNS/Access setup)${N}"
+        else
+          echo -e "  ${D}tunnel route${N}  ${R}unexpected response${N}  ${D}(notes.kontor.studio → ${code})${N}"
+        fi
+      else
+        echo -e "  ${D}tunnel route${N}  ${R}cloudflared not running${N}  ${D}— desktop/ssh tunnels are also down${N}"
+      fi
+
+      echo -e "\n  ${D}arc site build   — rebuild from current notes${N}"
+      echo -e "  ${D}arc site open    — open the dashboard in your browser${N}"
+      echo -e "$HR"
+      ;;
+  esac
+}
+
+# ── HQ ─────────────────────────────────────────────────────────────────────────
+cmd_hq() {
+  local arg="${1:-}"
+  local HQ="$HOME/dev-notes/hq-main"
+
+  # Named file views
+  case "$arg" in
+    ops|opsec) glow "$HQ/opsec-hardening.md"; return ;;
+    ref)       glow "$HQ/reference.md"; return ;;
+    "")        ;;  # fall through to dashboard
+    *)         glow "$HQ/${arg}.md" 2>/dev/null \
+                 || echo -e "  ${R}✗${N}  not found: $HQ/${arg}.md"
+               return ;;
+  esac
+
+  # ── Dashboard ───────────────────────────────────────────────────────────────
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc hq${N}  —  system cockpit"
+  echo -e "$HR\n"
+
+  # CPU load + temp
+  local load1 load5 load15 temp_str=""
+  read -r load1 load5 load15 _ < /proc/loadavg
+  local max_temp
+  max_temp=$(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1)
+  if [[ -n "$max_temp" ]] && (( max_temp > 10000 )); then
+    local temp_c
+    temp_c=$(awk "BEGIN {printf \"%.1f\", $max_temp/1000}")
+    temp_str="  ${D}·${N}  ${M}${temp_c}°C${N}"
+  fi
+  echo -e "  ${C}cpu${N}       ${D}load${N}  ${M}${load1}${N} ${D}·${N} ${M}${load5}${N} ${D}·${N} ${M}${load15}${N}${temp_str}"
+
+  # RAM + swap
+  local ram_used ram_free ram_total ram_pct swap_used swap_total
+  ram_used=$(free -h  | awk '/Mem:/ {print $3}')
+  ram_free=$(free -h  | awk '/Mem:/ {print $7}')
+  ram_total=$(free -h | awk '/Mem:/ {print $2}')
+  ram_pct=$(free      | awk '/Mem:/ {printf "%.0f%%", $3/$2*100}')
+  swap_used=$(free -h  | awk '/Swap:/ {print $3}')
+  swap_total=$(free -h | awk '/Swap:/ {print $2}')
+  echo -e "  ${C}memory${N}    ${M}${ram_used}${N} used ${D}·${N} ${M}${ram_free}${N} free ${D}/${N} ${M}${ram_total}${N}  ${D}(${ram_pct})${N}"
+  echo -e "  ${C}swap${N}      ${M}${swap_used}${N} ${D}/${N} ${M}${swap_total}${N}"
+
+  echo ""
+
+  # Disk
+  echo -e "  ${C}disk${N}"
+  local du_ df_ dt_ dp_
+  du_=$(df -h / | awk 'NR==2 {print $3}')
+  df_=$(df -h / | awk 'NR==2 {print $4}')
+  dt_=$(df -h / | awk 'NR==2 {print $2}')
+  dp_=$(df /    | awk 'NR==2 {print $5}')
+  echo -e "  ${D}·${N}  internal   ${M}${du_}${N} used ${D}·${N} ${M}${df_}${N} free ${D}/${N} ${M}${dt_}${N}  ${D}(${dp_})${N}"
+  if storage_ok; then
+    local uu uf ut up
+    uu=$(df -h /mnt/storage | awk 'NR==2 {print $3}')
+    uf=$(df -h /mnt/storage | awk 'NR==2 {print $4}')
+    ut=$(df -h /mnt/storage | awk 'NR==2 {print $2}')
+    up=$(df /mnt/storage    | awk 'NR==2 {print $5}')
+    echo -e "  ${G}·${N}  usb        ${M}${uu}${N} used ${D}·${N} ${M}${uf}${N} free ${D}/${N} ${M}${ut}${N}  ${D}(${up})${N}"
+  else
+    echo -e "  ${R}·${N}  usb        ${D}not accessible  — arc mount${N}"
+  fi
+
+  echo ""
+
+  # Network
+  echo -e "  ${C}network${N}"
+  local iface local_ip
+  iface=$(ip route get 1.1.1.1 2>/dev/null \
+    | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
+  local_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  echo -e "  ${D}·${N}  ${M}${iface:-?}${N}  ${D}·${N}  ${M}${local_ip:-none}${N}"
+
+  if [[ -n "$iface" ]]; then
+    local rx tx rx_h tx_h
+    rx=$(awk -v dev="${iface}:" '$1==dev {print $2}' /proc/net/dev 2>/dev/null)
+    tx=$(awk -v dev="${iface}:" '$1==dev {print $10}' /proc/net/dev 2>/dev/null)
+    rx_h=$(awk "BEGIN {b=${rx:-0}+0; if(b>=1073741824) printf \"%.1f GB\",b/1073741824; else if(b>=1048576) printf \"%.1f MB\",b/1048576; else if(b>=1024) printf \"%.1f KB\",b/1024; else printf \"%d B\",b}")
+    tx_h=$(awk "BEGIN {b=${tx:-0}+0; if(b>=1073741824) printf \"%.1f GB\",b/1073741824; else if(b>=1048576) printf \"%.1f MB\",b/1048576; else if(b>=1024) printf \"%.1f KB\",b/1024; else printf \"%d B\",b}")
+    echo -e "  ${D}·${N}  rx ${M}${rx_h}${N}  ${D}·${N}  tx ${M}${tx_h}${N}  ${D}(since boot)${N}"
+  fi
+
+  # VPN
+  local vpn_iface
+  vpn_iface=$(ip link show 2>/dev/null | grep -oE '(tun[0-9]+|wg[0-9]+)' | head -1)
+  if [[ -n "$vpn_iface" ]]; then
+    echo -e "  ${D}·${N}  vpn  ${G}active${N}  ${D}(${vpn_iface})${N}"
+  else
+    echo -e "  ${D}·${N}  vpn  ${D}none${N}"
+  fi
+
+  # DNS
+  if systemctl is-active --quiet nextdns 2>/dev/null; then
+    echo -e "  ${D}·${N}  dns  ${G}nextdns active${N}"
+  else
+    local resolver
+    resolver=$(grep '^nameserver' /etc/resolv.conf 2>/dev/null | head -1 | awk '{print $2}')
+    echo -e "  ${D}·${N}  dns  ${Y}nextdns off${N}  ${D}·${N}  ${M}${resolver:-?}${N}"
+  fi
+
+  echo ""
+
+  # Services
+  echo -e "  ${C}services${N}"
+  local svc
+  for svc in nextdns fail2ban ufw apparmor; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
+      echo -e "  ${G}·${N}  ${M}${svc}${N}"
+    else
+      echo -e "  ${R}·${N}  ${M}${svc}${N}  ${D}(inactive)${N}"
+    fi
+  done
+
+  echo ""
+
+  # Listening ports
+  echo -e "  ${C}ports${N}  ${D}(listening)${N}"
+  ss -tlnp 2>/dev/null | tail -n +2 | while IFS= read -r line; do
+    local addr proc
+    addr=$(echo "$line" | awk '{print $4}')
+    proc=$(echo "$line" | grep -oP 'users:\(\(".*?"' | grep -oP '"[^"]+' | head -1 | tr -d '"')
+    [[ -n "$proc" ]] \
+      && echo -e "  ${D}·${N}  ${M}${addr}${N}  ${D}${proc}${N}" \
+      || echo -e "  ${D}·${N}  ${M}${addr}${N}"
+  done
+
+  echo ""
+
+  # Top 5 processes by CPU
+  echo -e "  ${C}processes${N}  ${D}(top 5 cpu)${N}"
+  ps -eo pid,%cpu,%mem,comm --sort=-%cpu 2>/dev/null | tail -n +2 | head -5 \
+    | while IFS= read -r line; do
+        local pid cpu mem cmd
+        pid=$(echo "$line" | awk '{print $1}')
+        cpu=$(echo "$line" | awk '{print $2}')
+        mem=$(echo "$line" | awk '{print $3}')
+        cmd=$(echo "$line" | awk '{print $4}')
+        echo -e "  ${D}·${N}  cpu ${M}${cpu}%${N}  mem ${M}${mem}%${N}  ${D}${cmd}  [${pid}]${N}"
+      done
+
+  echo ""
+  echo -e "$HR"
+  echo -e "  ${D}arc hq ref    — reference.md${N}"
+  echo -e "  ${D}arc hq ops    — opsec-hardening.md${N}"
+  echo -e "$HR"
+}
+
+# ── Top ────────────────────────────────────────────────────────────────────────
+cmd_top() {
+  if command -v btop &>/dev/null; then
+    btop
+  else
+    echo -e "${R}✗${N}  btop not installed — run: sudo apt install btop"
+  fi
+}
+
+# ── Net monitors ───────────────────────────────────────────────────────────────
+cmd_net() {
+  local sub="${1:-}"
+  shift 2>/dev/null
+
+  case "$sub" in
+    bandwhich)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc net bandwhich${N}  —  bandwidth by process + remote address"
+      echo -e "$HR\n"
+      if ! command -v bandwhich &>/dev/null; then
+        echo -e "  ${R}✗${N}  bandwhich not installed — run: sudo apt install bandwhich"
+        echo -e "$HR"; return 1
+      fi
+      sudo bandwhich "$@"
+      ;;
+    iftop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc net iftop${N}  —  bandwidth by connection pair"
+      echo -e "$HR\n"
+      if ! command -v iftop &>/dev/null; then
+        echo -e "  ${R}✗${N}  iftop not installed — run: sudo apt install iftop"
+        echo -e "$HR"; return 1
+      fi
+      sudo iftop "$@"
+      ;;
+    nethogs)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc net nethogs${N}  —  bandwidth by process / PID"
+      echo -e "$HR\n"
+      if ! command -v nethogs &>/dev/null; then
+        echo -e "  ${R}✗${N}  nethogs not installed — run: sudo apt install nethogs"
+        echo -e "$HR"; return 1
+      fi
+      sudo nethogs "$@"
+      ;;
+    stats)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc net stats${N}  —  interface rx/tx since boot"
+      echo -e "$HR\n"
+      awk 'NR>2 {
+        iface = $1; gsub(":", "", iface)
+        if (iface == "lo") next
+        rx = $2+0; tx = $10+0
+        if (rx + tx == 0) next
+        split("B KB MB GB TB", u)
+        rv=rx; ri=1; while(rv>=1024 && ri<5){rv/=1024; ri++}
+        tv=tx; ti=1; while(tv>=1024 && ti<5){tv/=1024; ti++}
+        printf "  \033[0;90m·\033[0m  \033[38;5;250m%-14s\033[0m  rx \033[38;5;250m%6.1f %-2s\033[0m  tx \033[38;5;250m%6.1f %-2s\033[0m\n",
+          iface, rv, u[ri], tv, u[ti]
+      }' /proc/net/dev
+      echo -e "\n$HR"
+      ;;
+    '')
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc net${N}  —  network monitors"
+      echo -e "$HR\n"
+
+      echo -e "  ${C}bandwhich${N}  ${D}—  bandwidth per process + remote address (TUI, needs sudo)${N}"
+      echo -e "  ${W}arc net bandwhich${N}              all interfaces, all processes"
+      echo -e "  ${D}·  -i wlp1s0${N}                   specific interface"
+      echo -e "  ${D}·  -r${N}                           resolve DNS names"
+      echo -e "  ${D}·  -p${N}                           processes only"
+      echo -e "  ${D}·  -c${N}                           connections only"
+      echo -e "  ${D}  ctrl-c to exit${N}"
+
+      echo ""
+      echo -e "  ${C}iftop${N}  ${D}—  live bandwidth per connection pair (ncurses, needs sudo)${N}"
+      echo -e "  ${W}arc net iftop${N}                  monitor default interface"
+      echo -e "  ${D}·  -i wlp1s0${N}                   specific interface"
+      echo -e "  ${D}·  -n${N}                           no DNS resolution (faster)"
+      echo -e "  ${D}·  -N${N}                           no port name resolution"
+      echo -e "  ${D}·  -P${N}                           show port numbers"
+      echo -e "  ${D}·  -t${N}                           text mode (no ncurses)"
+      echo -e "  ${D}·  -s <n>${N}                       quit after n seconds"
+      echo -e "  ${D}  keys: p=ports  n=DNS  s/d=src/dst  l=limit  q=quit${N}"
+
+      echo ""
+      echo -e "  ${C}nethogs${N}  ${D}—  bandwidth per PID / process (ncurses, needs sudo)${N}"
+      echo -e "  ${W}arc net nethogs${N}                all interfaces"
+      echo -e "  ${D}·  wlp1s0${N}                      specific interface"
+      echo -e "  ${D}·  -d <n>${N}                       refresh every n seconds (default: 1)"
+      echo -e "  ${D}·  -p${N}                           PID-only output"
+      echo -e "  ${D}·  -t${N}                           tracemode (non-interactive)"
+      echo -e "  ${D}·  -b${N}                           bytes mode (not bits)"
+      echo -e "  ${D}  keys: q=quit  s=sort-sent  r=sort-recv  m=toggle units${N}"
+
+      echo ""
+      echo -e "  ${C}stats${N}  ${D}—  quick rx/tx snapshot per interface (no TUI, no sudo)${N}"
+      echo -e "  ${W}arc net stats${N}                  bytes since boot, all active interfaces"
+
+      echo -e "\n$HR"
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc net $sub"
+      echo -e "${D}options: bandwhich · iftop · nethogs · stats${N}"
+      return 1
+      ;;
+  esac
+}
+
+# ── Auth ───────────────────────────────────────────────────────────────────────
+cmd_auth() {
+  local bin="${ARC_AUTH_APP:-$HOME/.local/bin/ente-auth}"
+  if [[ ! -x "$bin" ]]; then
+    echo -e "  ${R}✗${N}  ente-auth not found at ${bin}"
+    return 1
+  fi
+  echo -e "  ${G}✓${N}  launching Ente Auth"
+  "$bin" &>/dev/null &
+  disown
+}
+
+# ── DNS ────────────────────────────────────────────────────────────────────────
+cmd_dns() {
+  ~/.local/bin/arc-dns "${1:-status}" "${2:-}"
+}
+
+# ── Fix ────────────────────────────────────────────────────────────────────────
+cmd_fix() {
+  local what="${1:-}"
+  echo -e "$HR"
+  case "$what" in
+    brave)
+      echo -e "  ${C}${B}arc fix brave${N}  —  kill + relaunch"
+      echo -e "$HR\n"
+      if pkill -f brave-browser 2>/dev/null; then
+        echo -e "  ${G}✓${N}  Brave killed"
+      else
+        echo -e "  ${D}·${N}  Brave was not running"
+      fi
+      sleep 1
+      brave-browser &>/dev/null &
+      disown
+      echo -e "  ${G}✓${N}  Brave relaunched"
+      ;;
+    display)
+      echo -e "  ${C}${B}arc fix display${N}  —  restart compositor"
+      echo -e "$HR\n"
+      xfwm4 --replace &>/dev/null &
+      disown
+      echo -e "  ${G}✓${N}  xfwm4 compositor restarted"
+      ;;
+    wifi)
+      echo -e "  ${C}${B}arc fix wifi${N}  —  toggle off → on"
+      echo -e "$HR\n"
+      echo -e "  ${C}wifi off...${N}"
+      nmcli radio wifi off
+      sleep 3
+      echo -e "  ${C}wifi on...${N}"
+      nmcli radio wifi on
+      sleep 2
+      # Real bug found 2026-08-22: grabbing the first line of "all active
+      # connections" used to work when wifi was normally the only one, but
+      # with ProtonVPN now regularly connected, its own connections
+      # (pvpn-killswitch, the WireGuard one) can sort first -- reported the
+      # VPN's name instead of the actual wifi SSID. Query the wlan0 device
+      # specifically instead of guessing from an unordered list.
+      local ssid
+      ssid=$(nmcli -g GENERAL.CONNECTION device show wlan0 2>/dev/null)
+      [[ -n "$ssid" && "$ssid" != "--" ]] && echo -e "  ${G}✓${N}  connected: ${ssid}" || echo -e "  ${Y}!${N}  wifi on — reconnecting..."
+      ;;
+    screen)
+      echo -e "  ${C}${B}arc fix screen${N}  —  reset terminal + restart shell"
+      echo -e "$HR\n"
+      reset
+      exec "${SHELL:-bash}"
+      ;;
+    audio)
+      echo -e "  ${C}${B}arc fix audio${N}  —  revert stuck audio profile + refresh panel"
+      echo -e "$HR\n"
+      # Zoom (and similar apps) can push PipeWire into 'Pro Audio' card
+      # profile, which exposes raw multichannel sub-devices instead of the
+      # real speaker output — sounds thin/quiet, not muted. Check + revert
+      # that first; this used to be panel-only and never touched the actual
+      # audio cause (real symptom hit 2026-07-23).
+      local card active
+      card=$(pactl list cards short 2>/dev/null | awk '{print $2}' | head -1)
+      active=$(pactl list cards 2>/dev/null | grep "Active Profile" | awk '{print $NF}')
+      if [[ -n "$card" && "$active" == "pro-audio" ]]; then
+        pactl set-card-profile "$card" output:analog-stereo+input:analog-stereo 2>/dev/null
+        sleep 1
+        active=$(pactl list cards 2>/dev/null | grep "Active Profile" | awk '{print $NF}')
+        [[ "$active" != "pro-audio" ]] \
+          && echo -e "  ${G}✓${N}  audio profile was stuck on pro-audio (thin/quiet sound), reverted to analog-stereo" \
+          || echo -e "  ${R}✗${N}  audio profile revert failed — still on pro-audio"
+      else
+        echo -e "  ${D}·${N}  audio profile: ${active:-unknown} (not stuck)"
+      fi
+      echo ""
+      # 'xfce4-panel -r' only signals an already-running panel over D-Bus —
+      # if it's not cleanly reachable, the signal fails outright instead of
+      # falling back to launching one. Try the fast path first, then
+      # kill-and-relaunch fresh.
+      if xfce4-panel -r 2>/dev/null; then
+        echo -e "  ${G}✓${N}  panel restarted, volume applet refreshed"
+      else
+        pkill -x xfce4-panel 2>/dev/null
+        sleep 1
+        xfce4-panel &>/dev/null &
+        disown
+        sleep 1
+        if pgrep -x xfce4-panel &>/dev/null; then
+          echo -e "  ${G}✓${N}  panel restarted fresh (was unreachable via IPC), volume applet refreshed"
+        else
+          echo -e "  ${R}✗${N}  xfce4-panel restart failed"
+        fi
+      fi
+      ;;
+    panel)
+      echo -e "  ${C}${B}arc fix panel${N}  —  refresh/restart the taskbar panel"
+      echo -e "$HR\n"
+      # Same reliable pattern as 'arc fix audio': try the live D-Bus reload
+      # first (picks up plugin/theme/layout changes without losing panel
+      # state), fall back to kill-and-relaunch if the panel isn't cleanly
+      # reachable over IPC.
+      if xfce4-panel -r 2>/dev/null; then
+        echo -e "  ${G}✓${N}  panel refreshed"
+      else
+        pkill -x xfce4-panel 2>/dev/null
+        sleep 1
+        xfce4-panel &>/dev/null &
+        disown
+        sleep 1
+        if pgrep -x xfce4-panel &>/dev/null; then
+          echo -e "  ${G}✓${N}  panel restarted fresh (was unreachable via IPC)"
+        else
+          echo -e "  ${R}✗${N}  xfce4-panel restart failed"
+        fi
+      fi
+      ;;
+    '')
+      echo -e "  ${C}${B}arc fix${N}  —  system repair"
+      echo -e "$HR"
+      echo -e "  ${W}arc fix brave${N}      kill + relaunch Brave"
+      echo -e "  ${W}arc fix display${N}    restart xfwm4 compositor"
+      echo -e "  ${W}arc fix wifi${N}       toggle wifi off → on"
+      echo -e "  ${W}arc fix screen${N}     reset terminal + restart shell"
+      echo -e "  ${W}arc fix audio${N}      revert stuck pro-audio profile + refresh panel"
+      echo -e "  ${W}arc fix panel${N}      refresh/restart the taskbar panel"
+      echo -e "$HR"
+      return 0
+      ;;
+    *)
+      echo -e "  ${R}unknown:${N} arc fix ${what}"
+      echo -e "  ${D}options: brave · display · wifi · screen · audio · panel${N}"
+      ;;
+  esac
+  echo -e "$HR"
+}
+
+# ── Sec ────────────────────────────────────────────────────────────────────────
+_sec_hdr() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}${1}${N}"
+  echo -e "$HR\n"
+}
+
+_sec_lynis() {
+  _sec_hdr "lynis  —  full system hardening audit"
+
+  # Explicit paths, not assumed defaults — this sudoers config has env_reset
+  # without always_set_home, so `sudo` preserves $HOME instead of switching to
+  # root's, and lynis falls back to $HOME over /var/log when not told otherwise
+  # (even running as root). --logfile/--report-file are real CLI flags (verified
+  # via man lynis), not .prf directives — that earlier attempt was invalid syntax.
+  sudo lynis audit system -Q --logfile /var/log/lynis.log --report-file /var/log/lynis-report.dat 2>/dev/null
+
+  echo -e "\n$HR"
+  echo -e "  ${D}full log:${N}     /var/log/lynis.log"
+  echo -e "  ${D}report data:${N}  /var/log/lynis-report.dat"
+  echo -e "  ${D}review:${N}       less /var/log/lynis.log  ·  lynis show details <TEST-ID>"
+  echo -e "$HR"
+}
+
+_sec_docker_bench() {
+  _sec_hdr "docker-bench-security  —  CIS Docker Benchmark"
+
+  local dir="$HOME/khaos-lab/docker-bench-security"
+  if [[ ! -f "$dir/docker-bench-security.sh" ]]; then
+    echo -e "  ${R}✗${N}  not found — expected ${dir}/docker-bench-security.sh"
+    echo -e "\n$HR"
+    return 1
+  fi
+
+  if ! sudo -v 2>/dev/null; then
+    echo -e "  ${R}✗${N}  sudo failed — no scan ran"
+    echo -e "\n$HR"
+    return 1
+  fi
+
+  # Needs cwd == repo root: the script sources ./functions/*.sh via a
+  # relative LIBEXEC path, not an absolute one -- fails silently-ish
+  # (missing-function errors) if called from anywhere else. Prints its own
+  # PASS/WARN/INFO report live to the terminal (that's the actual point of
+  # this tool, unlike lynis) -- -l also logs the same to disk for later.
+  ( cd "$dir" && sudo ./docker-bench-security.sh -l /var/log/docker-bench-security.log )
+
+  echo -e "\n$HR"
+  echo -e "  ${D}full log:${N}  /var/log/docker-bench-security.log"
+  echo -e "$HR"
+}
+
+_sec_aide() {
+  _sec_hdr "aide  —  file integrity check"
+
+  if ! sudo -v 2>/dev/null; then
+    echo -e "  ${R}✗${N}  sudo failed — no scan ran"
+    echo -e "\n$HR"
+    return 1
+  fi
+
+  # Watches system paths (Debian's stock aide.conf.d rules) plus this
+  # machine's own critical user-owned surface (~/.local/bin,
+  # ~/.config/systemd/user, etc. -- see /etc/aide/aide.conf.d/90_arc_home_critical)
+  # against the baseline built 2026-08-22. arc-aide-watch runs this same
+  # check daily via a user timer and only pages you (arc-pine-notify) on
+  # real drift -- this is the on-demand version, always shows full output.
+  sudo /usr/bin/aide --config /etc/aide/aide.conf --check 2>&1
+
+  echo -e "\n$HR"
+  echo -e "  ${D}daily timer:${N}  systemctl --user status arc-aide-watch.timer"
+  echo -e "  ${D}last daily run:${N}  ~/.local/share/arc-aide/last-check.log"
+  echo -e "  ${D}rebuild baseline after an intentional change:${N}  sudo aideinit -y -f"
+  echo -e "$HR"
+}
+
+_sec_chkrootkit() {
+  _sec_hdr "chkrootkit  —  rootkit scan"
+
+  local sudo_out
+  sudo_out=$(sudo bash -c 'chkrootkit > /var/log/chkrootkit.log 2>&1' 2>&1)
+  if echo "$sudo_out" | grep -qi "password is required\|terminal is required\|incorrect password"; then
+    echo -e "  ${R}✗${N}  sudo failed — no scan ran, this is a STALE log below, not a fresh result"
+    echo "$sudo_out"
+    echo -e "\n$HR"
+    return 1
+  fi
+
+  local warnings
+  warnings=$(grep -c "WARNING\|INFECTED" /var/log/chkrootkit.log 2>/dev/null)
+  warnings=${warnings:-0}
+
+  if [[ "$warnings" -gt 0 ]]; then
+    echo -e "  ${Y}⚠${N}  ${warnings} warning(s) — review below\n"
+    grep -B2 "WARNING\|INFECTED" /var/log/chkrootkit.log
+  else
+    echo -e "  ${G}✓${N}  clean — no warnings"
+  fi
+
+  echo -e "\n$HR"
+  echo -e "  ${D}full log:${N}  /var/log/chkrootkit.log"
+  echo -e "$HR"
+}
+
+_sec_rkhunter() {
+  _sec_hdr "rkhunter  —  rootkit hunter scan"
+
+  if ! command -v rkhunter &>/dev/null; then
+    echo -e "  ${R}✗${N}  rkhunter not installed — sudo apt-get install -y rkhunter"
+    echo -e "\n$HR"
+    return 1
+  fi
+
+  local sudo_out
+  sudo_out=$(sudo bash -c 'rkhunter --check --sk --rwo' 2>&1)
+  # sudo itself exits 1 when it can't get a password -- the SAME code
+  # rkhunter uses for "warnings found", so the exit code alone can't tell
+  # "sudo failed, nothing ran" apart from "ran fine, found something."
+  # Check the actual output for sudo's own failure text first.
+  if echo "$sudo_out" | grep -qi "password is required\|terminal is required\|incorrect password"; then
+    echo -e "  ${R}✗${N}  sudo failed — no scan ran, this is a STALE log below, not a fresh result"
+    echo "$sudo_out"
+    echo -e "\n$HR"
+    return 1
+  fi
+
+  local warnings
+  warnings=$(sudo grep -c "^Warning: " /var/log/rkhunter.log 2>/dev/null)
+  warnings=${warnings:-0}
+  if [[ "$warnings" -gt 0 ]]; then
+    echo -e "  ${Y}⚠${N}  ${warnings} warning(s) — review below\n"
+    sudo grep "^Warning: " /var/log/rkhunter.log
+  else
+    echo -e "  ${G}✓${N}  clean — no warnings"
+  fi
+
+  echo -e "\n$HR"
+  echo -e "  ${D}full log:${N}  /var/log/rkhunter.log"
+  echo -e "$HR"
+}
+
+_sec_clamav() {
+  local sub="${1:-}"
+  case "$sub" in
+    status)
+      _sec_hdr "clamav  —  last scan status"
+      if pgrep -f "clamscan -r" &>/dev/null; then
+        echo -e "  ${C}→${N}  scan currently running — check back later"
+      elif [[ -f /var/log/clamav-home-scan.log ]]; then
+        tail -12 /var/log/clamav-home-scan.log
+      else
+        echo -e "  ${D}·${N}  no scan has been run yet — ${C}arc sec clamav${N} to start one"
+      fi
+      echo -e "\n$HR"
+      ;;
+    '')
+      _sec_hdr "clamav  —  home directory scan"
+      if pgrep -f "clamscan -r" &>/dev/null; then
+        echo -e "  ${Y}!${N}  a scan is already running — ${C}arc sec clamav status${N} to check it"
+        echo -e "$HR"
+        return 0
+      fi
+      echo -e "  ${C}→${N}  starting background scan of \$HOME (this takes 20-30+ min)..."
+      nohup sudo bash -c "clamscan -r -i \
+        --exclude-dir='^${HOME}/.cache' \
+        --exclude-dir='^${HOME}/khaos-lab/vbox-vms' \
+        '${HOME}' > /var/log/clamav-home-scan.log 2>&1" &
+      disown
+      echo -e "  ${G}✓${N}  launched — ${C}arc sec clamav status${N} to check progress/results"
+      echo -e "$HR"
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc sec clamav $sub"
+      echo -e "${D}options: (none) · status${N}"
+      ;;
+  esac
+}
+
+_sec_suricata() {
+  _sec_hdr "suricata  —  network IDS status"
+
+  local state
+  state=$(systemctl is-active suricata 2>/dev/null)
+  if [[ "$state" == "active" ]]; then
+    # Read the real configured interface instead of a hardcoded label --
+    # was stuck on a stale "wlp2s0" placeholder while capture had already
+    # been fixed to the real interface (wlan0) 2026-08-15, silently
+    # mismatched ever since. Reads it live so it can't go stale again the
+    # same way if the interface ever changes.
+    local iface
+    iface=$(awk '/^af-packet:/{f=1} f && /- interface:/{print $NF; exit}' /etc/suricata/suricata.yaml 2>/dev/null)
+    echo -e "  ${G}●${N}  running  ${D}(watching ${iface:-unknown})${N}"
+  else
+    echo -e "  ${R}○${N}  ${state}"
+  fi
+
+  echo ""
+  echo -e "  ${C}alerts today${N}"
+  local today count
+  today=$(date +%Y-%m-%d)
+  if sudo test -r /var/log/suricata/eve.json 2>/dev/null; then
+    count=$(sudo grep -c "\"event_type\":\"alert\"" /var/log/suricata/eve.json 2>/dev/null)
+    count=${count:-0}
+    echo -e "  ${D}·${N}  ${count} total alert event(s) logged (all-time, log not yet rotated)"
+    echo ""
+    echo -e "  ${C}most recent 5${N}"
+    sudo grep "\"event_type\":\"alert\"" /var/log/suricata/eve.json 2>/dev/null | tail -5 \
+      | python3 -c "
+import json,sys
+for line in sys.stdin:
+    try:
+        d = json.loads(line)
+        a = d.get('alert', {})
+        print(f\"  {d.get('timestamp','?')[:19]}  {a.get('signature','?')}  ({d.get('src_ip','?')} -> {d.get('dest_ip','?')})\")
+    except Exception:
+        pass
+"
+  else
+    echo -e "  ${D}·${N}  can't read eve.json (needs sudo)"
+  fi
+
+  echo -e "\n$HR"
+  echo -e "  ${D}rule count:${N}  sudo suricata-update  ${D}(refresh ruleset)${N}"
+  echo -e "  ${D}full log:${N}    /var/log/suricata/eve.json"
+  echo -e "$HR"
+}
+
+_sec_users() {
+  _sec_hdr "users  —  accounts · sessions · auth"
+
+  echo -e "  ${C}local accounts  ${D}(uid ≥ 1000)${N}"
+  awk -F: '$3 >= 1000 && $3 < 65534 {printf "%-20s uid=%-6s %s\n", $1, $3, $7}' /etc/passwd \
+    | while IFS= read -r line; do echo -e "  ${D}·${N}  $line"; done
+
+  echo ""
+  echo -e "  ${C}sudo group${N}"
+  getent group sudo 2>/dev/null | awk -F: '{print $4}' | tr ',' '\n' \
+    | while IFS= read -r u; do [[ -n "$u" ]] && echo -e "  ${Y}·${N}  $u"; done
+
+  echo ""
+  echo -e "  ${C}active sessions${N}"
+  local sess
+  sess=$(who 2>/dev/null)
+  if [[ -n "$sess" ]]; then
+    echo "$sess" | while IFS= read -r line; do echo -e "  ${G}·${N}  $line"; done
+  else
+    echo -e "  ${D}·${N}  none"
+  fi
+
+  echo ""
+  echo -e "  ${C}last logins  ${D}(8)${N}"
+  last -n 8 2>/dev/null | head -8 | while IFS= read -r line; do
+    echo -e "  ${D}·${N}  $line"
+  done
+
+  echo ""
+  echo -e "  ${C}failed auth  ${D}(last 10)${N}"
+  local fails
+  fails=$(grep -E "authentication failure|Failed password|Invalid user" /var/log/auth.log 2>/dev/null | tail -10)
+  if [[ -n "$fails" ]]; then
+    echo "$fails" | while IFS= read -r line; do echo -e "  ${R}·${N}  $line"; done
+  else
+    echo -e "  ${G}·${N}  none found"
+  fi
+
+  echo -e "\n$HR"
+}
+
+_sec_net() {
+  _sec_hdr "network  —  ports · connections · dns · arp"
+
+  echo -e "  ${C}wifi${N}"
+  local wstate
+  wstate=$(nmcli radio wifi 2>/dev/null)
+  [[ "$wstate" == "enabled" ]] \
+    && echo -e "  ${G}·${N}  radio: enabled" \
+    || echo -e "  ${Y}·${N}  radio: ${wstate}"
+  nmcli -t -f NAME,TYPE,STATE connection show --active 2>/dev/null \
+    | while IFS= read -r line; do echo -e "  ${D}·${N}  $line"; done
+
+  echo ""
+  echo -e "  ${C}listening ports${N}"
+  ss -tlnp 2>/dev/null | tail -n +2 \
+    | while IFS= read -r line; do echo -e "  ${D}·${N}  $line"; done
+
+  echo ""
+  echo -e "  ${C}established connections${N}"
+  ss -tnp state established 2>/dev/null | tail -n +2 | head -15 \
+    | while IFS= read -r line; do echo -e "  ${D}·${N}  $line"; done
+
+  echo ""
+  echo -e "  ${C}dns${N}"
+  grep '^nameserver' /etc/resolv.conf 2>/dev/null \
+    | while IFS= read -r line; do echo -e "  ${D}·${N}  $line"; done
+  if systemctl is-active --quiet nextdns 2>/dev/null; then
+    echo -e "  ${G}·${N}  nextdns: active"
+  else
+    echo -e "  ${Y}·${N}  nextdns: inactive"
+  fi
+  resolvectl status 2>/dev/null | grep -E 'Current DNS Server|DNS Servers' | head -3 \
+    | while IFS= read -r line; do echo -e "  ${D}·${N}  ${line## }"; done
+
+  echo ""
+  echo -e "  ${C}arp neighbors${N}"
+  arp -n 2>/dev/null | tail -n +2 \
+    | while IFS= read -r line; do echo -e "  ${D}·${N}  $line"; done
+
+  echo -e "\n$HR"
+}
+
+_sec_firewall() {
+  local sub="${1:-}"
+  shift 2>/dev/null
+
+  case "$sub" in
+
+    allow)
+      local rule="$*"
+      _sec_hdr "firewall  —  allow"
+      if [[ -z "$rule" ]]; then
+        echo -e "  ${R}usage:${N} arc sec firewall allow <port>[/tcp|udp]"
+        echo -e "  ${D}example: arc sec firewall allow 8080/tcp${N}"
+        echo -e "\n$HR"; return 1
+      fi
+      sudo ufw allow "$rule" \
+        && echo -e "  ${G}✓${N}  allowed: $rule" \
+        || echo -e "  ${R}✗${N}  failed"
+      echo -e "\n$HR"
+      ;;
+
+    deny)
+      local rule="$*"
+      _sec_hdr "firewall  —  deny"
+      if [[ -z "$rule" ]]; then
+        echo -e "  ${R}usage:${N} arc sec firewall deny <port>[/tcp|udp]"
+        echo -e "\n$HR"; return 1
+      fi
+      sudo ufw deny "$rule" \
+        && echo -e "  ${G}✓${N}  denied: $rule" \
+        || echo -e "  ${R}✗${N}  failed"
+      echo -e "\n$HR"
+      ;;
+
+    delete)
+      local rule="$*"
+      _sec_hdr "firewall  —  delete rule"
+      if [[ -z "$rule" ]]; then
+        echo -e "  ${R}usage:${N} arc sec firewall delete <rule>"
+        echo -e "  ${D}tip: run 'arc sec firewall' first to see numbered rules${N}"
+        echo -e "\n$HR"; return 1
+      fi
+      sudo ufw delete "$rule" \
+        && echo -e "  ${G}✓${N}  deleted: $rule" \
+        || echo -e "  ${R}✗${N}  failed"
+      echo -e "\n$HR"
+      ;;
+
+    numbered)
+      _sec_hdr "firewall  —  numbered rules"
+      sudo ufw status numbered 2>/dev/null | while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        echo -e "  ${D}·${N}  $line"
+      done
+      echo -e "\n  ${D}to delete: arc sec firewall delete <number>${N}"
+      echo -e "\n$HR"
+      ;;
+
+    reload)
+      _sec_hdr "firewall  —  reload"
+      sudo ufw reload \
+        && echo -e "  ${G}✓${N}  ufw reloaded" \
+        || echo -e "  ${R}✗${N}  reload failed"
+      echo -e "\n$HR"
+      ;;
+
+    reset)
+      _sec_hdr "firewall  —  reset  ${R}(destructive)${N}"
+      echo -e "  ${R}!${N}  this wipes ALL ufw rules and disables the firewall"
+      printf "  ${Y}type 'yes' to confirm:${N} "
+      read -r confirm
+      if [[ "$confirm" == "yes" ]]; then
+        sudo ufw --force reset \
+          && echo -e "  ${G}✓${N}  reset complete — re-enable with: sudo ufw enable" \
+          || echo -e "  ${R}✗${N}  reset failed"
+      else
+        echo -e "  ${D}·${N}  aborted"
+      fi
+      echo -e "\n$HR"
+      ;;
+
+    logs)
+      _sec_hdr "firewall  —  ufw blocks  ${D}(last 20)${N}"
+      local blocks
+      blocks=$(grep "UFW BLOCK" /var/log/ufw.log 2>/dev/null | tail -20)
+      if [[ -n "$blocks" ]]; then
+        echo "$blocks" | while IFS= read -r line; do
+          echo -e "  ${R}·${N}  $line"
+        done
+      else
+        echo -e "  ${D}·${N}  none  ${D}(ufw.log empty or not found)${N}"
+      fi
+      echo -e "\n$HR"
+      ;;
+
+    '')
+      _sec_hdr "firewall  —  ufw status & rules"
+
+      local out
+      out=$(sudo ufw status verbose 2>/dev/null)
+      if [[ -n "$out" ]]; then
+        echo "$out" | while IFS= read -r line; do
+          [[ -z "$line" ]] && continue
+          echo -e "  ${D}·${N}  $line"
+        done
+      else
+        echo -e "  ${Y}!${N}  ufw not installed or not accessible"
+      fi
+
+      echo ""
+      echo -e "$HR"
+      echo -e "  ${D}arc sec firewall allow <port>   — open a port${N}"
+      echo -e "  ${D}arc sec firewall deny <port>    — block a port${N}"
+      echo -e "  ${D}arc sec firewall numbered       — list rules by number${N}"
+      echo -e "  ${D}arc sec firewall delete <num>   — remove rule by number${N}"
+      echo -e "  ${D}arc sec firewall logs           — recent blocked attempts${N}"
+      echo -e "  ${D}arc sec firewall reload         — reload rules${N}"
+      echo -e "  ${D}arc sec firewall reset          — wipe all rules (asks confirm)${N}"
+      echo -e "$HR"
+      ;;
+
+    *)
+      echo -e "${R}unknown:${N} arc sec firewall $sub"
+      echo -e "${D}options: allow · deny · numbered · delete · logs · reload · reset${N}"
+      ;;
+  esac
+}
+
+_sec_apps() {
+  _sec_hdr "apps  —  installed · removed · snap · flatpak"
+
+  echo -e "  ${C}recently installed  ${D}(apt, last 15)${N}"
+  grep " install " /var/log/dpkg.log 2>/dev/null | tail -15 \
+    | awk '{print $1, $2, $4}' \
+    | while IFS= read -r line; do echo -e "  ${G}·${N}  $line"; done
+
+  echo ""
+  echo -e "  ${C}recently removed  ${D}(apt, last 5)${N}"
+  local removed
+  removed=$(grep " remove " /var/log/dpkg.log 2>/dev/null | tail -5)
+  if [[ -n "$removed" ]]; then
+    echo "$removed" | awk '{print $1, $2, $4}' \
+      | while IFS= read -r line; do echo -e "  ${R}·${N}  $line"; done
+  else
+    echo -e "  ${D}·${N}  none"
+  fi
+
+  echo ""
+  echo -e "  ${C}snap${N}"
+  if snap list 2>/dev/null | tail -n +2 | grep -q .; then
+    snap list 2>/dev/null | tail -n +2 \
+      | while IFS= read -r line; do echo -e "  ${D}·${N}  $line"; done
+  else
+    echo -e "  ${D}·${N}  none"
+  fi
+
+  echo ""
+  echo -e "  ${C}flatpak${N}"
+  if flatpak list 2>/dev/null | grep -q .; then
+    flatpak list 2>/dev/null \
+      | while IFS= read -r line; do echo -e "  ${D}·${N}  $line"; done
+  else
+    echo -e "  ${D}·${N}  none"
+  fi
+
+  echo -e "\n$HR"
+}
+
+_sec_logs() {
+  _sec_hdr "logs  —  auth · sudo · ufw · journal"
+
+  echo -e "  ${C}auth failures  ${D}(last 15)${N}"
+  local fails
+  fails=$(grep -E "FAILED|authentication failure|Invalid user|refused connect" \
+    /var/log/auth.log 2>/dev/null | tail -15)
+  if [[ -n "$fails" ]]; then
+    echo "$fails" | while IFS= read -r line; do echo -e "  ${R}·${N}  $line"; done
+  else
+    echo -e "  ${G}·${N}  none"
+  fi
+
+  echo ""
+  echo -e "  ${C}sudo usage  ${D}(last 10)${N}"
+  grep "COMMAND=" /var/log/auth.log 2>/dev/null | tail -10 \
+    | while IFS= read -r line; do echo -e "  ${Y}·${N}  $line"; done
+
+  echo ""
+  echo -e "  ${C}ufw blocks  ${D}(last 10)${N}"
+  local blocks
+  blocks=$(grep "UFW BLOCK" /var/log/ufw.log 2>/dev/null | tail -10)
+  if [[ -n "$blocks" ]]; then
+    echo "$blocks" | while IFS= read -r line; do echo -e "  ${R}·${N}  $line"; done
+  else
+    echo -e "  ${D}·${N}  none  ${D}(ufw.log empty or not found)${N}"
+  fi
+
+  echo ""
+  echo -e "  ${C}journal errors  ${D}(last 10)${N}"
+  journalctl -p err -n 10 --no-pager 2>/dev/null \
+    | while IFS= read -r line; do echo -e "  ${Y}·${N}  $line"; done
+
+  echo -e "\n$HR"
+}
+
+cmd_snap() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc snap${N}  —  manual snapshot"
+  echo -e "$HR\n"
+
+  # 2026-07-28: snapshots moved off the 26GB USB (too small for a from-scratch
+  # full snapshot) to the internal disk — pre-check now reflects that.
+  local free used free_pct
+  free=$(df -h / 2>/dev/null | awk 'NR==2{print $4}')
+  used=$(df -h / 2>/dev/null | awk 'NR==2{print $3}')
+  free_pct=$(df / 2>/dev/null | awk 'NR==2 { gsub("%","",$5); print 100-$5 }')
+  echo -e "  ${C}disk${N}  used: ${W}${used}${N}  free: ${G}${free}${N}\n"
+
+  if [[ -n "$free_pct" ]] && (( free_pct < 15 )); then
+    echo -e "  ${R}⚠  ${free_pct}% free — below the 15% floor.${N}"
+    echo -e "  ${D}timeshift-check will refuse to snapshot until you free space (arc disk).${N}\n"
+  fi
+
+  echo -e "  ${D}starting snapshot — this takes ~10 min, ctrl-c will NOT abort it${N}\n"
+  sudo /usr/local/bin/timeshift-check --manual
+
+  local rc=$?
+  echo ""
+  if [[ $rc -eq 0 ]]; then
+    echo -e "  ${G}✓${N}  snapshot saved"
+    notify-send -i dialog-information "arc snap" "Snapshot saved" 2>/dev/null || true
+  else
+    echo -e "  ${R}✗${N}  timeshift-check exited with code $rc — check arc logs ts"
+    notify-send -u critical -i dialog-error "arc snap" "Snapshot failed (code $rc) — check: arc logs ts" 2>/dev/null || true
+  fi
+  echo -e "$HR"
+}
+
+cmd_logs() {
+  case "${1:-}" in
+    tail)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc logs tail${N}  —  live  ${D}(ctrl-c to exit)${N}"
+      echo -e "$HR\n"
+      tail -f /var/log/auth.log /var/log/ufw.log 2>/dev/null
+      ;;
+    ts)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc logs ts${N}  —  timeshift"
+      echo -e "$HR\n"
+      local tsdir="/var/log/timeshift"
+      if [[ ! -d "$tsdir" ]]; then
+        echo -e "  ${D}·${N}  /var/log/timeshift not found"; echo -e "\n$HR"; return
+      fi
+      # Was *backup.log -- real filenames are timestamp-prefixed with
+      # _ondemand/_delete/_gui/_list-snapshots suffixes, never "backup.log",
+      # so this glob never matched a single real file. Filenames sort
+      # chronologically, so plain *.log + sort picks the true latest.
+      local latest
+      latest=$(ls "$tsdir"/*.log 2>/dev/null | sort | tail -1)
+      if [[ -n "$latest" ]]; then
+        echo -e "  ${C}latest:${N}  ${D}$(basename "$latest")${N}\n"
+        tail -60 "$latest" | while IFS= read -r line; do
+          if echo "$line" | grep -qiE "error|fail|MEGA|warn"; then
+            echo -e "  ${R}·${N}  $line"
+          else
+            echo -e "  ${D}·${N}  $line"
+          fi
+        done
+      else
+        echo -e "  ${D}·${N}  no backup logs found in $tsdir"
+        ls "$tsdir/" 2>/dev/null | while IFS= read -r f; do echo -e "  ${D}·${N}  $f"; done
+      fi
+      echo -e "\n$HR"
+      ;;
+    suricata)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc logs suricata${N}  —  live  ${D}(ctrl-c to exit)${N}"
+      echo -e "$HR\n"
+      sudo tail -f -n0 /var/log/suricata/eve.json 2>/dev/null | while IFS= read -r line; do
+        echo "$line" | python3 -c "
+import json,sys
+try:
+    d = json.loads(sys.stdin.readline())
+except Exception:
+    sys.exit(0)
+if d.get('event_type') != 'alert':
+    sys.exit(0)
+a = d.get('alert', {})
+print(f\"  {d.get('timestamp','?')[:19]}  {a.get('signature','?')}  ({d.get('src_ip','?')} -> {d.get('dest_ip','?')})\")
+"
+      done
+      ;;
+    clamav)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc logs clamav${N}  —  last scan"
+      echo -e "$HR\n"
+      if [[ -f /var/log/clamav-home-scan.log ]]; then
+        tail -20 /var/log/clamav-home-scan.log
+      else
+        echo -e "  ${D}·${N}  no scan has been run yet — ${C}arc sec clamav${N} to start one"
+      fi
+      echo -e "\n$HR"
+      ;;
+    chkrootkit)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc logs chkrootkit${N}  —  last scan"
+      echo -e "$HR\n"
+      if [[ -f /var/log/chkrootkit.log ]]; then
+        cat /var/log/chkrootkit.log
+      else
+        echo -e "  ${D}·${N}  no scan has been run yet — ${C}arc sec chkrootkit${N} to run one"
+      fi
+      echo -e "\n$HR"
+      ;;
+    rkhunter)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc logs rkhunter${N}  —  last scan"
+      echo -e "$HR\n"
+      if sudo test -f /var/log/rkhunter.log 2>/dev/null; then
+        sudo cat /var/log/rkhunter.log
+      else
+        echo -e "  ${D}·${N}  no scan has been run yet — ${C}arc sec rkhunter${N} to run one"
+      fi
+      echo -e "\n$HR"
+      ;;
+    '')
+      _sec_logs
+      ;;
+    *)
+      echo -e "  ${D}arc logs${N}              snapshot: auth · sudo · ufw · journal"
+      echo -e "  ${D}arc logs tail${N}         live tail: auth.log + ufw.log"
+      echo -e "  ${D}arc logs ts${N}           timeshift log"
+      echo -e "  ${D}arc logs suricata${N}     live tail: IDS alerts (ctrl-c to exit)"
+      echo -e "  ${D}arc logs clamav${N}       last antivirus scan log"
+      echo -e "  ${D}arc logs chkrootkit${N}   last rootkit scan log"
+      echo -e "  ${D}arc logs rkhunter${N}     last rootkit hunter scan log"
+      ;;
+  esac
+}
+
+_sec_f2b() {
+  local sub="${1:-}"
+  shift 2>/dev/null
+
+  case "$sub" in
+
+    restart)
+      _sec_hdr "fail2ban  —  restart"
+      sudo systemctl restart fail2ban
+      sleep 1
+      sudo fail2ban-client status
+      echo -e "\n$HR"
+      ;;
+
+    check)
+      _sec_hdr "fail2ban  —  config test"
+      local out
+      out=$(sudo fail2ban-client -t 2>&1)
+      if echo "$out" | grep -q "OK\|Configuration OK"; then
+        echo -e "  ${G}✓${N}  configuration ok"
+      else
+        echo "$out" | while IFS= read -r line; do
+          echo -e "  ${R}·${N}  $line"
+        done
+      fi
+      echo -e "\n$HR"
+      ;;
+
+    ban)
+      local ip="${1:-}"
+      _sec_hdr "fail2ban  —  manual ban"
+      if [[ -z "$ip" ]]; then
+        echo -e "  ${R}usage:${N} arc sec f2b ban <ip>"; echo -e "\n$HR"; return 1
+      fi
+      sudo fail2ban-client set sshd banip "$ip" \
+        && echo -e "  ${G}✓${N}  banned: $ip" \
+        || echo -e "  ${R}✗${N}  ban failed"
+      echo -e "\n$HR"
+      ;;
+
+    unban)
+      local ip="${1:-}"
+      _sec_hdr "fail2ban  —  unban"
+      if [[ -z "$ip" ]]; then
+        echo -e "  ${R}usage:${N} arc sec f2b unban <ip>"; echo -e "\n$HR"; return 1
+      fi
+      sudo fail2ban-client unban "$ip" \
+        && echo -e "  ${G}✓${N}  unbanned: $ip" \
+        || echo -e "  ${R}✗${N}  unban failed — is that IP actually banned?"
+      echo -e "\n$HR"
+      ;;
+
+    banned)
+      _sec_hdr "fail2ban  —  all banned IPs"
+      local jails
+      jails=$(sudo fail2ban-client status 2>/dev/null | grep "Jail list" | cut -d: -f2 | tr -d ' ')
+      if [[ -z "$jails" ]]; then
+        echo -e "  ${R}✗${N}  fail2ban not running"; echo -e "\n$HR"; return
+      fi
+      IFS=',' read -ra jail_list <<< "$jails"
+      local any=0
+      for jail in "${jail_list[@]}"; do
+        [[ -z "$jail" ]] && continue
+        local ips
+        ips=$(sudo fail2ban-client get "$jail" banip 2>/dev/null)
+        if [[ -n "$ips" && "$ips" != "0" ]]; then
+          any=1
+          echo -e "  ${C}${jail}${N}"
+          echo "$ips" | tr ' ' '\n' | while IFS= read -r ip; do
+            [[ -n "$ip" ]] && echo -e "  ${R}·${N}  $ip"
+          done
+          echo ""
+        fi
+      done
+      (( any == 0 )) && echo -e "  ${G}·${N}  no IPs currently banned"
+      echo -e "\n$HR"
+      ;;
+
+    patch)
+      _sec_hdr "fail2ban  —  patch  ${D}(edit jail.local)${N}"
+      sudo nano /etc/fail2ban/jail.local
+      echo -e "\n  ${C}testing config...${N}"
+      local out
+      out=$(sudo fail2ban-client -t 2>&1)
+      if echo "$out" | grep -q "OK\|Configuration OK"; then
+        echo -e "  ${G}✓${N}  config ok — reloading..."
+        sudo fail2ban-client reload
+      else
+        echo -e "  ${R}✗${N}  config error:"
+        echo "$out" | while IFS= read -r line; do echo -e "  ${R}·${N}  $line"; done
+        echo -e "  ${Y}!${N}  fix the error then run: arc sec f2b restart"
+      fi
+      echo -e "\n$HR"
+      ;;
+
+    logs)
+      _sec_hdr "fail2ban  —  log  ${D}(last 30)${N}"
+      sudo tail -30 /var/log/fail2ban.log 2>/dev/null | while IFS= read -r line; do
+        if echo "$line" | grep -qi "ban\|block"; then
+          echo -e "  ${R}·${N}  $line"
+        elif echo "$line" | grep -qi "unban\|restore"; then
+          echo -e "  ${Y}·${N}  $line"
+        else
+          echo -e "  ${D}·${N}  $line"
+        fi
+      done
+      echo -e "\n$HR"
+      ;;
+
+    '')
+      _sec_hdr "fail2ban  —  brute force protection"
+
+      local status
+      status=$(sudo fail2ban-client status 2>/dev/null)
+      if [[ -z "$status" ]]; then
+        echo -e "  ${R}✗${N}  fail2ban not running"
+        echo -e "  ${D}·${N}  start with: arc sec f2b restart"
+        echo -e "\n$HR"; return
+      fi
+
+      local jails
+      jails=$(echo "$status" | grep "Jail list" | cut -d: -f2 | tr -d ' ')
+      echo -e "  ${C}jails${N}"
+      IFS=',' read -ra jail_list <<< "$jails"
+      for jail in "${jail_list[@]}"; do
+        [[ -z "$jail" ]] && continue
+        local j_status failed banned
+        j_status=$(sudo fail2ban-client status "$jail" 2>/dev/null)
+        failed=$(echo "$j_status" | grep "Currently failed" | awk '{print $NF}')
+        banned=$(echo "$j_status" | grep "Currently banned" | awk '{print $NF}')
+        if (( banned > 0 )); then
+          echo -e "  ${R}·${N}  ${jail}  ${D}·${N}  failed: ${failed}  ${D}·${N}  banned: ${R}${banned}${N}"
+        else
+          echo -e "  ${G}·${N}  ${jail}  ${D}·${N}  failed: ${failed}  ${D}·${N}  banned: ${banned}"
+        fi
+      done
+
+      echo ""
+      echo -e "$HR"
+      echo -e "  ${D}arc sec f2b banned          — full banned IP list${N}"
+      echo -e "  ${D}arc sec f2b ban <ip>        — manual ban${N}"
+      echo -e "  ${D}arc sec f2b unban <ip>      — surgical unban${N}"
+      echo -e "  ${D}arc sec f2b logs            — recent log tail${N}"
+      echo -e "  ${D}arc sec f2b check           — test config${N}"
+      echo -e "  ${D}arc sec f2b patch           — edit jail.local + auto-test${N}"
+      echo -e "  ${D}arc sec f2b restart         — reload + restart${N}"
+      echo -e "$HR"
+      ;;
+
+    *)
+      echo -e "${R}unknown:${N} arc sec f2b $sub"
+      echo -e "${D}options: banned · ban · unban · logs · check · patch · restart${N}"
+      ;;
+  esac
+}
+
+_sec_overview() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc sec${N}  —  security overview"
+  echo -e "$HR\n"
+
+  # Users
+  echo -e "  ${C}users${N}"
+  local sudoers sessions fail_count
+  sudoers=$(getent group sudo 2>/dev/null | awk -F: '{print $4}')
+  sessions=$(who 2>/dev/null | wc -l | tr -d ' ')
+  fail_count=$(grep -cE "authentication failure|Failed password" /var/log/auth.log 2>/dev/null)
+  fail_count=${fail_count:-0}
+  echo -e "  ${D}·${N}  sudo group:      ${W}${sudoers:-none}${N}"
+  echo -e "  ${D}·${N}  active sessions: ${sessions}"
+  (( fail_count > 0 )) \
+    && echo -e "  ${R}·${N}  auth failures:   ${fail_count}" \
+    || echo -e "  ${G}·${N}  auth failures:   ${fail_count}"
+
+  echo ""
+  # Network
+  echo -e "  ${C}network${N}"
+  local wstate resolver
+  wstate=$(nmcli radio wifi 2>/dev/null)
+  resolver=$(grep '^nameserver' /etc/resolv.conf 2>/dev/null | head -1 | awk '{print $2}')
+  local ports
+  ports=$(ss -tlnp 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+  echo -e "  ${D}·${N}  wifi:            ${wstate}"
+  echo -e "  ${D}·${N}  listening ports: ${ports}"
+  if systemctl is-active --quiet nextdns 2>/dev/null; then
+    echo -e "  ${G}·${N}  nextdns:         active  ${D}(${resolver})${N}"
+  else
+    echo -e "  ${Y}·${N}  nextdns:         inactive  ${D}(${resolver})${N}"
+  fi
+
+  echo ""
+  # Firewall
+  echo -e "  ${C}firewall${N}"
+  local ufw_out ufw_line
+  ufw_out=$(sudo ufw status 2>&1)
+  # sudo failing non-interactively (no password/no terminal) and ufw
+  # genuinely not being installed/running both look like "empty output" if
+  # stderr is swallowed -- can't tell them apart. Check sudo's own failure
+  # text first, same pattern as the chkrootkit/rkhunter fix (2026-07-30).
+  if echo "$ufw_out" | grep -qi "password is required\|terminal is required\|incorrect password"; then
+    echo -e "  ${Y}·${N}  sudo failed — can't check (not the same as 'not found')"
+  else
+    ufw_line=$(echo "$ufw_out" | head -1)
+    echo -e "  ${D}·${N}  ufw:             ${ufw_line:-not found}"
+  fi
+
+  echo ""
+  # Fail2ban
+  echo -e "  ${C}fail2ban${N}"
+  local f2b_out f2b_jails f2b_banned
+  f2b_out=$(sudo fail2ban-client status 2>&1)
+  if echo "$f2b_out" | grep -qi "password is required\|terminal is required\|incorrect password"; then
+    echo -e "  ${Y}·${N}  sudo failed — can't check (not the same as 'not running')"
+  else
+    f2b_jails=$(echo "$f2b_out" | grep "Jail list" | cut -d: -f2 | tr -d ' ')
+    if [[ -n "$f2b_jails" ]]; then
+      f2b_banned=$(sudo fail2ban-client status sshd 2>/dev/null | grep "Currently banned" | awk '{print $NF}')
+      echo -e "  ${G}·${N}  running  ${D}·${N}  jails: ${W}${f2b_jails}${N}  ${D}·${N}  banned: ${f2b_banned:-0}"
+    else
+      echo -e "  ${R}·${N}  not running"
+    fi
+  fi
+
+  echo ""
+  # Encryption
+  echo -e "  ${C}encryption${N}"
+  if [[ -b /dev/mapper/storage_crypt ]]; then
+    echo -e "  ${G}·${N}  usb luks:        open"
+  else
+    echo -e "  ${Y}·${N}  usb luks:        closed"
+  fi
+
+  echo ""
+  # SOC lab (Docker: Sagan correlation engine + EveBox triage UI)
+  echo -e "  ${C}soc lab${N}"
+  local sagan_state evebox_state
+  sagan_state=$(docker inspect --format '{{.State.Status}}' sagan 2>/dev/null)
+  evebox_state=$(docker inspect --format '{{.State.Status}}' evebox 2>/dev/null)
+  [[ "$sagan_state" == "running" ]] \
+    && echo -e "  ${G}·${N}  sagan:           running" \
+    || echo -e "  ${R}·${N}  sagan:           ${sagan_state:-not found}"
+  [[ "$evebox_state" == "running" ]] \
+    && echo -e "  ${G}·${N}  evebox:          running  ${D}(http://127.0.0.1:5636)${N}" \
+    || echo -e "  ${R}·${N}  evebox:          ${evebox_state:-not found}"
+
+  echo ""
+  echo -e "$HR"
+  echo -e "  ${D}arc sec audit     — workstation hardening scan${N}"
+  echo -e "  ${D}arc sec users     — accounts · sessions · failed auth${N}"
+  echo -e "  ${D}arc sec net       — ports · connections · dns · arp${N}"
+  echo -e "  ${D}arc sec firewall  — ufw rules${N}"
+  echo -e "  ${D}arc sec f2b       — fail2ban jails + banned IPs${N}"
+  echo -e "  ${D}arc sec apps      — apt · snap · flatpak${N}"
+  echo -e "  ${D}arc sec logs      — auth · sudo · ufw blocks · journal${N}"
+  echo -e "  ${D}arc sec lynis     — full lynis hardening audit${N}"
+  echo -e "  ${D}arc sec docker-bench — CIS Docker Benchmark against every container currently running${N}"
+  echo -e "  ${D}arc sec aide      — file integrity check (daily timer + arc-pine alert on drift)${N}"
+  echo -e "  ${D}arc sec chkrootkit — rootkit scan${N}"
+  echo -e "  ${D}arc sec rkhunter  — rootkit hunter scan${N}"
+  echo -e "  ${D}arc sec clamav    — antivirus scan of \$HOME (background)${N}"
+  echo -e "  ${D}arc sec suricata  — network IDS status + recent alerts${N}"
+  echo -e "  ${D}arc sagan/evebox  — SOC lab: correlated alerts (fail2ban+ufw feed in too now)${N}"
+  echo -e "  ${D}arc soc-lab       — Splunk + SQL Server lab (local Docker, khaos-lab/soc-lab -- Nessus purged 2026-08-25)${N}"
+  echo -e "  ${D}arc zap           — OWASP ZAP web app scanner (manual-start, lab-only targets by default)${N}"
+  echo -e "  ${D}arc darkstat      — live traffic dashboard (manual-start, loopback only)${N}"
+  echo -e "$HR"
+}
+
+cmd_sec() {
+  case "${1:-}" in
+    audit)    ~/.local/bin/arc-sec-audit ;;
+    users)    _sec_users ;;
+    net)      _sec_net ;;
+    firewall) _sec_firewall "${2:-}" "${@:3}" ;;
+    apps)     _sec_apps ;;
+    logs)     _sec_logs ;;
+    f2b)      _sec_f2b "${2:-}" "${@:3}" ;;
+    lynis)    _sec_lynis ;;
+    docker-bench) _sec_docker_bench ;;
+    aide)     _sec_aide ;;
+    chkrootkit) _sec_chkrootkit ;;
+    rkhunter) _sec_rkhunter ;;
+    clamav)   _sec_clamav "${2:-}" ;;
+    suricata) _sec_suricata ;;
+    '')       _sec_overview ;;
+    *)
+      echo -e "${R}unknown:${N} arc sec $1"
+      echo -e "${D}options: audit · users · net · firewall · apps · logs · f2b · lynis · docker-bench · aide · chkrootkit · rkhunter · clamav · suricata${N}"
+      return 1
+      ;;
+  esac
+}
+
+# ── Users ──────────────────────────────────────────────────────────────────────
+# Defensive helpers — validate before any write operation
+
+_users_validate() {
+  local user="$1"
+  # Only allow lowercase letters, digits, dash, underscore; 1-32 chars
+  if [[ ! "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+    echo -e "  ${R}✗${N}  invalid username: '${user}'"
+    return 1
+  fi
+  if ! id "$user" &>/dev/null; then
+    echo -e "  ${R}✗${N}  user not found: ${user}"
+    return 1
+  fi
+  return 0
+}
+
+_users_no_root() {
+  local user="$1"
+  local uid
+  uid=$(id -u "$user" 2>/dev/null)
+  if [[ "$user" == "root" || "$uid" == "0" ]]; then
+    echo -e "  ${R}✗${N}  refusing to modify root — not allowed"
+    return 1
+  fi
+  return 0
+}
+
+_users_no_sys() {
+  local user="$1"
+  local uid
+  uid=$(id -u "$user" 2>/dev/null)
+  if (( uid < 1000 )); then
+    echo -e "  ${R}✗${N}  refusing to modify system user (uid=${uid})"
+    return 1
+  fi
+  return 0
+}
+
+_users_confirm() {
+  local msg="$1"
+  printf "  ${Y}?${N}  %s  [y/N] " "$msg" >&2
+  local ans
+  read -r ans < /dev/tty
+  [[ "$ans" =~ ^[yY]$ ]]
+}
+
+_users_overview() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users${N}  —  user administration"
+  echo -e "$HR\n"
+
+  echo -e "  ${C}accounts  ${D}(uid 1000+)${N}"
+  while IFS=: read -r name _ uid _ _ _ shell; do
+    (( uid >= 1000 && uid < 65534 )) || continue
+    local shell_str
+    if [[ "$shell" == "/usr/sbin/nologin" || "$shell" == "/bin/false" ]]; then
+      shell_str="${D}nologin${N}"
+    else
+      shell_str="${M}${shell}${N}"
+    fi
+    echo -e "  ${D}·${N}  ${M}${name}${N}  ${D}uid=${uid}${N}  ${shell_str}"
+  done < /etc/passwd
+
+  echo ""
+  echo -e "  ${C}sudo members${N}"
+  getent group sudo 2>/dev/null | awk -F: '{print $4}' | tr ',' '\n' \
+    | while IFS= read -r u; do
+        [[ -n "$u" ]] && echo -e "  ${Y}·${N}  ${u}"
+      done
+
+  echo ""
+  echo -e "  ${C}active sessions${N}"
+  local sess
+  sess=$(who 2>/dev/null)
+  if [[ -n "$sess" ]]; then
+    echo "$sess" | while IFS= read -r line; do echo -e "  ${G}·${N}  ${line}"; done
+  else
+    echo -e "  ${D}·${N}  none"
+  fi
+
+  echo ""
+  echo -e "  ${C}recent logins  ${D}(last 5)${N}"
+  last -n 5 2>/dev/null | head -5 | while IFS= read -r line; do
+    echo -e "  ${D}·${N}  ${line}"
+  done
+
+  echo ""
+  echo -e "$HR"
+  echo -e "  ${D}check · lock · unlock · groups · add-group · rm-group · shell · sessions · passwd-age${N}"
+  echo -e "  ${D}add · del · groupadd · groupdel · chmod · chown · chgrp${N}"
+  echo -e "$HR"
+}
+
+_users_check() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users check${N}  —  account security audit"
+  echo -e "$HR\n"
+
+  echo -e "  ${C}login shells${N}"
+  while IFS=: read -r name _ uid _ _ _ shell; do
+    (( uid >= 1000 && uid < 65534 )) || continue
+    if [[ "$shell" == "/usr/sbin/nologin" || "$shell" == "/bin/false" ]]; then
+      echo -e "  ${G}·${N}  ${M}${name}${N}  ${D}${shell}${N}"
+    else
+      echo -e "  ${Y}·${N}  ${M}${name}${N}  ${shell}"
+    fi
+  done < /etc/passwd
+
+  echo ""
+  echo -e "  ${C}password status${N}"
+  while IFS=: read -r name _ uid _ _ _ _; do
+    (( uid >= 1000 && uid < 65534 )) || continue
+    local pstat
+    pstat=$(sudo passwd -S "$name" 2>/dev/null | awk '{print $2}')
+    case "$pstat" in
+      P)  echo -e "  ${G}·${N}  ${M}${name}${N}  ${D}set${N}" ;;
+      L)  echo -e "  ${R}·${N}  ${M}${name}${N}  locked" ;;
+      NP) echo -e "  ${R}·${N}  ${M}${name}${N}  ${R}no password — risk${N}" ;;
+      *)  echo -e "  ${D}·${N}  ${M}${name}${N}  ${D}${pstat:-unknown}${N}" ;;
+    esac
+  done < /etc/passwd
+
+  echo ""
+  echo -e "  ${C}group memberships  ${D}(human users)${N}"
+  while IFS=: read -r name _ uid _ _ _ _; do
+    (( uid >= 1000 && uid < 65534 )) || continue
+    local grps
+    grps=$(id -Gn "$name" 2>/dev/null | tr ' ' ',')
+    echo -e "  ${D}·${N}  ${M}${name}${N}  ${D}${grps}${N}"
+  done < /etc/passwd
+
+  echo ""
+  echo -e "  ${C}privileged groups${N}"
+  local g
+  for g in sudo adm; do
+    local members
+    members=$(getent group "$g" 2>/dev/null | awk -F: '{print $4}')
+    if [[ -n "$members" ]]; then
+      echo -e "  ${Y}·${N}  ${g}: ${members}"
+    else
+      echo -e "  ${D}·${N}  ${g}: ${D}empty${N}"
+    fi
+  done
+
+  echo ""
+  echo -e "  ${C}sudoers overrides  ${D}(/etc/sudoers.d/)${N}"
+  if [[ -d /etc/sudoers.d ]]; then
+    local f found=0
+    for f in /etc/sudoers.d/*; do
+      [[ -f "$f" ]] && echo -e "  ${D}·${N}  ${f##*/}" && found=1
+    done
+    (( found == 0 )) && echo -e "  ${D}·${N}  none"
+  else
+    echo -e "  ${D}·${N}  /etc/sudoers.d not found"
+  fi
+
+  echo ""
+  echo -e "  ${C}password age  ${D}(human users)${N}"
+  while IFS=: read -r name _ uid _ _ _ _; do
+    (( uid >= 1000 && uid < 65534 )) || continue
+    local last_chg expires
+    last_chg=$(chage -l "$name" 2>/dev/null | grep "Last password change" | cut -d: -f2- | xargs)
+    expires=$(chage -l "$name" 2>/dev/null | grep "Password expires" | cut -d: -f2- | xargs)
+    echo -e "  ${D}·${N}  ${M}${name}${N}  last: ${D}${last_chg:-?}${N}  expires: ${D}${expires:-never}${N}"
+  done < /etc/passwd
+
+  echo -e "\n$HR"
+}
+
+_users_lock() {
+  local user="${1:-}"
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users lock${N}  —  lock account"
+  echo -e "$HR\n"
+  if [[ -z "$user" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc users lock <username>"
+    echo -e "$HR"; return 1
+  fi
+  _users_validate "$user" || { echo -e "$HR"; return 1; }
+  _users_no_root "$user"   || { echo -e "$HR"; return 1; }
+  _users_no_sys "$user"    || { echo -e "$HR"; return 1; }
+  if [[ "$user" == "$(whoami)" ]]; then
+    echo -e "  ${R}✗${N}  cannot lock your own active account"
+    echo -e "$HR"; return 1
+  fi
+  local pstat
+  pstat=$(sudo passwd -S "$user" 2>/dev/null | awk '{print $2}')
+  if [[ "$pstat" == "L" ]]; then
+    echo -e "  ${Y}!${N}  ${user} is already locked"
+    echo -e "$HR"; return 0
+  fi
+  echo -e "  ${D}·${N}  user: ${M}${user}${N}  status: ${D}${pstat}${N}"
+  _users_confirm "Lock account '${user}'?" || { echo -e "  ${D}aborted${N}"; echo -e "$HR"; return 0; }
+  if sudo passwd -l "$user" &>/dev/null; then
+    echo -e "  ${G}✓${N}  ${user} locked"
+  else
+    echo -e "  ${R}✗${N}  failed — check sudoers"
+  fi
+  echo -e "$HR"
+}
+
+_users_unlock() {
+  local user="${1:-}"
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users unlock${N}  —  unlock account"
+  echo -e "$HR\n"
+  if [[ -z "$user" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc users unlock <username>"
+    echo -e "$HR"; return 1
+  fi
+  _users_validate "$user" || { echo -e "$HR"; return 1; }
+  _users_no_root "$user"   || { echo -e "$HR"; return 1; }
+  _users_no_sys "$user"    || { echo -e "$HR"; return 1; }
+  local pstat
+  pstat=$(sudo passwd -S "$user" 2>/dev/null | awk '{print $2}')
+  if [[ "$pstat" != "L" ]]; then
+    echo -e "  ${Y}!${N}  ${user} is not locked  ${D}(status: ${pstat})${N}"
+    echo -e "$HR"; return 0
+  fi
+  echo -e "  ${D}·${N}  user: ${M}${user}${N}  status: ${R}locked${N}"
+  _users_confirm "Unlock account '${user}'?" || { echo -e "  ${D}aborted${N}"; echo -e "$HR"; return 0; }
+  if sudo passwd -u "$user" &>/dev/null; then
+    echo -e "  ${G}✓${N}  ${user} unlocked"
+  else
+    echo -e "  ${R}✗${N}  failed — check sudoers"
+  fi
+  echo -e "$HR"
+}
+
+_users_groups() {
+  local user="${1:-$(whoami)}"
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users groups${N}  —  group memberships"
+  echo -e "$HR\n"
+  _users_validate "$user" || { echo -e "$HR"; return 1; }
+  echo -e "  ${M}${user}${N}"
+  id -Gn "$user" 2>/dev/null | tr ' ' '\n' | sort | while IFS= read -r g; do
+    local gid
+    gid=$(getent group "$g" 2>/dev/null | awk -F: '{print $3}')
+    if [[ "$g" == "sudo" || "$g" == "adm" ]]; then
+      echo -e "  ${Y}·${N}  ${g}  ${D}(gid=${gid})${N}  ${Y}privileged${N}"
+    else
+      echo -e "  ${D}·${N}  ${g}  ${D}(gid=${gid})${N}"
+    fi
+  done
+  echo -e "\n$HR"
+}
+
+_users_add_group() {
+  local user="${1:-}" grp="${2:-}"
+  local -a ALLOWED_GROUPS=(adm audio cdrom dialout floppy netdev plugdev sudo video)
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users add-group${N}  —  add user to group"
+  echo -e "$HR\n"
+  if [[ -z "$user" || -z "$grp" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc users add-group <username> <group>"
+    echo -e "  ${D}allowed groups: ${ALLOWED_GROUPS[*]}${N}"
+    echo -e "$HR"; return 1
+  fi
+  _users_validate "$user" || { echo -e "$HR"; return 1; }
+  _users_no_root "$user"   || { echo -e "$HR"; return 1; }
+  _users_no_sys "$user"    || { echo -e "$HR"; return 1; }
+  # Group name must be in whitelist — no arbitrary group adds
+  local ok=0 g
+  for g in "${ALLOWED_GROUPS[@]}"; do
+    [[ "$g" == "$grp" ]] && ok=1 && break
+  done
+  if (( ok == 0 )); then
+    echo -e "  ${R}✗${N}  group not in allowlist: '${grp}'"
+    echo -e "  ${D}allowed: ${ALLOWED_GROUPS[*]}${N}"
+    echo -e "$HR"; return 1
+  fi
+  if ! getent group "$grp" &>/dev/null; then
+    echo -e "  ${R}✗${N}  group does not exist on this system: ${grp}"
+    echo -e "$HR"; return 1
+  fi
+  if id -Gn "$user" 2>/dev/null | grep -qw "$grp"; then
+    echo -e "  ${Y}!${N}  ${user} is already in ${grp}"
+    echo -e "$HR"; return 0
+  fi
+  echo -e "  ${D}·${N}  add ${M}${user}${N} to group ${Y}${grp}${N}"
+  [[ "$grp" == "sudo" || "$grp" == "adm" ]] \
+    && echo -e "  ${R}⚠${N}  this grants elevated privileges"
+  _users_confirm "Add '${user}' to '${grp}'?" || { echo -e "  ${D}aborted${N}"; echo -e "$HR"; return 0; }
+  if sudo usermod -aG "$grp" "$user"; then
+    echo -e "  ${G}✓${N}  done  ${D}(re-login required)${N}"
+  else
+    echo -e "  ${R}✗${N}  usermod failed"
+  fi
+  echo -e "$HR"
+}
+
+_users_rm_group() {
+  local user="${1:-}" grp="${2:-}"
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users rm-group${N}  —  remove user from group"
+  echo -e "$HR\n"
+  if [[ -z "$user" || -z "$grp" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc users rm-group <username> <group>"
+    echo -e "$HR"; return 1
+  fi
+  _users_validate "$user" || { echo -e "$HR"; return 1; }
+  _users_no_root "$user"   || { echo -e "$HR"; return 1; }
+  _users_no_sys "$user"    || { echo -e "$HR"; return 1; }
+  # Group name: same safe charset as username
+  if [[ ! "$grp" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+    echo -e "  ${R}✗${N}  invalid group name: '${grp}'"
+    echo -e "$HR"; return 1
+  fi
+  local primary
+  primary=$(id -gn "$user" 2>/dev/null)
+  if [[ "$grp" == "$primary" ]]; then
+    echo -e "  ${R}✗${N}  cannot remove ${user} from their primary group (${grp})"
+    echo -e "$HR"; return 1
+  fi
+  if ! id -Gn "$user" 2>/dev/null | grep -qw "$grp"; then
+    echo -e "  ${Y}!${N}  ${user} is not in group ${grp}"
+    echo -e "$HR"; return 0
+  fi
+  echo -e "  ${D}·${N}  remove ${M}${user}${N} from group ${Y}${grp}${N}"
+  [[ "$grp" == "sudo" ]] \
+    && echo -e "  ${Y}⚠${N}  this removes sudo access from ${user}"
+  _users_confirm "Remove '${user}' from '${grp}'?" || { echo -e "  ${D}aborted${N}"; echo -e "$HR"; return 0; }
+  if sudo gpasswd -d "$user" "$grp" &>/dev/null; then
+    echo -e "  ${G}✓${N}  done  ${D}(re-login required)${N}"
+  else
+    echo -e "  ${R}✗${N}  gpasswd failed"
+  fi
+  echo -e "$HR"
+}
+
+_users_shell() {
+  local user="${1:-}" new_shell="${2:-}"
+  local -a ALLOWED_SHELLS=(/bin/bash /bin/zsh /usr/bin/bash /usr/bin/zsh /usr/sbin/nologin /bin/false)
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users shell${N}  —  view or set login shell"
+  echo -e "$HR\n"
+  if [[ -z "$user" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc users shell <username> [shell]"
+    echo -e "  ${D}allowed shells: ${ALLOWED_SHELLS[*]}${N}"
+    echo -e "$HR"; return 1
+  fi
+  _users_validate "$user" || { echo -e "$HR"; return 1; }
+  _users_no_root "$user"   || { echo -e "$HR"; return 1; }
+  _users_no_sys "$user"    || { echo -e "$HR"; return 1; }
+  local current
+  current=$(getent passwd "$user" 2>/dev/null | awk -F: '{print $7}')
+  if [[ -z "$new_shell" ]]; then
+    echo -e "  ${M}${user}${N}  shell: ${D}${current}${N}"
+    echo -e "\n  ${D}to change: arc users shell ${user} /usr/sbin/nologin${N}"
+    echo -e "  ${D}allowed: ${ALLOWED_SHELLS[*]}${N}"
+    echo -e "$HR"; return 0
+  fi
+  # Validate shell is in whitelist — no arbitrary shell setting
+  local ok=0 s
+  for s in "${ALLOWED_SHELLS[@]}"; do
+    [[ "$s" == "$new_shell" ]] && ok=1 && break
+  done
+  if (( ok == 0 )); then
+    echo -e "  ${R}✗${N}  shell not in allowlist: '${new_shell}'"
+    echo -e "  ${D}allowed: ${ALLOWED_SHELLS[*]}${N}"
+    echo -e "$HR"; return 1
+  fi
+  if [[ ! -x "$new_shell" ]]; then
+    echo -e "  ${R}✗${N}  shell not found or not executable: ${new_shell}"
+    echo -e "$HR"; return 1
+  fi
+  echo -e "  ${D}·${N}  ${M}${user}${N}  ${D}${current}${N}  →  ${M}${new_shell}${N}"
+  _users_confirm "Set shell for '${user}' to '${new_shell}'?" \
+    || { echo -e "  ${D}aborted${N}"; echo -e "$HR"; return 0; }
+  if sudo usermod -s "$new_shell" "$user"; then
+    echo -e "  ${G}✓${N}  shell updated"
+  else
+    echo -e "  ${R}✗${N}  usermod failed"
+  fi
+  echo -e "$HR"
+}
+
+_users_add() {
+  local user="${1:-}" new_shell="${2:-/bin/bash}"
+  local -a ALLOWED_SHELLS=(/bin/bash /bin/zsh /usr/bin/bash /usr/bin/zsh /usr/sbin/nologin /bin/false)
+  local -a RESERVED=(root admin administrator toor daemon bin sys sync games man lp mail news uucp proxy www-data backup list irc gnats nobody systemd-network systemd-resolve messagebus sshd bonesaw)
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users add${N}  —  create account"
+  echo -e "$HR\n"
+  if [[ -z "$user" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc users add <username> [shell]"
+    echo -e "  ${D}allowed shells: ${ALLOWED_SHELLS[*]}  (default: /bin/bash)${N}"
+    echo -e "$HR"; return 1
+  fi
+  if [[ ! "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+    echo -e "  ${R}✗${N}  invalid username: '${user}'"
+    echo -e "$HR"; return 1
+  fi
+  local r
+  for r in "${RESERVED[@]}"; do
+    if [[ "$user" == "$r" ]]; then
+      echo -e "  ${R}✗${N}  refusing reserved/system-style name: '${user}'"
+      echo -e "$HR"; return 1
+    fi
+  done
+  if id "$user" &>/dev/null; then
+    echo -e "  ${R}✗${N}  user already exists: ${user}"
+    echo -e "$HR"; return 1
+  fi
+  local ok=0 s
+  for s in "${ALLOWED_SHELLS[@]}"; do
+    [[ "$s" == "$new_shell" ]] && ok=1 && break
+  done
+  if (( ok == 0 )); then
+    echo -e "  ${R}✗${N}  shell not in allowlist: '${new_shell}'"
+    echo -e "  ${D}allowed: ${ALLOWED_SHELLS[*]}${N}"
+    echo -e "$HR"; return 1
+  fi
+  echo -e "  ${D}·${N}  create ${M}${user}${N}  shell: ${Y}${new_shell}${N}"
+  echo -e "  ${D}·${N}  no password will be set — account stays locked until: ${C}sudo passwd ${user}${N}"
+  _users_confirm "Create account '${user}'?" || { echo -e "  ${D}aborted${N}"; echo -e "$HR"; return 0; }
+  if sudo adduser --disabled-password --gecos "" --shell "$new_shell" "$user" &>/dev/null; then
+    echo -e "  ${G}✓${N}  ${user} created  ${D}(home: /home/${user})${N}"
+    echo -e "  ${D}next: sudo passwd ${user}   ·   arc users add-group ${user} <group>${N}"
+  else
+    echo -e "  ${R}✗${N}  adduser failed"
+  fi
+  echo -e "$HR"
+}
+
+_users_del() {
+  local user="${1:-}"
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users del${N}  —  delete account"
+  echo -e "$HR\n"
+  if [[ -z "$user" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc users del <username>"
+    echo -e "$HR"; return 1
+  fi
+  _users_validate "$user" || { echo -e "$HR"; return 1; }
+  _users_no_root "$user"   || { echo -e "$HR"; return 1; }
+  _users_no_sys "$user"    || { echo -e "$HR"; return 1; }
+  if [[ "$user" == "$(whoami)" ]]; then
+    echo -e "  ${R}✗${N}  cannot delete your own active account"
+    echo -e "$HR"; return 1
+  fi
+  if who 2>/dev/null | awk '{print $1}' | grep -qx "$user"; then
+    echo -e "  ${R}✗${N}  ${user} has an active session — log them out first"
+    echo -e "$HR"; return 1
+  fi
+  local home; home=$(getent passwd "$user" | awk -F: '{print $6}')
+  echo -e "  ${R}⚠${N}  this will delete account ${M}${user}${N}  ${D}(home: ${home})${N}"
+  _users_confirm "Delete account '${user}'?" || { echo -e "  ${D}aborted${N}"; echo -e "$HR"; return 0; }
+  local typed
+  printf "  ${Y}?${N}  type the username to confirm: " >&2
+  read -r typed < /dev/tty
+  if [[ "$typed" != "$user" ]]; then
+    echo -e "  ${D}aborted — typed value did not match${N}"
+    echo -e "$HR"; return 0
+  fi
+  local rm_home=0
+  _users_confirm "Also delete home directory (${home})?" && rm_home=1
+  if (( rm_home )); then
+    if sudo deluser --remove-home "$user" &>/dev/null; then
+      echo -e "  ${G}✓${N}  ${user} deleted, home removed"
+    else
+      echo -e "  ${R}✗${N}  deluser failed"
+    fi
+  else
+    if sudo deluser "$user" &>/dev/null; then
+      echo -e "  ${G}✓${N}  ${user} deleted, home kept at ${home}"
+    else
+      echo -e "  ${R}✗${N}  deluser failed"
+    fi
+  fi
+  echo -e "$HR"
+}
+
+_users_groupadd() {
+  local grp="${1:-}"
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users groupadd${N}  —  create group"
+  echo -e "$HR\n"
+  if [[ -z "$grp" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc users groupadd <group>"
+    echo -e "$HR"; return 1
+  fi
+  if [[ ! "$grp" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+    echo -e "  ${R}✗${N}  invalid group name: '${grp}'"
+    echo -e "$HR"; return 1
+  fi
+  if getent group "$grp" &>/dev/null; then
+    echo -e "  ${R}✗${N}  group already exists: ${grp}"
+    echo -e "$HR"; return 1
+  fi
+  echo -e "  ${D}·${N}  create group ${Y}${grp}${N}"
+  _users_confirm "Create group '${grp}'?" || { echo -e "  ${D}aborted${N}"; echo -e "$HR"; return 0; }
+  if sudo groupadd "$grp"; then
+    echo -e "  ${G}✓${N}  group created"
+  else
+    echo -e "  ${R}✗${N}  groupadd failed"
+  fi
+  echo -e "$HR"
+}
+
+_users_groupdel() {
+  local grp="${1:-}"
+  local -a PROTECTED_GROUPS=(root sudo adm sys daemon disk wheel shadow staff docker systemd-journal netdev plugdev audio video cdrom dialout floppy users nogroup)
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users groupdel${N}  —  delete group"
+  echo -e "$HR\n"
+  if [[ -z "$grp" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc users groupdel <group>"
+    echo -e "$HR"; return 1
+  fi
+  if ! getent group "$grp" &>/dev/null; then
+    echo -e "  ${R}✗${N}  group does not exist: ${grp}"
+    echo -e "$HR"; return 1
+  fi
+  local p
+  for p in "${PROTECTED_GROUPS[@]}"; do
+    if [[ "$grp" == "$p" ]]; then
+      echo -e "  ${R}✗${N}  refusing to delete protected system group: ${grp}"
+      echo -e "$HR"; return 1
+    fi
+  done
+  local gid; gid=$(getent group "$grp" | awk -F: '{print $3}')
+  if (( gid < 1000 )); then
+    echo -e "  ${R}✗${N}  refusing to delete system group (gid=${gid})"
+    echo -e "$HR"; return 1
+  fi
+  local members
+  members=$(getent passwd | awk -F: -v g="$gid" '$4==g {print $1}')
+  if [[ -n "$members" ]]; then
+    echo -e "  ${R}✗${N}  refusing — ${grp} is still the primary group for: $(echo "$members" | tr '\n' ' ')"
+    echo -e "$HR"; return 1
+  fi
+  echo -e "  ${D}·${N}  delete group ${Y}${grp}${N}  ${D}(gid=${gid})${N}"
+  _users_confirm "Delete group '${grp}'?" || { echo -e "  ${D}aborted${N}"; echo -e "$HR"; return 0; }
+  if sudo groupdel "$grp"; then
+    echo -e "  ${G}✓${N}  group deleted"
+  else
+    echo -e "  ${R}✗${N}  groupdel failed  ${D}(still a secondary member somewhere?)${N}"
+  fi
+  echo -e "$HR"
+}
+
+# Resolve + restrict a target path to $HOME or /mnt/storage; rejects flags (no -R/recursive)
+_users_safe_path() {
+  local path="${1:-}"
+  _SAFE_REAL_PATH=""
+  if [[ -z "$path" ]]; then
+    echo -e "  ${R}✗${N}  path required"
+    return 1
+  fi
+  if [[ "$path" == -* ]]; then
+    echo -e "  ${R}✗${N}  flags not allowed — target a single path only (no -R / recursive)"
+    return 1
+  fi
+  if [[ ! -e "$path" ]]; then
+    echo -e "  ${R}✗${N}  path not found: ${path}"
+    return 1
+  fi
+  local real; real=$(realpath -m "$path" 2>/dev/null)
+  if [[ "$real" != "$HOME" && "$real" != "$HOME"/* && "$real" != "/mnt/storage" && "$real" != "/mnt/storage"/* ]]; then
+    echo -e "  ${R}✗${N}  outside sanitized zone (only \$HOME or /mnt/storage) — refusing: ${real}"
+    return 1
+  fi
+  _SAFE_REAL_PATH="$real"
+  return 0
+}
+
+# Octal permission digits (last 3) → rwx string, e.g. 755 → rwxr-xr-x
+_octal_to_rwx() {
+  local perm="${1: -3}" out="" i c
+  for (( i=0; i<3; i++ )); do
+    c="${perm:$i:1}"
+    case "$c" in
+      0) out+="---" ;; 1) out+="--x" ;; 2) out+="-w-" ;; 3) out+="-wx" ;;
+      4) out+="r--" ;; 5) out+="r-x" ;; 6) out+="rw-" ;; 7) out+="rwx" ;;
+      *) out+="???" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+_users_chmod() {
+  local path="${1:-}" mode="${2:-}"
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users chmod${N}  —  guarded permission change"
+  echo -e "$HR\n"
+  if [[ -z "$path" || -z "$mode" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc users chmod <path> <mode>"
+    echo -e "  ${D}mode is numeric octal only (e.g. 644, 755) — symbolic (u+x) not supported${N}"
+    echo -e "  ${D}scope: \$HOME or /mnt/storage only · no -R/recursive · single target${N}"
+    echo -e "$HR"; return 1
+  fi
+  _users_safe_path "$path" || { echo -e "$HR"; return 1; }
+  local real="$_SAFE_REAL_PATH"
+  if [[ ! "$mode" =~ ^[0-7]{3,4}$ ]]; then
+    echo -e "  ${R}✗${N}  mode must be numeric octal, 3 or 4 digits (e.g. 644, 755, 0644)"
+    echo -e "$HR"; return 1
+  fi
+  local perm="${mode: -3}"
+  if [[ ${#mode} -eq 4 && "${mode:0:1}" =~ [234567] ]]; then
+    echo -e "  ${R}✗${N}  refusing setuid/setgid mode (${mode}) — not permitted by this guard"
+    echo -e "$HR"; return 1
+  fi
+  local rwx; rwx=$(_octal_to_rwx "$mode")
+  local cur_mode; cur_mode=$(stat -c '%a' "$real" 2>/dev/null)
+  local cur_rwx; cur_rwx=$(_octal_to_rwx "$cur_mode")
+  echo -e "  ${D}·${N}  ${M}${real}${N}"
+  echo -e "  ${D}·${N}  ${D}${cur_mode} (${cur_rwx})${N}  →  ${Y}${mode} (${rwx})${N}"
+  if [[ "$perm" == "777" ]]; then
+    echo -e "  ${R}⚠⚠${N}  777 = rwxrwxrwx — read/write/execute for owner, group, AND everyone else. Rarely correct outside a shared temp dir."
+  elif [[ "$perm" == "000" ]]; then
+    echo -e "  ${Y}⚠${N}  000 = ---------- — nobody gets access, including yourself, until you chmod it back"
+  elif (( ${perm: -1} & 2 )); then
+    echo -e "  ${Y}⚠${N}  other/world has write access (${rwx}) — unusual for a personal file"
+  fi
+  _users_confirm "Apply chmod ${mode} to '${real}'?" || { echo -e "  ${D}aborted${N}"; echo -e "$HR"; return 0; }
+  if sudo chmod "$mode" "$real"; then
+    echo -e "  ${G}✓${N}  done"
+  else
+    echo -e "  ${R}✗${N}  chmod failed"
+  fi
+  echo -e "$HR"
+}
+
+_users_chown() {
+  local path="${1:-}" owner_spec="${2:-}"
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users chown${N}  —  guarded ownership change"
+  echo -e "$HR\n"
+  if [[ -z "$path" || -z "$owner_spec" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc users chown <path> <user>[:<group>]"
+    echo -e "  ${D}scope: \$HOME or /mnt/storage only · no -R/recursive · single target${N}"
+    echo -e "$HR"; return 1
+  fi
+  _users_safe_path "$path" || { echo -e "$HR"; return 1; }
+  local real="$_SAFE_REAL_PATH"
+  local new_user="${owner_spec%%:*}"
+  local new_group=""
+  [[ "$owner_spec" == *:* ]] && new_group="${owner_spec#*:}"
+  if ! id "$new_user" &>/dev/null; then
+    echo -e "  ${R}✗${N}  user does not exist: ${new_user}"
+    echo -e "$HR"; return 1
+  fi
+  if [[ -n "$new_group" ]] && ! getent group "$new_group" &>/dev/null; then
+    echo -e "  ${R}✗${N}  group does not exist: ${new_group}"
+    echo -e "$HR"; return 1
+  fi
+  local cur_owner; cur_owner=$(stat -c '%U:%G' "$real" 2>/dev/null)
+  echo -e "  ${D}·${N}  ${M}${real}${N}"
+  echo -e "  ${D}·${N}  ${D}${cur_owner}${N}  →  ${Y}${owner_spec}${N}"
+  local uid_new; uid_new=$(id -u "$new_user")
+  (( uid_new < 1000 )) && echo -e "  ${Y}⚠${N}  target is a system account (uid=${uid_new})"
+  _users_confirm "Apply chown ${owner_spec} to '${real}'?" || { echo -e "  ${D}aborted${N}"; echo -e "$HR"; return 0; }
+  if sudo chown "$owner_spec" "$real"; then
+    echo -e "  ${G}✓${N}  done"
+  else
+    echo -e "  ${R}✗${N}  chown failed"
+  fi
+  echo -e "$HR"
+}
+
+_users_chgrp() {
+  local path="${1:-}" grp="${2:-}"
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users chgrp${N}  —  guarded group ownership change"
+  echo -e "$HR\n"
+  if [[ -z "$path" || -z "$grp" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc users chgrp <path> <group>"
+    echo -e "  ${D}scope: \$HOME or /mnt/storage only · no -R/recursive · single target${N}"
+    echo -e "$HR"; return 1
+  fi
+  _users_safe_path "$path" || { echo -e "$HR"; return 1; }
+  local real="$_SAFE_REAL_PATH"
+  if ! getent group "$grp" &>/dev/null; then
+    echo -e "  ${R}✗${N}  group does not exist: ${grp}"
+    echo -e "$HR"; return 1
+  fi
+  local cur_grp; cur_grp=$(stat -c '%G' "$real" 2>/dev/null)
+  echo -e "  ${D}·${N}  ${M}${real}${N}"
+  echo -e "  ${D}·${N}  ${D}${cur_grp}${N}  →  ${Y}${grp}${N}"
+  _users_confirm "Apply chgrp ${grp} to '${real}'?" || { echo -e "  ${D}aborted${N}"; echo -e "$HR"; return 0; }
+  if sudo chgrp "$grp" "$real"; then
+    echo -e "  ${G}✓${N}  done"
+  else
+    echo -e "  ${R}✗${N}  chgrp failed"
+  fi
+  echo -e "$HR"
+}
+
+_users_sessions() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users sessions${N}  —  active + recent logins"
+  echo -e "$HR\n"
+
+  echo -e "  ${C}active sessions${N}"
+  local sess
+  sess=$(who -a 2>/dev/null | grep -v '^\s*$')
+  if [[ -n "$sess" ]]; then
+    echo "$sess" | while IFS= read -r line; do echo -e "  ${G}·${N}  ${line}"; done
+  else
+    echo -e "  ${D}·${N}  none"
+  fi
+
+  echo ""
+  echo -e "  ${C}last logins  ${D}(20)${N}"
+  last -n 20 2>/dev/null | while IFS= read -r line; do
+    [[ "$line" == wtmp* ]] && continue
+    echo -e "  ${D}·${N}  ${line}"
+  done
+
+  echo ""
+  echo -e "  ${C}failed logins  ${D}(last 15)${N}"
+  local btmp
+  btmp=$(sudo lastb -n 15 2>/dev/null)
+  if [[ -n "$btmp" ]]; then
+    echo "$btmp" | while IFS= read -r line; do
+      [[ "$line" == btmp* ]] && continue
+      echo -e "  ${R}·${N}  ${line}"
+    done
+  else
+    echo -e "  ${D}·${N}  none on record"
+  fi
+
+  echo -e "\n$HR"
+}
+
+_users_passwd_age() {
+  local user="${1:-}"
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc users passwd-age${N}  —  password age and expiry"
+  echo -e "$HR\n"
+  if [[ -z "$user" ]]; then
+    while IFS=: read -r name _ uid _ _ _ _; do
+      (( uid >= 1000 && uid < 65534 )) || continue
+      echo -e "  ${M}${name}${N}"
+      chage -l "$name" 2>/dev/null | while IFS= read -r line; do
+        echo -e "    ${D}${line}${N}"
+      done
+      echo ""
+    done < /etc/passwd
+  else
+    _users_validate "$user" || { echo -e "$HR"; return 1; }
+    echo -e "  ${M}${user}${N}"
+    chage -l "$user" 2>/dev/null | while IFS= read -r line; do
+      echo -e "  ${D}${line}${N}"
+    done
+  fi
+  echo -e "$HR"
+}
+
+cmd_users() {
+  local sub="${1:-}"
+  case "$sub" in
+    check)      _users_check ;;
+    lock)       _users_lock "${2:-}" ;;
+    unlock)     _users_unlock "${2:-}" ;;
+    groups)     _users_groups "${2:-}" ;;
+    add-group)  _users_add_group "${2:-}" "${3:-}" ;;
+    rm-group)   _users_rm_group "${2:-}" "${3:-}" ;;
+    shell)      _users_shell "${2:-}" "${3:-}" ;;
+    sessions)   _users_sessions ;;
+    passwd-age) _users_passwd_age "${2:-}" ;;
+    add)        _users_add "${2:-}" "${3:-}" ;;
+    del)        _users_del "${2:-}" ;;
+    groupadd)   _users_groupadd "${2:-}" ;;
+    groupdel)   _users_groupdel "${2:-}" ;;
+    chmod)      _users_chmod "${2:-}" "${3:-}" ;;
+    chown)      _users_chown "${2:-}" "${3:-}" ;;
+    chgrp)      _users_chgrp "${2:-}" "${3:-}" ;;
+    '')         _users_overview ;;
+    *)
+      echo -e "  ${R}unknown:${N} arc users ${sub}"
+      echo -e "  ${D}options: check · lock <u> · unlock <u> · groups [u] · add-group <u> <g>${N}"
+      echo -e "  ${D}         rm-group <u> <g> · shell <u> [sh] · sessions · passwd-age [u]${N}"
+      echo -e "  ${D}         add <u> [sh] · del <u> · groupadd <g> · groupdel <g>${N}"
+      echo -e "  ${D}         chmod <path> <mode> · chown <path> <u>[:g] · chgrp <path> <g>${N}"
+      return 1
+      ;;
+  esac
+}
+
+# ── Help ───────────────────────────────────────────────────────────────────────
+cmd_help() {
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc${N}  —  your system architect"
+  echo -e "$HR"
+
+  echo -e "\n  ${Y}daily workflow${N}"
+  echo -e "  ${D}──${N}"
+  echo -e "  ${D}arc${N}                       ${M}status: disk usage + repo overview${N}"
+  echo -e "  ${D}arc ${C}day${N}                   ${M}morning startup: USB check, backup status, repos${N}"
+  echo -e "  ${D}arc ${C}backup${N}                ${M}sync local work → USB vault${N}"
+  echo -e "  ${D}arc ${C}sync${N}                  ${M}push vault → MEGA cloud backup${N}"
+  echo -e "  ${D}arc ${C}mega${N}                  ${M}browse MEGA — ls · lsd · tree [path]${N}"
+  echo -e "  ${D}arc ${C}restart${N}               ${M}backup → unmount USB → XFCE logout  (alias: warm-restart)${N}"
+  echo -e "  ${D}arc ${C}safe-reboot${N}           ${M}backup → unmount USB → sudo reboot${N}"
+  echo -e "  ${D}arc ${C}stop${N}                  ${M}end-of-day: kill servers, backup, unmount USB${N}"
+  echo -e "  ${D}arc ${C}notify${N}                ${M}open notification history (or: status, tts-on, tts-off)${N}"
+  echo -e "  ${D}arc ${C}break${N}                 ${M}break timer — start · stop · status · snooze [N] · skip · config · gui${N}"
+  echo -e "  ${D}arc ${C}sop ack${N}               ${M}acknowledge SOPs for this session${N}"
+  echo -e "  ${D}arc ${C}sop baseline${N}          ${M}record current SOP file hashes into local DB${N}"
+  echo -e "  ${D}arc ${C}sop verify${N}            ${M}compare current SOP files against baseline${N}"
+  echo -e "  ${D}arc ${C}sop check${N}             ${M}run SOP compliance checks${N}"
+  echo -e "  ${D}arc ${C}sop status${N}            ${M}show SOP DB status and last ack${N}"
+  echo -e "  ${D}arc ${C}sop violations${N}        ${M}list open unresolved violations${N}"
+  echo -e "  ${D}arc ${C}sop resolve ${W}<id>${N}     ${M}mark a violation resolved${N}"
+  echo -e "  ${D}arc ${C}sop bundle${N}            ${M}export SOP files to a tarball${N}"
+  echo -e "  ${D}arc ${C}sop root-copy${N}         ${M}copy SOP DB to /usr/local/share/arc/sop (DR)${N}"
+  echo -e "  ${D}arc ${C}sop recover${N}           ${M}restore SOP DB from /usr/local/share/arc/sop${N}"
+  echo -e "  ${D}arc ${C}check${N}                 ${M}alias: arc sop check${N}"
+
+  echo -e "\n  ${Y}development${N}"
+  echo -e "  ${D}──${N}"
+  echo -e "  ${D}arc ${C}expo${N}                  ${M}expo dev server (tunnel default) — set ARC_EXPO_DIR${N}"
+  echo -e "  ${D}arc ${C}expo lan${N}              ${M}expo dev server — LAN mode (same Wi-Fi)${N}"
+  echo -e "  ${D}arc ${C}wire${N}                  ${M}wire dual-push for current repo (primary + k6)${N}"
+  echo -e "  ${D}arc ${C}mirror${N}                ${M}push current repo → k6 contingency account${N}"
+  echo -e "  ${D}arc ${C}mirrors${N}               ${M}status/run/log of the automated sync-mirrors job (all repos, k45→k6)${N}"
+  echo -e "  ${D}arc ${C}deploy${N} ${W}[athena|kataleya]${N}      ${M}build + push to Cloudflare Pages — currently broken, dead CF token, see CLAUDE.md${N}"
+  echo -e "  ${D}arc ${C}audit${N}                 ${M}full git audit: fetch, status, ahead/behind${N}"
+  echo -e "  ${D}arc ${C}rename${N}                ${M}bulk rename: kebab/camel/snake/numbers-to-words${N}"
+  echo -e "  ${D}arc ${C}aws${N}                   ${M}SSH into py-bite EC2 — config: ~/.config/arc/aws.conf${N}"
+  echo -e "  ${D}arc ${C}aws status${N}            ${M}remote snapshot: uptime · disk · ram · services · auth${N}"
+  echo -e "  ${D}arc ${C}aws logs${N}              ${M}live tail of auth.log from local terminal${N}"
+  echo -e "  ${D}arc ${C}aws htop${N}              ${M}live resource monitor (remote htop)${N}"
+  echo -e "  ${D}arc ${C}aws push${N}              ${M}deploy server-arc to EC2${N}"
+  echo -e "  ${D}arc ${C}aws motd${N}              ${M}install custom MOTD on EC2${N}"
+  echo -e "  ${D}arc ${C}kali${N}                  ${M}shell into the kali-workbench container (starts it if stopped)${N}"
+  echo -e "  ${D}arc ${C}kali start/stop/status/logs${N}  ${M}manage the container directly${N}"
+  echo -e "  ${D}arc ${C}sagan${N}                 ${M}status of the Sagan correlation-engine container${N}"
+  echo -e "  ${D}arc ${C}sagan start/stop/restart/logs${N}  ${M}manage the container${N}"
+  echo -e "  ${D}arc ${C}sagan alerts${N}          ${M}most recent 10 alerts from its eve.json${N}"
+  echo -e "  ${D}arc ${C}evebox${N}                ${M}status of the EveBox triage-UI container${N}"
+  echo -e "  ${D}arc ${C}evebox start/stop/restart/logs${N}  ${M}manage the container${N}"
+  echo -e "  ${D}arc ${C}evebox open${N}           ${M}open the web UI (http://127.0.0.1:5636)${N}"
+  echo -e "  ${D}arc ${C}soc-lab${N}               ${M}status of the Splunk + SQL Server + Nessus lab containers${N}"
+  echo -e "  ${D}arc ${C}soc-lab start/stop/restart/logs${N}  ${M}manage all three containers (docker compose under the hood)${N}"
+  echo -e "  ${D}arc ${C}zap${N}                   ${M}OWASP ZAP web app scanner (manual-start, lab-only targets by default)${N}"
+  echo -e "  ${D}arc ${C}darkstat${N}              ${M}live traffic dashboard (manual-start, loopback only)${N}"
+  echo -e "  ${D}arc ${C}desktop${N}               ${M}all outside access to THIS machine — tunnel (ssh+VNC) + desktop sharing, bundled${N}"
+  echo -e "  ${D}arc ${C}desktop start${N}         ${M}enable it all (cloudflared + x11vnc + noVNC), survives reboot until stopped${N}"
+  echo -e "  ${D}arc ${C}desktop stop${N}          ${M}disable it all — full teardown, survives reboot until started${N}"
+  echo -e "  ${D}arc ${C}desktop status${N}        ${M}running? print the connection url${N}"
+  echo -e "  ${D}arc ${C}cf-watch${N}              ${M}check Cloudflare Workers usage now vs the 100k/day free-tier cap${N}"
+  echo -e "  ${D}arc ${C}cf-watch log${N}          ${M}last 30 checks (runs every 2h via cron)${N}"
+  echo -e "  ${D}arc ${C}heal${N}                  ${M}self-healing watchdog — checks + auto-fixes what's safe, flags what isn't${N}"
+  echo -e "  ${D}arc ${C}heal status${N}           ${M}latest run's findings${N}"
+  echo -e "  ${D}arc ${C}heal log${N}              ${M}run history${N}"
+  echo -e "  ${D}arc ${C}sot${N}                   ${M}canonical SOT for this user's tooling — snapshot/pull/status, migrate to a new PC${N}"
+  echo -e "  ${D}arc ${C}sot snapshot${N}          ${M}capture live state → commit, push (both remotes), mirror to USB${N}"
+  echo -e "  ${D}arc ${C}sot pull${N}              ${M}bring this machine's scripts up to date with the repo${N}"
+  echo -e "  ${D}arc ${C}sot status${N}            ${M}drift check — uncommitted edits, broken symlinks, cron drift${N}"
+  echo -e "  ${D}arc ${C}sot bootstrap${N}         ${M}fresh machine: clone + install (works offline from the USB mirror too)${N}"
+
+  echo -e "\n  ${Y}system maintenance${N}"
+  echo -e "  ${D}──${N}"
+  echo -e "  ${D}arc ${C}health${N}                ${M}disks, RAM, all encryption layers${N}"
+  echo -e "  ${D}arc ${C}mount${N}                 ${M}manual USB remount (PARTUUID-based, port-agnostic)${N}"
+  echo -e "  ${D}arc ${C}update${N}                ${M}apt update + upgrade + clean${N}"
+  echo -e "  ${D}arc ${C}clean${N}                 ${M}deep clean: sweep + cache + logs + tmp + apt${N}"
+  echo -e "  ${D}arc ${C}browser-clean${N}         ${M}clear Brave + Firefox caches (close browsers first)${N}"
+  echo -e "  ${D}arc ${C}browser-clean --force${N} ${M}force clean even if browsers are open${N}"
+  echo -e "  ${D}arc ${C}sweep${N}                 ${M}home directory sweep — moves junk, packs it${N}"
+  echo -e "  ${D}arc ${C}sweep dry${N}             ${M}preview what would be swept${N}"
+  echo -e "  ${D}arc ${C}sweep purge${N}           ${M}sweep + pack + delete immediately${N}"
+  echo -e "  ${D}arc ${C}sweep status${N}          ${M}show staging area and packs${N}"
+  echo -e "  ${D}arc ${C}disk${N}                  ${M}top space consumers — home, flatpak, kernels${N}"
+  echo -e "  ${D}arc ${C}disk caches${N}           ${M}known reclaimable caches, sized (report only)${N}"
+  echo -e "  ${D}arc ${C}disk clean${N}            ${M}reclaim the safe ones — npm, old CLI versions, unused flatpak${N}"
+  echo -e "  ${D}arc ${C}top${N}                   ${M}btop — realtime CPU · RAM · swap · processes${N}"
+  echo -e "  ${D}arc ${C}hq${N}                    ${M}system cockpit — cpu · ram · disk · net · dns · services · ports · procs${N}"
+  echo -e "  ${D}arc ${C}hq ref${N}                ${M}reference.md in glow${N}"
+  echo -e "  ${D}arc ${C}hq ops${N}                ${M}opsec-hardening.md in glow${N}"
+
+  echo -e "\n  ${Y}security${N}"
+  echo -e "  ${D}──${N}"
+  echo -e "  ${D}arc ${C}users${N}                 ${M}user overview — accounts · sessions · sudo members${N}"
+  echo -e "  ${D}arc ${C}users check${N}           ${M}deep audit — shells · password status · group memberships · sudoers${N}"
+  echo -e "  ${D}arc ${C}users lock ${W}<u>${N}       ${M}lock account (no root, no self, confirmation required)${N}"
+  echo -e "  ${D}arc ${C}users unlock ${W}<u>${N}     ${M}unlock account${N}"
+  echo -e "  ${D}arc ${C}users groups ${W}[u]${N}     ${M}show all groups for a user (default: current user)${N}"
+  echo -e "  ${D}arc ${C}users add-group ${W}<u> <g>${N}  ${M}add to whitelisted group (confirmation required)${N}"
+  echo -e "  ${D}arc ${C}users rm-group ${W}<u> <g>${N}   ${M}remove from group (confirmation required)${N}"
+  echo -e "  ${D}arc ${C}users shell ${W}<u> [sh]${N}  ${M}view or set login shell (allowlisted shells only)${N}"
+  echo -e "  ${D}arc ${C}users sessions${N}        ${M}active sessions + last/failed logins${N}"
+  echo -e "  ${D}arc ${C}users passwd-age ${W}[u]${N} ${M}password age and expiry info${N}"
+  echo -e "  ${D}arc ${C}users add ${W}<u> [sh]${N}   ${M}create account, no password set (allowlisted shells, confirmation required)${N}"
+  echo -e "  ${D}arc ${C}users del ${W}<u>${N}        ${M}delete account — no root/self/system, active-session check, type-to-confirm${N}"
+  echo -e "  ${D}arc ${C}users groupadd ${W}<g>${N}   ${M}create a new group (confirmation required)${N}"
+  echo -e "  ${D}arc ${C}users groupdel ${W}<g>${N}   ${M}delete a group (protected system groups blocked, confirmation required)${N}"
+  echo -e "  ${D}arc ${C}users chmod ${W}<path> <mode>${N}     ${M}guarded chmod — \$HOME/USB only, no -R, shows rwx + warns on 777/000/o+w${N}"
+  echo -e "  ${D}arc ${C}users chown ${W}<path> <u>[:g]${N}    ${M}guarded chown — \$HOME/USB only, no -R, confirmation required${N}"
+  echo -e "  ${D}arc ${C}users chgrp ${W}<path> <g>${N}        ${M}guarded chgrp — \$HOME/USB only, no -R, confirmation required${N}"
+  echo -e "  ${D}arc ${C}sec${N}                   ${M}security overview dashboard${N}"
+  echo -e "  ${D}arc ${C}sec audit${N}             ${M}workstation hardening scan — ssh · kernel · suid · sudoers · pkgs${N}"
+  echo -e "  ${D}arc ${C}sec chkrootkit${N}        ${M}rootkit scan${N}"
+  echo -e "  ${D}arc ${C}sec rkhunter${N}          ${M}rootkit hunter scan${N}"
+  echo -e "  ${D}arc ${C}sec clamav${N}            ${M}antivirus scan of \$HOME, backgrounded — [status] to check${N}"
+  echo -e "  ${D}arc ${C}sec suricata${N}          ${M}network IDS status + 5 most recent alerts${N}"
+  echo -e "  ${D}arc ${C}sec users${N}             ${M}accounts · sessions · failed auth${N}"
+  echo -e "  ${D}arc ${C}sec net${N}               ${M}ports · connections · dns · arp${N}"
+  echo -e "  ${D}arc ${C}sec firewall${N}          ${M}ufw status · allow · deny · delete · logs · reset${N}"
+  echo -e "  ${D}arc ${C}sec f2b${N}               ${M}fail2ban · ban · unban · banned · logs · check · patch${N}"
+  echo -e "  ${D}arc ${C}sec lynis${N}             ${M}full lynis hardening audit — pinned log/report paths, no \$HOME clutter${N}"
+  echo -e "  ${D}arc ${C}sec apps${N}              ${M}apt · snap · flatpak audit${N}"
+  echo -e "  ${D}arc ${C}sec logs${N}              ${M}auth · sudo · ufw blocks · journal${N}"
+  echo -e "\n  ${Y}logs${N}"
+  echo -e "  ${D}──${N}"
+  echo -e "  ${D}arc ${C}snap${N}                  ${M}manual snapshot + MEGA sync (USB must be mounted)${N}"
+  echo -e "  ${D}arc ${C}logs${N}                  ${M}critical snapshot — auth · sudo · ufw · journal${N}"
+  echo -e "  ${D}arc ${C}logs tail${N}             ${M}live tail: auth.log + ufw.log${N}"
+  echo -e "  ${D}arc ${C}logs ts${N}               ${M}timeshift log${N}"
+  echo -e "  ${D}arc ${C}logs suricata${N}         ${M}live tail: IDS alerts, parsed${N}"
+  echo -e "  ${D}arc ${C}logs clamav${N}           ${M}last antivirus scan log${N}"
+  echo -e "  ${D}arc ${C}logs chkrootkit${N}       ${M}last rootkit scan log${N}"
+  echo -e "  ${D}arc ${C}logs rkhunter${N}         ${M}last rootkit hunter scan log${N}"
+
+  echo -e "\n  ${Y}network${N}"
+  echo -e "  ${D}──${N}"
+  echo -e "  ${D}arc ${C}net${N}                   ${M}network monitor hub — bandwhich · iftop · nethogs · stats${N}"
+  echo -e "  ${D}arc ${C}net bandwhich${N}          ${M}bandwidth per process + remote address  (sudo, -i/-r/-p/-c)${N}"
+  echo -e "  ${D}arc ${C}net iftop${N}              ${M}bandwidth per connection pair  (sudo, -i/-n/-N/-P/-t)${N}"
+  echo -e "  ${D}arc ${C}net nethogs${N}            ${M}bandwidth per PID / process  (sudo, -d/-p/-t/-b)${N}"
+  echo -e "  ${D}arc ${C}net stats${N}              ${M}quick rx/tx snapshot per interface — no TUI, no sudo${N}"
+  echo -e "  ${D}arc ${C}dns ${W}[on|off|restart|flush|check|status|profile|blocklists]${N}   ${M}NextDNS toggle${N}"
+  echo -e "  ${D}arc-dns-hot${N}                 ${M}enable NextDNS boot + activate aggressive filtering${N}"
+  echo -e "  ${D}arc-dns-cold${N}                ${M}disable NextDNS boot + deactivate to system DNS${N}"
+  echo -e "  ${D}arc ${C}vpn ${W}[status|ip|killswitch|refresh]${N}   ${M}ProtonVPN GUI status wrapper — connect/disconnect are GUI-only${N}"
+  echo -e "  ${D}arc ${C}kismet ${W}[start|stop|status]${N}   ${M}wireless recon (wlan0 → monitor mode, drops WiFi/VPN while running) — manual-start only${N}"
+  echo -e "  ${D}arc ${C}lab${N}                    ${M}khaos-lab control panel — GUI dashboard/launcher over the arc toolkit — manual-start only${N}"
+  echo -e "  ${D}arc ${C}sudo ${W}[start|stop|status]${N}   ${M}keep the sudo credential cache alive in the background — start needs a real TTY${N}"
+  echo -e "  ${D}arc ${C}mic ${W}[status|mute|unmute|toggle]${N}   ${M}microphone control — muted by default at login, on until you mute it again${N}"
+  echo -e "  ${D}arc ${C}eero${N}                  ${M}router manager — password · devices${N}"
+  echo -e "  ${D}arc ${C}eero-watch${N}            ${M}start network monitor in background${N}"
+  echo -e "  ${D}arc ${C}eero-logs${N}             ${M}view watch log · [c] to clear${N}"
+  echo -e "  ${D}arc ${C}stop-eero${N}             ${M}stop the background monitor${N}"
+
+  echo -e "\n  ${Y}identity & auth${N}"
+  echo -e "  ${D}──${N}"
+  echo -e "  ${D}arc ${C}setup${N}                 ${M}first-time git identity + ssh key${N}"
+  echo -e "  ${D}arc ${C}keys${N}                  ${M}show SSH public keys for both GitHub accounts${N}"
+  echo -e "  ${D}arc ${C}keys guard${N}            ${M}load both into agent with confirm-on-use${N}"
+  echo -e "  ${D}arc ${C}keys guard-quiet${N}      ${M}same, silent unless it loads something — manual only now, not auto-run${N}"
+  echo -e "  ${D}arc ${C}auth${N}                  ${M}launch Ente Auth (2FA codes)${N}"
+
+  echo -e "\n  ${Y}reference${N}"
+  echo -e "  ${D}──${N}"
+  echo -e "  ${D}arc ${C}ref ${W}[name]${N}            ${M}list or search archived references${N}"
+  echo -e "  ${D}arc ${C}find ${W}<query>${N}          ${M}search across arc-lt-cmc + dev-notes + khaos-lab + vault/archive${N}"
+  echo -e "  ${D}arc ${C}book${N}                  ${M}compiled reference archive (master-book.md) — stats${N}"
+  echo -e "  ${D}arc ${C}book rebuild${N}          ${M}recompile it from current notes${N}"
+  echo -e "  ${D}arc ${C}site${N}                  ${M}dashboard + browsable/searchable notes (lives in the vault)${N}"
+  echo -e "  ${D}arc ${C}site build${N}            ${M}rebuild it from current notes${N}"
+  echo -e "  ${D}arc ${C}site open${N}             ${M}open the dashboard in your browser${N}"
+  echo -e "  ${D}arc ${C}emoji${N}                 ${M}open emoji picker${N}"
+  echo -e "  ${D}arc ${C}emoji add ${W}<e> <words>${N} ${M}add emoji with search keywords${N}"
+  echo -e "  ${D}arc ${C}emoji list${N}            ${M}show your emoji list${N}"
+  echo -e "  ${D}arc ${C}emoji edit${N}            ${M}bulk edit list in nano${N}"
+
+  echo -e "\n  ${Y}fixes & patches${N}"
+  echo -e "  ${D}──${N}"
+  echo -e "  ${D}arc ${C}fix brave${N}             ${M}kill + relaunch Brave${N}"
+  echo -e "  ${D}arc ${C}fix display${N}           ${M}restart xfwm4 compositor${N}"
+  echo -e "  ${D}arc ${C}fix wifi${N}              ${M}toggle wifi off → on${N}"
+  echo -e "  ${D}arc ${C}fix screen${N}            ${M}reset terminal + restart shell${N}"
+  echo -e "  ${D}arc ${C}fix audio${N}             ${M}revert stuck pro-audio profile + refresh panel${N}"
+  echo -e "  ${D}arc ${C}fix panel${N}             ${M}refresh/restart the taskbar panel${N}"
+
+  echo -e "\n  ${Y}shell${N}"
+  echo -e "  ${D}──${N}"
+  echo -e "  ${D}arc ${C}shell bash${N}            ${M}switch default shell to bash${N}"
+  echo -e "  ${D}arc ${C}shell zsh${N}             ${M}switch default shell to zsh${N}"
+  echo -e "  ${D}arc ${C}reload${N}                ${M}reload shell rc (zshrc or bashrc)${N}"
+  echo -e "  ${D}arc ${C}help${N}                  ${M}this screen${N}"
+
+  echo -e "\n$HR"
+}
+
+# ── Notifications ──────────────────────────────────────────────────────────────
+cmd_notify() {
+  case "${2:-}" in
+    status|count)
+      if [ -f ~/.local/share/arc-pine/history.db ]; then
+        local count
+        count=$(sqlite3 ~/.local/share/arc-pine/history.db "SELECT COUNT(*) FROM notifications" 2>/dev/null || echo 0)
+        echo -e "  ${C}${count}${N} notifications in history"
+      else
+        echo -e "  ${D}no notification database yet${N}"
+      fi
+      ;;
+    purge)
+      arc-pine &
+      ;;
+    tts-on)
+      arc-pine-speak on
+      ;;
+    tts-off)
+      arc-pine-speak off
+      ;;
+    *)
+      arc-pine &
+      ;;
+  esac
+}
+
+# ── SOP enforcement ─────────────────────────────────────────────────────────────
+cmd_sop() {
+  case "${2:-}" in
+    ack)
+      arc-sop ack
+      ;;
+    baseline)
+      arc-sop baseline
+      ;;
+    verify)
+      arc-sop verify
+      ;;
+    check)
+      arc-sop check
+      ;;
+    status)
+      arc-sop status
+      ;;
+    bundle)
+      arc-sop bundle
+      ;;
+    root-copy)
+      arc-sop root-copy
+      ;;
+    recover)
+      arc-sop recover
+      ;;
+    violations)
+      arc-sop violations
+      ;;
+    resolve)
+      arc-sop resolve "${3:-}"
+      ;;
+    ack-today|check-today)
+      arc-sop ack-today
+      ;;
+    done-balance|check-done)
+      arc-sop done-balance
+      ;;
+    start)
+      arc-sop start "${@:3}"
+      ;;
+    gate)
+      case "${3:-}" in
+        status)  arc-sop gate-status ;;
+        bypass)  arc-sop gate-bypass ;;
+        enable)  arc-sop gate-enable ;;
+        *)       echo -e "  usage: arc sop gate [status|bypass|enable]" ;;
+      esac
+      ;;
+    *)
+      echo -e "  ${C}arc sop${N} — SOP enforcement"
+      echo -e "  ${D}ack · baseline · verify · check · status · violations · resolve <id>${N}"
+      echo -e "  ${D}bundle · root-copy · recover · ack-today · done-balance${N}"
+      echo -e "  ${D}start [description]        — the one command: shows GAMEPLAN.md + logs [STARTING] + acks${N}"
+      echo -e "  ${D}gate status|bypass|enable  — interactive-shell gate management${N}"
+      ;;
+  esac
+}
+
+# ── System compliance check ─────────────────────────────────────────────────────
+cmd_arc_check() {
+  arc-sop check
+}
+
+# ── Rename ─────────────────────────────────────────────────────────────────────
+cmd_rename() {
+  ~/.local/bin/rename-case "$@"
+}
+
+# ── AWS SSH ─────────────────────────────────────────────────────────────────────
+cmd_aws() {
+  local sub="${1:-}"
+  local conf="$HOME/.config/arc/aws.conf"
+  local AWS_HOST="34.225.113.167" AWS_USER="ubuntu" AWS_KEY="$HOME/.ssh/py-bite.pem"
+  [[ -f "$conf" ]] && source "$conf"
+  AWS_KEY="${AWS_KEY/#\~/$HOME}"
+  if [[ ! -f "$AWS_KEY" ]]; then
+    echo -e "  ${R}✗${N}  key not found: $AWS_KEY"
+    echo -e "  ${D}update: ~/.config/arc/aws.conf${N}"
+    return 1
+  fi
+
+  case "$sub" in
+    motd)
+      local src="$HOME/khaos-lab/tools/aws-motd"
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc aws motd${N}  —  install custom MOTD"
+      echo -e "$HR\n"
+      if [[ ! -f "$src" ]]; then
+        echo -e "  ${R}✗${N}  not found: $src"; echo -e "\n$HR"; return 1
+      fi
+      echo -e "  ${C}installing...${N}"
+      base64 "$src" | ssh -i "$AWS_KEY" "${AWS_USER}@${AWS_HOST}" \
+        'base64 -d > /tmp/aws-motd \
+         && sudo mv /tmp/aws-motd /etc/update-motd.d/01-greeting \
+         && sudo chmod +x /etc/update-motd.d/01-greeting \
+         && for f in 00-header 10-help-text 50-landscape-sysinfo 50-motd-news \
+              90-updates-available 91-contract-ua-esm-status; do
+              sudo chmod -x /etc/update-motd.d/$f 2>/dev/null || true; done \
+         && for f in 85-fwupd 91-release-upgrade 92-unattended-upgrades \
+              95-hwe-eol 97-overlayroot 98-fsck-at-reboot 98-reboot-required; do
+              sudo chmod -x /etc/update-motd.d/$f 2>/dev/null || true; done \
+         && echo done' \
+        && echo -e "  ${G}✓${N}  MOTD installed — reconnect with ${C}arc aws${N} to see it" \
+        || echo -e "  ${R}✗${N}  install failed"
+      echo -e "\n$HR"
+      ;;
+    push)
+      local src="$HOME/khaos-lab/tools/server-arc"
+      local dst="/home/${AWS_USER}/.local/bin/server-arc"
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc aws push${N}  —  deploy server-arc"
+      echo -e "$HR\n"
+      if [[ ! -f "$src" ]]; then
+        echo -e "  ${R}✗${N}  not found: $src"; echo -e "\n$HR"; return 1
+      fi
+      echo -e "  ${C}copying...${N}"
+      ssh -i "$AWS_KEY" "${AWS_USER}@${AWS_HOST}" "mkdir -p ~/.local/bin" \
+        && scp -i "$AWS_KEY" "$src" "${AWS_USER}@${AWS_HOST}:${dst}" \
+        && ssh -i "$AWS_KEY" "${AWS_USER}@${AWS_HOST}" "chmod +x ${dst}" \
+        && echo -e "  ${G}✓${N}  server-arc deployed to ${AWS_USER}@${AWS_HOST}" \
+        || echo -e "  ${R}✗${N}  deploy failed"
+      echo -e "\n$HR"
+      ;;
+    status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc aws status${N}  —  ${M}${AWS_USER}@${AWS_HOST}${N}"
+      echo -e "$HR"
+      ssh -i "$AWS_KEY" "${AWS_USER}@${AWS_HOST}" bash <<'REMOTE'
+echo ""
+# Uptime
+uptime_str=$(uptime -p 2>/dev/null || uptime)
+printf "  \033[0;36muptime\033[0m  \033[38;5;250m%s\033[0m\n" "$uptime_str"
+
+# Disk
+du_=$(df -h / | awk 'NR==2 {print $3}')
+df_=$(df -h / | awk 'NR==2 {print $4}')
+dp_=$(df /   | awk 'NR==2 {print $5}')
+printf "  \033[0;36mdisk\033[0m    \033[38;5;250m%s used  ·  %s free  (%s)\033[0m\n" "$du_" "$df_" "$dp_"
+
+# RAM
+rm_used=$(free -h | awk '/Mem:/ {print $3}')
+rm_free=$(free -h | awk '/Mem:/ {print $7}')
+rm_pct=$(free    | awk '/Mem:/ {printf "%.0f%%", $3/$2*100}')
+printf "  \033[0;36mram\033[0m     \033[38;5;250m%s used  ·  %s free  (%s)\033[0m\n" "$rm_used" "$rm_free" "$rm_pct"
+
+# Load
+read -r l1 l5 l15 _ < /proc/loadavg
+printf "  \033[0;36mload\033[0m    \033[38;5;250m%s · %s · %s\033[0m\n" "$l1" "$l5" "$l15"
+
+echo ""
+
+# Services (py-bite has run as a Docker container since the 2026-07-07
+# containerization migration — checked via the container's own health status,
+# not the old systemd unit, which is deliberately disabled and always reads
+# "inactive" now regardless of whether the real app is actually up)
+for svc in nginx fail2ban ufw; do
+  if systemctl is-active --quiet "$svc" 2>/dev/null; then
+    printf "  \033[0;32m·\033[0m  \033[38;5;250m%s\033[0m\n" "$svc"
+  else
+    printf "  \033[0;31m·\033[0m  \033[38;5;250m%s\033[0m  \033[0;90m(inactive)\033[0m\n" "$svc"
+  fi
+done
+pb_health=$(docker inspect --format '{{.State.Health.Status}}' py-bite 2>/dev/null)
+if [[ "$pb_health" == "healthy" ]]; then
+  printf "  \033[0;32m·\033[0m  \033[38;5;250mpy-bite\033[0m  \033[0;90m(docker, healthy)\033[0m\n"
+elif [[ -n "$pb_health" ]]; then
+  printf "  \033[0;31m·\033[0m  \033[38;5;250mpy-bite\033[0m  \033[0;90m(docker, %s)\033[0m\n" "$pb_health"
+else
+  printf "  \033[0;31m·\033[0m  \033[38;5;250mpy-bite\033[0m  \033[0;90m(container not found)\033[0m\n"
+fi
+
+echo ""
+
+# Active SSH sessions
+sessions=$(who 2>/dev/null | wc -l | tr -d ' ')
+printf "  \033[0;36mssh sessions\033[0m  \033[38;5;250m%s active\033[0m\n" "$sessions"
+
+# Auth failures in last hour
+fails=$(awk -v d="$(date --date='1 hour ago' '+%b %e %H')" \
+  '$0 ~ d && /Failed password|Invalid user/' \
+  /var/log/auth.log 2>/dev/null | wc -l | tr -d ' ')
+if (( fails > 0 )); then
+  printf "  \033[0;31m·\033[0m  \033[38;5;250m%s failed auth attempt(s) in last hour\033[0m\n" "$fails"
+else
+  printf "  \033[0;32m·\033[0m  \033[38;5;250m0 failed auth attempts in last hour\033[0m\n"
+fi
+echo ""
+REMOTE
+      echo -e "$HR"
+      ;;
+    logs)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc aws logs${N}  —  live auth tail  ${D}(ctrl-c to exit)${N}"
+      echo -e "$HR\n"
+      ssh -i "$AWS_KEY" "${AWS_USER}@${AWS_HOST}" "sudo tail -f /var/log/auth.log"
+      ;;
+    htop)
+      ssh -i "$AWS_KEY" -t "${AWS_USER}@${AWS_HOST}" "htop"
+      ;;
+    '')
+      echo -e "  ${C}connecting${N}  ${M}${AWS_USER}@${AWS_HOST}${N}  ${D}(${AWS_KEY})${N}"
+      ssh -i "$AWS_KEY" "${AWS_USER}@${AWS_HOST}"
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc aws $sub"
+      echo -e "${D}options: status · logs · htop · push · motd${N}"
+      ;;
+  esac
+}
+
+# ── Local Docker containers ─────────────────────────────────────────────────
+# kali-workbench / sagan / evebox all run as local Docker containers, not
+# remote EC2 boxes -- no SSH/key involved, just `docker` directly against
+# each container by name.
+
+cmd_kali() {
+  local sub="${1:-}"
+  local name="kali-workbench"
+  case "$sub" in
+    start)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc kali start${N}  —  start ${name}"
+      echo -e "$HR\n"
+      docker start "$name" >/dev/null 2>&1 \
+        && echo -e "  ${G}✓${N}  running" \
+        || echo -e "  ${R}✗${N}  failed — is the container present? (docker ps -a)"
+      echo -e "\n$HR"
+      ;;
+    stop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc kali stop${N}  —  stop ${name}"
+      echo -e "$HR\n"
+      docker stop "$name" >/dev/null 2>&1 \
+        && echo -e "  ${G}✓${N}  stopped" \
+        || echo -e "  ${R}✗${N}  failed to stop"
+      echo -e "\n$HR"
+      ;;
+    status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc kali status${N}"
+      echo -e "$HR\n"
+      local state; state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null)
+      if [[ -z "$state" ]]; then
+        echo -e "  ${R}✗${N}  container not found"
+      elif [[ "$state" == "running" ]]; then
+        local stats; stats=$(docker stats "$name" --no-stream --format '{{.CPUPerc}} cpu · {{.MemUsage}}' 2>/dev/null)
+        echo -e "  ${G}✓${N}  running  ${D}(${stats})${N}"
+      else
+        echo -e "  ${Y}!${N}  ${state}  ${D}(arc kali start)${N}"
+      fi
+      echo -e "\n$HR"
+      ;;
+    logs)
+      docker logs -f "$name"
+      ;;
+    '')
+      local state; state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null)
+      if [[ -z "$state" ]]; then
+        echo -e "  ${R}✗${N}  container not found — check docker ps -a"
+        return 1
+      fi
+      if [[ "$state" != "running" ]]; then
+        echo -e "  ${Y}!${N}  container is ${state} — starting it..."
+        docker start "$name" >/dev/null 2>&1
+      fi
+      echo -e "  ${C}entering${N}  ${M}${name}${N}"
+      docker exec -it "$name" bash
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc kali $sub"
+      echo -e "${D}options: (bare) shell · start · stop · status · logs${N}"
+      ;;
+  esac
+}
+
+cmd_sagan() {
+  local sub="${1:-}"
+  local name="sagan"
+  case "$sub" in
+    start)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc sagan start${N}  —  start ${name}"
+      echo -e "$HR\n"
+      docker start "$name" >/dev/null 2>&1 \
+        && echo -e "  ${G}✓${N}  running" \
+        || echo -e "  ${R}✗${N}  failed — is the container present? (docker ps -a)"
+      echo -e "\n$HR"
+      ;;
+    stop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc sagan stop${N}  —  stop ${name}"
+      echo -e "$HR\n"
+      docker stop "$name" >/dev/null 2>&1 \
+        && echo -e "  ${G}✓${N}  stopped" \
+        || echo -e "  ${R}✗${N}  failed to stop"
+      echo -e "\n$HR"
+      ;;
+    restart)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc sagan restart${N}"
+      echo -e "$HR\n"
+      docker restart "$name" >/dev/null 2>&1 \
+        && echo -e "  ${G}✓${N}  restarted" \
+        || echo -e "  ${R}✗${N}  restart failed"
+      echo -e "\n$HR"
+      ;;
+    status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc sagan status${N}"
+      echo -e "$HR\n"
+      local state; state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null)
+      if [[ -z "$state" ]]; then
+        echo -e "  ${R}✗${N}  container not found"
+      elif [[ "$state" == "running" ]]; then
+        local stats; stats=$(docker stats "$name" --no-stream --format '{{.CPUPerc}} cpu · {{.MemUsage}}' 2>/dev/null)
+        echo -e "  ${G}✓${N}  running  ${D}(${stats})${N}"
+        docker exec "$name" tail -3 /var/log/sagan/sagan.log 2>/dev/null | sed 's/^/  /'
+      else
+        echo -e "  ${Y}!${N}  ${state}  ${D}(arc sagan start)${N}"
+      fi
+      echo -e "\n$HR"
+      ;;
+    logs)
+      docker exec "$name" tail -f /var/log/sagan/sagan.log
+      ;;
+    alerts)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc sagan alerts${N}  —  most recent"
+      echo -e "$HR\n"
+      docker exec "$name" tail -10 /var/log/sagan/eve.json 2>/dev/null | python3 -c "
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    a = d.get('alert', {})
+    if not a:
+        continue
+    print(f\"  {d.get('timestamp','?')}  {a.get('signature','?')}  (src {d.get('src_ip','?')})\")
+"
+      echo -e "\n$HR"
+      ;;
+    '')
+      cmd_sagan status
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc sagan $sub"
+      echo -e "${D}options: status · start · stop · restart · logs · alerts${N}"
+      ;;
+  esac
+}
+
+cmd_darkstat() {
+  # darkstat wrapper -- live traffic dashboard (who's talking to whom right
+  # now), picked 2026-08-18 over ntopng after verifying ntopng has no real
+  # Kali build (ntop.org's repo only ships bookworm/bullseye/buster/trixie,
+  # kali-rolling 404s -- using trixie's repo on kali-rolling risked a real
+  # apt dependency conflict, not worth it for this). darkstat is genuinely
+  # in Kali's own repos, no third-party trust added.
+  #
+  # Manual-start only, same principle as arc-break/arc-zap. Reconciled
+  # 2026-08-22 onto the packaged systemd unit (was a parallel setcap+raw-binary
+  # path on a different port, 8667, that this wrapper had never actually been
+  # used to start -- two independent darkstat paths existing at once was the
+  # real problem, not which one). Unit ships disabled by default and stays
+  # that way; this wrapper only ever starts/stops it manually. Config fixed
+  # the same day (interface was still pointed at the dead eth0) in
+  # /etc/darkstat/init.cfg, backed up alongside.
+  local sub="${1:-}"
+  local DS_HOST="127.0.0.1"
+  local DS_PORT="667"
+  local DS_IFACE="wlan0"
+
+  case "$sub" in
+    start)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc darkstat start${N}  —  live traffic dashboard on ${DS_IFACE}"
+      echo -e "$HR\n"
+      if systemctl is-active --quiet darkstat; then
+        echo -e "  ${Y}!${N}  already running"
+      else
+        sudo systemctl start darkstat
+        sleep 1
+        if systemctl is-active --quiet darkstat && curl -s "http://${DS_HOST}:${DS_PORT}" >/dev/null 2>&1; then
+          echo -e "  ${G}✓${N}  up  ${D}(http://${DS_HOST}:${DS_PORT}, watching ${DS_IFACE}, loopback only)${N}"
+        else
+          echo -e "  ${R}✗${N}  didn't come up — check: sudo journalctl -u darkstat"
+        fi
+      fi
+      echo -e "\n$HR"
+      ;;
+    stop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc darkstat stop${N}"
+      echo -e "$HR\n"
+      if systemctl is-active --quiet darkstat; then
+        sudo systemctl stop darkstat \
+          && echo -e "  ${G}✓${N}  stopped" \
+          || echo -e "  ${R}✗${N}  failed to stop"
+      else
+        echo -e "  ${D}·${N}  not running"
+      fi
+      echo -e "\n$HR"
+      ;;
+    status|'')
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc darkstat status${N}"
+      echo -e "$HR\n"
+      if systemctl is-active --quiet darkstat; then
+        echo -e "  ${G}✓${N}  running  ${D}(http://${DS_HOST}:${DS_PORT}, ${DS_IFACE}, loopback only)${N}"
+      else
+        echo -e "  ${D}·${N}  not running  ${D}(arc darkstat start — manual only, never auto-starts)${N}"
+      fi
+      echo -e "\n$HR"
+      ;;
+    open)
+      xdg-open "http://${DS_HOST}:${DS_PORT}" >/dev/null 2>&1 &
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc darkstat $sub"
+      echo -e "${D}options: status · start · stop · open${N}"
+      ;;
+  esac
+}
+
+cmd_zap() {
+  # OWASP ZAP wrapper. Deliberately manual-start only, same principle as
+  # arc-break after 2026-08-18's regression: no systemd unit, no arc-heal
+  # check, nothing brings this up on its own. "Lab stays lab" is enforced
+  # structurally, not just by convention -- ZAP_GUARD below refuses any
+  # target that isn't localhost/127.0.0.1/a private IP range unless you
+  # explicitly pass --force-live, which is logged locally when used. This is
+  # a speed bump against yourself, not real security (anyone could just run
+  # owasp-zap directly) -- the point is arc's own path defaults safe.
+  local sub="${1:-}"
+  local ZAP_HOME="$HOME/.local/share/arc-zap"
+  local ZAP_PID_F="$ZAP_HOME/zap.pid"
+  local ZAP_KEY_F="$ZAP_HOME/api.key"
+  local ZAP_LOG="$ZAP_HOME/zap-daemon.log"
+  local ZAP_HOST="127.0.0.1"
+  local ZAP_PORT="8090"
+
+  _zap_key() {
+    mkdir -p "$ZAP_HOME"
+    if [[ ! -f "$ZAP_KEY_F" ]]; then
+      openssl rand -hex 16 > "$ZAP_KEY_F"
+      chmod 600 "$ZAP_KEY_F"
+    fi
+    cat "$ZAP_KEY_F"
+  }
+
+  _zap_running() {
+    [[ -f "$ZAP_PID_F" ]] && kill -0 "$(cat "$ZAP_PID_F" 2>/dev/null)" 2>/dev/null
+  }
+
+  # Only localhost/127.0.0.1/::1/private ranges pass by default. Public
+  # hosts (including your own live domains) are refused unless --force-live
+  # is explicitly typed -- no denylist to keep in sync, just a hard
+  # default-deny for anything that isn't obviously local/private.
+  _zap_guard() {
+    local target="$1" force="$2"
+    local host
+    host=$(echo "$target" | sed -E 's#^[a-zA-Z]+://##; s#[:/].*##')
+    if [[ "$host" == "localhost" || "$host" == "127.0.0.1" || "$host" == "::1" \
+          || "$host" =~ ^10\. || "$host" =~ ^192\.168\. \
+          || "$host" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]; then
+      return 0
+    fi
+    if [[ "$force" == "--force-live" ]]; then
+      echo -e "  ${Y}!${N}  LIVE target confirmed via --force-live: ${target}"
+      mkdir -p "$ZAP_HOME"
+      echo "$(date -Is)  ${target}" >> "$ZAP_HOME/live-target-audit.log"
+      return 0
+    fi
+    echo -e "  ${R}✗${N}  refusing — ${D}${target}${N} isn't localhost/127.0.0.1/a private IP."
+    echo -e "  ${D}arc zap only touches local/private lab targets by default (\"lab stays lab\").${N}"
+    echo -e "  ${D}To scan something else on purpose: add --force-live (logged locally).${N}"
+    return 1
+  }
+
+  case "$sub" in
+    start)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc zap start${N}  —  ZAP daemon mode (API only, no GUI)"
+      echo -e "$HR\n"
+      if _zap_running; then
+        echo -e "  ${Y}!${N}  already running  ${D}(pid $(cat "$ZAP_PID_F"))${N}"
+      else
+        mkdir -p "$ZAP_HOME"
+        local key; key=$(_zap_key)
+        nohup owasp-zap -daemon -host "$ZAP_HOST" -port "$ZAP_PORT" \
+          -config api.key="$key" -config api.disablekey=false \
+          >"$ZAP_LOG" 2>&1 &
+        echo $! > "$ZAP_PID_F"
+        echo -e "  ${D}starting, waiting for the API to come up...${N}"
+        echo -e "  ${D}(first run installs addons — can take a couple minutes)${N}"
+        local up=0
+        for _ in $(seq 1 150); do
+          curl -s "http://${ZAP_HOST}:${ZAP_PORT}" >/dev/null 2>&1 && { up=1; break; }
+          sleep 2
+        done
+        if [[ "$up" == "1" ]]; then
+          echo -e "  ${G}✓${N}  up  ${D}(${ZAP_HOST}:${ZAP_PORT}, api key in ${ZAP_KEY_F})${N}"
+        else
+          echo -e "  ${R}✗${N}  didn't come up in 5min — check ${ZAP_LOG}"
+        fi
+      fi
+      echo -e "\n$HR"
+      ;;
+    stop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc zap stop${N}"
+      echo -e "$HR\n"
+      if _zap_running; then
+        kill "$(cat "$ZAP_PID_F")" 2>/dev/null
+        rm -f "$ZAP_PID_F"
+        echo -e "  ${G}✓${N}  stopped"
+      else
+        echo -e "  ${D}·${N}  not running"
+      fi
+      echo -e "\n$HR"
+      ;;
+    status|'')
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc zap status${N}"
+      echo -e "$HR\n"
+      if _zap_running; then
+        echo -e "  ${G}✓${N}  running  ${D}(pid $(cat "$ZAP_PID_F"), ${ZAP_HOST}:${ZAP_PORT}, loopback only)${N}"
+      else
+        echo -e "  ${D}·${N}  not running  ${D}(arc zap start — manual only, never auto-starts)${N}"
+      fi
+      echo -e "  ${D}pkg: $(dpkg -l zaproxy 2>/dev/null | awk '/^ii/{print $3}')${N}"
+      echo -e "\n$HR"
+      ;;
+    gui)
+      echo -e "  ${D}launching full ZAP desktop app...${N}"
+      nohup zaproxy >/dev/null 2>&1 & disown
+      ;;
+    logs)
+      tail -f "$ZAP_LOG" 2>/dev/null || echo -e "${D}no log yet — start it first${N}"
+      ;;
+    spider)
+      local target="$2" force="$3"
+      if [[ -z "$target" ]]; then
+        echo -e "${R}usage:${N} arc zap spider <target> [--force-live]"
+      elif _zap_guard "$target" "$force"; then
+        if ! _zap_running; then
+          echo -e "${Y}!${N}  daemon not running — start it first: arc zap start"
+        else
+          local key; key=$(_zap_key)
+          echo -e "$HR"
+          echo -e "  ${C}${B}arc zap spider${N}  —  crawl + passive scan: ${target}"
+          echo -e "$HR\n"
+          python3 -c "
+from zapv2 import ZAPv2
+import time, sys
+zap = ZAPv2(apikey='$key', proxies={'http':'http://${ZAP_HOST}:${ZAP_PORT}','https':'http://${ZAP_HOST}:${ZAP_PORT}'})
+sid = zap.spider.scan('$target')
+while int(zap.spider.status(sid)) < 100:
+    time.sleep(2)
+print('  spider done —', len(zap.spider.results(sid)), 'urls found')
+time.sleep(2)  # let passive scan drain
+alerts = zap.core.alerts(baseurl='$target')
+print(f'  {len(alerts)} passive alert(s)')
+for a in alerts[:10]:
+    print(f\"    · {a.get('risk','?')}  {a.get('alert','?')}  ({a.get('url','?')})\")
+"
+          echo -e "\n$HR"
+        fi
+      fi
+      ;;
+    active)
+      local target="$2"
+      shift 2 2>/dev/null
+      local force="" confirm=""
+      for a in "$@"; do
+        [[ "$a" == "--force-live" ]] && force="--force-live"
+        [[ "$a" == "--yes" ]] && confirm="--yes"
+      done
+      if [[ -z "$target" ]]; then
+        echo -e "${R}usage:${N} arc zap active <target> --yes [--force-live]"
+      elif [[ -z "$confirm" ]]; then
+        echo -e "  ${Y}!${N}  active scan is intrusive (real attack traffic), even against a lab"
+        echo -e "  ${Y}!${N}  target — re-run with --yes to actually run it"
+      elif _zap_guard "$target" "$force"; then
+        if ! _zap_running; then
+          echo -e "${Y}!${N}  daemon not running — start it first: arc zap start"
+        else
+          local key; key=$(_zap_key)
+          echo -e "$HR"
+          echo -e "  ${C}${B}arc zap active${N}  —  active scan: ${target}"
+          echo -e "$HR\n"
+          python3 -c "
+from zapv2 import ZAPv2
+import time
+zap = ZAPv2(apikey='$key', proxies={'http':'http://${ZAP_HOST}:${ZAP_PORT}','https':'http://${ZAP_HOST}:${ZAP_PORT}'})
+sid = zap.ascan.scan('$target')
+while int(zap.ascan.status(sid)) < 100:
+    print('  progress:', zap.ascan.status(sid), '%')
+    time.sleep(5)
+alerts = zap.core.alerts(baseurl='$target')
+print(f'  done — {len(alerts)} alert(s)')
+for a in alerts[:15]:
+    print(f\"    · {a.get('risk','?')}  {a.get('alert','?')}  ({a.get('url','?')})\")
+"
+          echo -e "\n$HR"
+        fi
+      fi
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc zap $sub"
+      echo -e "${D}options: status · start · stop · gui · logs · spider <target> · active <target> --yes${N}"
+      ;;
+  esac
+}
+
+cmd_soclab() {
+  local sub="${1:-}"
+  local dir="$HOME/khaos-lab/soc-lab"
+  case "$sub" in
+    start)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc soc-lab start${N}  —  bring up Splunk + SQL Server"
+      echo -e "$HR\n"
+      (cd "$dir" && docker compose up -d) \
+        && echo -e "  ${G}✓${N}  started" \
+        || echo -e "  ${R}✗${N}  failed — check: cd $dir && docker compose up -d"
+      echo -e "\n$HR"
+      ;;
+    stop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc soc-lab stop${N}"
+      echo -e "$HR\n"
+      (cd "$dir" && docker compose stop) \
+        && echo -e "  ${G}✓${N}  stopped  ${D}(data preserved — docker compose down -v to wipe)${N}" \
+        || echo -e "  ${R}✗${N}  failed to stop"
+      echo -e "\n$HR"
+      ;;
+    restart)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc soc-lab restart${N}"
+      echo -e "$HR\n"
+      (cd "$dir" && docker compose restart) \
+        && echo -e "  ${G}✓${N}  restarted" \
+        || echo -e "  ${R}✗${N}  restart failed"
+      echo -e "\n$HR"
+      ;;
+    status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc soc-lab status${N}"
+      echo -e "$HR\n"
+      local splunk_state sql_state nessus_state
+      splunk_state=$(docker inspect --format '{{.State.Status}}' soc-lab-splunk 2>/dev/null)
+      sql_state=$(docker inspect --format '{{.State.Status}}' soc-lab-sqlserver 2>/dev/null)
+      nessus_state=$(docker inspect --format '{{.State.Status}}' soc-lab-nessus 2>/dev/null)
+      [[ "$splunk_state" == "running" ]] \
+        && echo -e "  ${G}·${N}  splunk:      running  ${D}(http://127.0.0.1:8000)${N}" \
+        || echo -e "  ${R}·${N}  splunk:      ${splunk_state:-not found}"
+      [[ "$sql_state" == "running" ]] \
+        && echo -e "  ${G}·${N}  sql-server:  running  ${D}(127.0.0.1:1433, sa / see .env)${N}" \
+        || echo -e "  ${R}·${N}  sql-server:  ${sql_state:-not found}"
+      [[ "$nessus_state" == "running" ]] \
+        && echo -e "  ${G}·${N}  nessus:      running  ${D}(https://127.0.0.1:8834, admin / see .env)${N}" \
+        || echo -e "  ${R}·${N}  nessus:      ${nessus_state:-not found}"
+      echo -e "\n$HR"
+      ;;
+    logs)
+      (cd "$dir" && docker compose logs -f)
+      ;;
+    open)
+      # Splunk is the only service in this lab with a real browser UI --
+      # sql-server is a bare DB port (1433), nothing to open in a browser.
+      xdg-open "http://127.0.0.1:8000" >/dev/null 2>&1 &
+      echo -e "  ${G}✓${N}  opening ${C}http://127.0.0.1:8000${N}  ${D}(Splunk)${N}"
+      ;;
+    '')
+      cmd_soclab status
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc soc-lab $sub"
+      echo -e "${D}options: status · start · stop · restart · logs · open${N}"
+      ;;
+  esac
+}
+
+cmd_evebox() {
+  local sub="${1:-}"
+  local name="evebox"
+  case "$sub" in
+    start)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc evebox start${N}  —  start ${name}"
+      echo -e "$HR\n"
+      docker start "$name" >/dev/null 2>&1 \
+        && echo -e "  ${G}✓${N}  running — ${C}http://127.0.0.1:5636${N}" \
+        || echo -e "  ${R}✗${N}  failed — is the container present? (docker ps -a)"
+      echo -e "\n$HR"
+      ;;
+    stop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc evebox stop${N}  —  stop ${name}"
+      echo -e "$HR\n"
+      docker stop "$name" >/dev/null 2>&1 \
+        && echo -e "  ${G}✓${N}  stopped" \
+        || echo -e "  ${R}✗${N}  failed to stop"
+      echo -e "\n$HR"
+      ;;
+    restart)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc evebox restart${N}"
+      echo -e "$HR\n"
+      docker restart "$name" >/dev/null 2>&1 \
+        && echo -e "  ${G}✓${N}  restarted" \
+        || echo -e "  ${R}✗${N}  restart failed"
+      echo -e "\n$HR"
+      ;;
+    status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc evebox status${N}"
+      echo -e "$HR\n"
+      local state; state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null)
+      if [[ -z "$state" ]]; then
+        echo -e "  ${R}✗${N}  container not found"
+      elif [[ "$state" == "running" ]]; then
+        local stats; stats=$(docker stats "$name" --no-stream --format '{{.CPUPerc}} cpu · {{.MemUsage}}' 2>/dev/null)
+        echo -e "  ${G}✓${N}  running  ${D}(${stats})${N}"
+        echo -e "  ${C}url${N}  http://127.0.0.1:5636"
+      else
+        echo -e "  ${Y}!${N}  ${state}  ${D}(arc evebox start)${N}"
+      fi
+      echo -e "\n$HR"
+      ;;
+    logs)
+      docker logs -f "$name"
+      ;;
+    open)
+      xdg-open "http://127.0.0.1:5636" >/dev/null 2>&1 &
+      echo -e "  ${G}✓${N}  opening ${C}http://127.0.0.1:5636${N}"
+      ;;
+    '')
+      cmd_evebox status
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc evebox $sub"
+      echo -e "${D}options: (bare) status · start · stop · restart · logs · open${N}"
+      ;;
+  esac
+}
+
+cmd_desktop() {
+  local sub="${1:-}"
+  # GUI + SSH access to THIS machine from outside, over a Cloudflare Tunnel —
+  # x11vnc shares the live :0 session, novnc/websockify gives a browser
+  # client, cloudflared is the tunnel connector itself (also carries
+  # ssh.kontor.studio). All three are bundled here because they were torn
+  # down together 2026-07-30 (user: no outside access needed until
+  # traveling) and should come back together with one command, not three
+  # separately-remembered ones.
+  local URL="https://desktop.kontor.studio/vnc.html"
+  local UNITS="cloudflared.service x11vnc-share.service novnc-bridge.service"
+
+  _desktop_state() {
+    systemctl is-active $UNITS 2>/dev/null | sort -u
+  }
+
+  case "$sub" in
+    start)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc desktop start${N}  —  enable remote access (tunnel + desktop sharing)"
+      echo -e "$HR\n"
+      sudo systemctl enable --now $UNITS 2>/dev/null
+      # Don't trust systemctl's own exit code — verify each unit's actual
+      # state directly (a unit can report a non-zero start/stop result for
+      # reasons unrelated to whether it's really up, as hit today with
+      # x11vnc's own non-zero exit-on-SIGTERM behavior).
+      if systemctl is-active --quiet cloudflared.service \
+        && systemctl is-active --quiet x11vnc-share.service \
+        && systemctl is-active --quiet novnc-bridge.service; then
+        echo -e "  ${G}✓${N}  running — ${M}${URL}${N}"
+      else
+        echo -e "  ${R}✗${N}  one or more services didn't come up — check: systemctl status $UNITS"
+      fi
+      echo -e "\n$HR"
+      ;;
+    stop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc desktop stop${N}  —  disable remote access (tunnel + desktop sharing)"
+      echo -e "$HR\n"
+      sudo systemctl disable --now $UNITS 2>/dev/null
+      sudo systemctl reset-failed x11vnc-share.service 2>/dev/null
+      if ! systemctl is-active --quiet cloudflared.service \
+        && ! systemctl is-active --quiet x11vnc-share.service \
+        && ! systemctl is-active --quiet novnc-bridge.service; then
+        echo -e "  ${G}✓${N}  stopped — no longer reachable from outside"
+      else
+        echo -e "  ${R}✗${N}  one or more services still active — check: systemctl status $UNITS"
+      fi
+      echo -e "\n$HR"
+      ;;
+    status)
+      if systemctl list-unit-files x11vnc-share.service &>/dev/null; then
+        local states; states=$(_desktop_state)
+        if echo "$states" | grep -q "^active$" && ! echo "$states" | grep -qv "^active$"; then
+          echo -e "  ${C}state${N}  ${G}active${N}  ${D}(tunnel + desktop sharing both up)${N}"
+          echo -e "  ${C}url${N}    ${M}${URL}${N}"
+        elif echo "$states" | grep -q "^active$"; then
+          echo -e "  ${C}state${N}  ${Y}partial${N}  ${D}— some up, some not: systemctl status $UNITS${N}"
+        else
+          echo -e "  ${C}state${N}  ${R}inactive${N}  ${D}(run 'arc desktop start')${N}"
+        fi
+      else
+        echo -e "  ${R}✗${N}  not installed — run: ${C}sudo bash ~/khaos-lab/setup-local-desktop-vnc.sh${N}"
+      fi
+      ;;
+    url)
+      echo -e "  ${M}${URL}${N}"
+      ;;
+    '')
+      echo -e "  ${D}usage: arc desktop start|stop|status|url${N}"
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc desktop $sub"
+      echo -e "${D}options: start · stop · status · url${N}"
+      ;;
+  esac
+}
+
+cmd_heal() {
+  local sub="${1:-}"
+  case "$sub" in
+    log)
+      [[ -f ~/khaos-lab/arc-heal-log/history.log ]] && tail -30 ~/khaos-lab/arc-heal-log/history.log \
+        || echo -e "  ${D}no runs yet${N}"
+      ;;
+    status)
+      [[ -f ~/khaos-lab/arc-heal-log/latest-status.md ]] && cat ~/khaos-lab/arc-heal-log/latest-status.md \
+        || echo -e "  ${D}no runs yet — run 'arc heal' now${N}"
+      ;;
+    '')
+      ~/.local/bin/arc-heal
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc heal $sub"
+      echo -e "${D}options: (bare) · log · status${N}"
+      ;;
+  esac
+}
+
+
+cmd_cf_watch() {
+  local sub="${1:-}"
+  case "$sub" in
+    log)
+      [[ -f ~/.local/state/arc-cf-watch.log ]] && tail -30 ~/.local/state/arc-cf-watch.log \
+        || echo -e "  ${D}no log yet — runs every 2h via cron, or run 'arc cf-watch' now${N}"
+      ;;
+    '')
+      ~/.local/bin/arc-cf-watch && tail -1 ~/.local/state/arc-cf-watch.log
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc cf-watch $sub"
+      echo -e "${D}options: (bare) · log${N}"
+      ;;
+  esac
+}
+
+# ── Mirrors ────────────────────────────────────────────────────────────────────
+cmd_mirrors() {
+  local sub="${1:-status}"
+  local LOG="$HOME/.local/share/sync-mirrors/sync-mirrors.log"
+
+  case "$sub" in
+    run)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc mirrors run${N}  —  sync k45 → k6 now"
+      echo -e "$HR\n"
+      sync-mirrors
+      echo -e "$HR"
+      ;;
+
+    log)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc mirrors log${N}  —  sync history"
+      echo -e "$HR\n"
+      if [[ ! -s "$LOG" ]]; then
+        echo -e "  ${D}·${N}  no log yet — run ${C}arc mirrors run${N}"
+      else
+        tail -40 "$LOG" | while IFS= read -r line; do
+          if [[ "$line" == *"OK "* ]];    then echo -e "  ${G}${line}${N}"
+          elif [[ "$line" == *"SYNC "* ]]; then echo -e "  ${C}${line}${N}"
+          elif [[ "$line" == *"DONE "* ]]; then echo -e "  ${G}${line}${N}"
+          elif [[ "$line" == *"ERR "* ]];  then echo -e "  ${R}${line}${N}"
+          elif [[ "$line" == *"SKIP "* ]]; then echo -e "  ${Y}${line}${N}"
+          else echo -e "  ${D}${line}${N}"
+          fi
+        done
+      fi
+      echo -e "\n$HR"
+      ;;
+
+    status|'')
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc mirrors${N}  —  k45 → k6 sync status"
+      echo -e "$HR\n"
+      if [[ ! -s "$LOG" ]]; then
+        echo -e "  ${D}·${N}  no sync on record — run ${C}arc mirrors run${N}"
+        echo -e "\n$HR"; return 0
+      fi
+      # last run stats
+      local last_run last_synced last_errors last_skipped
+      last_run=$(grep "=== sync-mirrors start ===" "$LOG" | tail -1 | cut -d']' -f1 | tr -d '[')
+      local last_block
+      last_block=$(awk '/=== sync-mirrors start ===/{ buf="" } { buf=buf"\n"$0 } END{print buf}' "$LOG")
+      last_synced=$(echo "$last_block" | grep -c "^.*DONE " || true)
+      last_errors=$(echo "$last_block" | grep -c "^.*ERR " || true)
+      last_skipped=$(echo "$last_block" | grep -c "^.*SKIP " || true)
+      local in_sync
+      in_sync=$(echo "$last_block" | grep -c "^.*OK " || true)
+
+      echo -e "  ${D}last run:${N}  ${M}${last_run:-unknown}${N}"
+      echo -e "  ${D}in sync:${N}   ${G}${in_sync}${N}"
+      [[ "$last_synced" -gt 0 ]] && echo -e "  ${D}synced:${N}    ${C}${last_synced}${N}"
+      [[ "$last_skipped" -gt 0 ]] && echo -e "  ${D}skipped:${N}   ${Y}${last_skipped}${N}"
+      [[ "$last_errors" -gt 0 ]]  && echo -e "  ${D}errors:${N}    ${R}${last_errors}${N}"
+      echo ""
+      echo -e "  ${D}arc mirrors run   — sync now${N}"
+      echo -e "  ${D}arc mirrors log   — full history${N}"
+      echo -e "  ${D}cron: daily 2am   — ~/.local/bin/sync-mirrors${N}"
+      echo -e "\n$HR"
+      ;;
+
+    *)
+      echo -e "  usage: arc mirrors [status|run|log]"
+      ;;
+  esac
+}
+
+# ── Deploy ─────────────────────────────────────────────────────────────────────
+cmd_deploy() {
+  local target="${1:-athena}"
+  local CF_TOKEN
+  CF_TOKEN=$(grep '^arc-deploy=' ~/dev-notes/surgery-tools/.cftk | cut -d= -f2)
+  export NVM_DIR="$HOME/.nvm"
+  [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+
+  case "$target" in
+    athena)
+      cd ~/khaos-lab/athena || { echo -e "  ${R}✗${N}  athena repo not found"; return 1; }
+      echo -e "  ${C}building athena${N} …"
+      node node_modules/vite/bin/vite.js build 2>&1 | tail -5 || { echo -e "  ${R}✗${N}  build failed"; return 1; }
+      echo -e "  ${C}deploying to CF Pages${N} …"
+      CLOUDFLARE_API_TOKEN="$CF_TOKEN" npx wrangler pages deploy dist \
+        --project-name athena --branch main --commit-dirty=true \
+        && echo -e "  ${G}✓${N}  athena deployed" \
+        || echo -e "  ${R}✗${N}  deploy failed"
+      ;;
+    kataleya)
+      cd ~/khaos-lab/kataleya || { echo -e "  ${R}✗${N}  kataleya repo not found"; return 1; }
+      echo -e "  ${C}building kataleya${N} …"
+      node node_modules/vite/bin/vite.js build 2>&1 | tail -5 || { echo -e "  ${R}✗${N}  build failed"; return 1; }
+      echo -e "  ${C}deploying to CF Pages${N} …"
+      CLOUDFLARE_API_TOKEN="$CF_TOKEN" npx wrangler pages deploy dist \
+        --project-name kataleya-web --branch main --commit-dirty=true \
+        && echo -e "  ${G}✓${N}  kataleya deployed → kataleya.kontor.studio" \
+        || echo -e "  ${R}✗${N}  deploy failed"
+      ;;
+    *)
+      echo -e "  ${R}unknown target:${N} $target  —  try ${C}arc deploy athena${N} or ${C}arc deploy kataleya${N}"
+      ;;
+  esac
+}
+
+# ── Router ─────────────────────────────────────────────────────────────────────
+case "${1:-}" in
+  day)            cmd_day ;;
+  backup)         cmd_backup ;;
+  restart|warm-restart) cmd_restart ;;
+  safe-reboot)    cmd_safe_reboot ;;
+  browser-clean)  cmd_browser_clean "${2:-}" ;;
+  stop)           cmd_stop ;;
+  health)         cmd_health ;;
+  mount)          cmd_mount ;;
+  deploy)         cmd_deploy "${2:-}" ;;
+  mirrors)        cmd_mirrors "${2:-}" ;;
+  mirror)         cmd_mirror ;;
+  wire)           cmd_wire ;;
+  keys)           cmd_keys "${2:-}" ;;
+  expo)           cmd_expo "${2:-}" ;;
+  update)         cmd_update ;;
+  clean)          cmd_clean "${2:-}" ;;
+  sweep)          cmd_sweep "${2:-}" ;;
+  disk)           cmd_disk "${2:-}" ;;
+  audit)          cmd_audit ;;
+  setup)          cmd_setup ;;
+  ref)            cmd_ref "${2:-}" ;;
+  find)           cmd_find "${2:-}" ;;
+  book)           cmd_book "${2:-}" ;;
+  site)           cmd_site "${2:-}" ;;
+  emoji)          cmd_emoji "${2:-}" "${@:3}" ;;
+  hq)             cmd_hq "${2:-}" ;;
+  top)            cmd_top ;;
+  auth)           cmd_auth ;;
+  dns)            cmd_dns "${2:-status}" "${3:-}" ;;
+  fix)            cmd_fix "${2:-}" ;;
+  sec)            cmd_sec "${2:-}" ;;
+  users)          cmd_users "${2:-}" "${3:-}" "${4:-}" ;;
+  snap)           cmd_snap ;;
+  logs)           cmd_logs "${2:-}" ;;
+  notify)         cmd_notify "$@" ;;
+  sop)            cmd_sop "$@" ;;
+  check)          cmd_arc_check "$@" ;;
+  rename)         cmd_rename "${@:2}" ;;
+  aws)            cmd_aws "${@:2}" ;;
+  kali)           cmd_kali "${@:2}" ;;
+  sagan)          cmd_sagan "${@:2}" ;;
+  evebox)         cmd_evebox "${@:2}" ;;
+  soc-lab)        cmd_soclab "${@:2}" ;;
+  zap)            cmd_zap "${@:2}" ;;
+  darkstat)       cmd_darkstat "${@:2}" ;;
+  desktop)        cmd_desktop "${@:2}" ;;
+  cf-watch)       cmd_cf_watch "${@:2}" ;;
+  heal)           cmd_heal "${@:2}" ;;
+  break)          cmd_break "${@:2}" ;;
+  eero)           cmd_eero ;;
+  eero-watch)     cmd_eero_watch ;;
+  eero-logs)      cmd_eero_logs ;;
+  stop-eero)      cmd_stop_eero ;;
+  sync)            cmd_sync ;;
+  mega)            cmd_mega "${2:-}" "${3:-}" ;;
+  net)             cmd_net "${@:2}" ;;
+  vpn)             arc-vpn "${@:2}" ;;
+  kismet)          arc-kismet "${@:2}" ;;
+  sot)             arc-sot "${@:2}" ;;
+  lab)             nohup khaos-lab &>/dev/null & disown ;;
+  sudo)            arc-sudo-session "${@:2}" ;;
+  mic)             arc-mic "${2:-status}" ;;
+  shell|reload)   echo -e "  ${D}arc ${1} runs as a shell function — reload your rc file first${N}" ;;
+  help|-h|--help) cmd_help ;;
+  '')             cmd_status ;;
+  *)              echo -e "${R}unknown:${N} $1  —  try ${C}arc help${N}"; exit 1 ;;
+esac

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=mic-default-mute
+Comment=Mute the mic at login by default — privacy default, toggle on via arc mic / khaos-panel when needed
+Exec=/home/architect-of-chaos/.local/bin/arc-mic mute
+X-GNOME-Autostart-Delay=3
+NoDisplay=true

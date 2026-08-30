@@ -1,0 +1,4 @@
+# arc-kismet's `stop` runs this unconditionally, regardless of sudo's cached
+# timestamp -- see arc-kismet-iface-restore's own header for why (real
+# WiFi-outage incident, 2026-08-23).
+architect-of-chaos ALL=(root) NOPASSWD: /usr/local/bin/arc-kismet-iface-restore

@@ -1,0 +1,43 @@
+#!/bin/bash
+# arc-aide-watch — periodic AIDE file-integrity check, reports via
+# arc-pine-notify only on real drift (added/removed/changed entries).
+# Silent on a clean run -- this is a daily timer, not something that should
+# nag every day just to say "nothing changed."
+#
+# The check itself needs root (SUID scan, /etc, this user's own ~/.local/bin
+# and systemd-user configs); narrowly NOPASSWD'd in
+# /etc/sudoers.d/arc-aide-check to exactly this one invocation. Runs as a
+# user-session timer (not a root system service) so arc-pine-notify's
+# socket/XDG_RUNTIME_DIR are already correct -- no cross-user sudo hop
+# needed for the notify half. Built 2026-08-22.
+#
+# Real bug found + fixed 2026-08-26: this AIDE build (0.19.3) has no
+# compiled-in default config path -- every run since this was built had been
+# silently failing with "ERROR: missing configuration", 4 days straight,
+# invisible because of the second bug just below. Also had never had an
+# activated baseline database at all (aideinit was run once on 2026-08-22 but
+# its output, aide.db.new, was never promoted to the active aide.db) --
+# rebuilt via `sudo aideinit -y -f` same day.
+
+set -o pipefail
+LOG_DIR="$HOME/.local/share/arc-aide"
+mkdir -p "$LOG_DIR"
+
+OUT=$(sudo /usr/bin/aide --config /etc/aide/aide.conf --check 2>&1)
+RC=$?
+echo "$OUT" > "$LOG_DIR/last-check.log"
+echo "$(date '+%Y-%m-%d %H:%M:%S') rc=$RC" >> "$LOG_DIR/history.log"
+
+# aide's exit code is a bitmask where nonzero just means "found differences,"
+# not "error" -- parse the summary counts instead of trusting rc alone.
+added=$(echo "$OUT"   | grep -oP 'Added entries:\s*\K[0-9]+')
+removed=$(echo "$OUT" | grep -oP 'Removed entries:\s*\K[0-9]+')
+changed=$(echo "$OUT" | grep -oP 'Changed entries:\s*\K[0-9]+')
+added=${added:-0}; removed=${removed:-0}; changed=${changed:-0}
+
+if (( added > 0 || removed > 0 || changed > 0 )); then
+  body="added ${added} · removed ${removed} · changed ${changed} — review: arc sec aide"
+  "$HOME/.local/bin/arc-pine-notify" critical arc-aide "AIDE: file changes detected" "$body"
+fi
+
+exit 0

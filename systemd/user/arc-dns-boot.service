@@ -1,0 +1,9 @@
+[Unit]
+Description=arc-dns-boot — re-activate NextDNS wiring at login (arc-dns-hot)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/arc dns on
+
+[Install]
+WantedBy=default.target

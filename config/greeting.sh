@@ -93,10 +93,16 @@ _arc_greeting() {
   fi
 
   # Snap reminder
-  local STAMP="$HOME/.usb-bakup/.last-sync"
+  # Bug fixed 2026-08-13: this used to read ~/.usb-bakup/.last-sync (the
+  # unrelated bakup-usb stamp), which could show e.g. "1d since last
+  # snapshot" even with zero Timeshift snapshots ever taken. `arc snap` is
+  # just `timeshift-check --manual` (cmd_snap), so check the same
+  # /var/cache/timeshift-last-snapshot the timeshift status line below uses.
+  local STAMP="/var/cache/timeshift-last-snapshot"
   if [[ -f "$STAMP" ]]; then
-    local last_epoch now_epoch days_ago
-    last_epoch=$(date -d "$(cat "$STAMP" 2>/dev/null)" +%s 2>/dev/null || echo 0)
+    local snap_date last_epoch now_epoch days_ago
+    snap_date=$(cat "$STAMP" 2>/dev/null | grep -oP '\d{4}-\d{2}-\d{2}' | head -1)
+    last_epoch=$(date -d "$snap_date" +%s 2>/dev/null || echo 0)
     now_epoch=$(date +%s)
     days_ago=$(( (now_epoch - last_epoch) / 86400 ))
     if (( days_ago >= 1 )); then
@@ -129,21 +135,18 @@ except Exception:
   (( sop_gp_ok ))         && sop_gp_str="${G}gameplan ✓${N}" || sop_gp_str="${Y}no gameplan entry${N}"
   echo -e "  ${D}[✧]${N} ${C}sop${D}·····················${N}${sop_ack_str}  ${D}·${N}  ${sop_gp_str}"
 
-  # mirrors — last sync-mirrors cron result (same log arc's dashboard reads)
-  local MIRROR_LOG="$HOME/.local/share/sync-mirrors/sync-mirrors.log"
-  if [[ -s "$MIRROR_LOG" ]]; then
-    local mirror_last_run mirror_block mirror_in_sync mirror_errors
-    mirror_last_run=$(grep "=== sync-mirrors start ===" "$MIRROR_LOG" | tail -1 | cut -d']' -f1 | tr -d '[')
-    mirror_block=$(awk '/=== sync-mirrors start ===/{ buf="" } { buf=buf"\n"$0 } END{print buf}' "$MIRROR_LOG")
-    mirror_in_sync=$(echo "$mirror_block" | grep -c "^.*OK " || true)
-    mirror_errors=$(echo "$mirror_block" | grep -c "^.*ERR " || true)
-    if [[ "$mirror_errors" -gt 0 ]]; then
-      echo -e "  ${D}[✧]${N} ${C}mirrors${D}················${N}${R}${mirror_errors} err${N}  ${D}· ${mirror_last_run}${N}"
-    else
-      echo -e "  ${D}[✧]${N} ${C}mirrors${D}················${N}${G}${mirror_in_sync} in sync${N}  ${D}· ${mirror_last_run}${N}"
-    fi
+  # vpn — proton0 interface presence, no sudo, no live protonvpn CLI round-trip
+  # (same "cheap local check only" philosophy as the security-stack rows below).
+  # Replaced the old "mirrors" row 2026-08-22 (stale-looking, last-sync timestamp
+  # from 2026-08-18 sitting there for days) with something that actually changes
+  # and matters day to day. `arc mirrors` still exists for the real repo-sync
+  # status if needed, just not on this always-visible banner anymore.
+  local vpn_ip
+  vpn_ip=$(ip -br addr show proton0 2>/dev/null | awk '{print $3}' | cut -d/ -f1)
+  if [[ -n "$vpn_ip" ]]; then
+    echo -e "  ${D}[✧]${N} ${C}vpn${D}····················${N}${G}connected${N}  ${D}· ${vpn_ip}${N}"
   else
-    echo -e "  ${D}[✧]${N} ${C}mirrors${D}················${N}${Y}no sync on record${N} ${D}— arc mirrors run${N}"
+    echo -e "  ${D}[✧]${N} ${C}vpn${D}····················${N}${Y}disconnected${N}  ${D}— arc vpn connect${N}"
   fi
 
   echo ""
@@ -218,6 +221,18 @@ except Exception:
     echo -e "  ${D}[✧]${N} ${C}usb${D}····················${N}${Y}stale${N}  ${D}— arc mount to repair${N}"
   else
     echo -e "  ${D}[✧]${N} ${C}usb${D}····················${N}${D}not mounted${N}"
+  fi
+
+  # Fortress (Timeshift snapshot partition) -- same real I/O test as usb above
+  if mountpoint -q /fortress 2>/dev/null && ls /fortress/ >/dev/null 2>&1; then
+    local fu ff
+    fu=$(df -h /fortress | awk 'NR==2 {print $3}')
+    ff=$(df -h /fortress | awk 'NR==2 {print $4}')
+    echo -e "  ${D}[✧]${N} ${C}fortress${D}·············${N}${G}✓${N}  ${M}${fu}${N} used ${D}·${N} ${M}${ff}${N} free"
+  elif mountpoint -q /fortress 2>/dev/null; then
+    echo -e "  ${D}[✧]${N} ${C}fortress${D}·············${N}${Y}stale${N}  ${D}— check mount${N}"
+  else
+    echo -e "  ${D}[✧]${N} ${C}fortress${D}·············${N}${D}not mounted${N}"
   fi
 
   # Disk

@@ -1,0 +1,63 @@
+#!/bin/bash
+# arc-mic — microphone mute/unmute/status, default-muted-at-login by design.
+# hook: arc mic <cmd>
+#
+# Built 2026-08-26, user's own explicit privacy default: mic should start
+# every session muted/disabled, only ever on when explicitly toggled on.
+# Muting (not suspending the device) was the deliberate choice -- it's the
+# same state pavucontrol/the panel applet's own mic slider shows and toggles,
+# so "toggle it on when needed" stays a one-click/one-command action instead
+# of something that needs replugging or a service restart.
+#
+# Persistence note: PipeWire's own module-stream-restore (confirmed loaded on
+# this system) already remembers mute state across reboots, but that's
+# "remember whatever it was last left as" -- not "always start muted"
+# regardless of what a previous session left it as. The two aren't the same
+# guarantee, and the user asked for the second one. `arc-mic-login-mute`
+# (autostart, see mic-default-mute.desktop) enforces the real ask: fire once
+# per login, no matter what state the mic was left in.
+
+set -uo pipefail
+
+_state() {
+  pactl get-source-mute @DEFAULT_SOURCE@ 2>/dev/null | awk '{print $2}'
+}
+
+_notify() {
+  local muted; muted=$(_state)
+  if [[ "$muted" == "yes" ]]; then
+    notify-send -a "mic" -i microphone-sensitivity-muted "Mic muted"
+  else
+    notify-send -a "mic" -i microphone-sensitivity-high "Mic ON"
+  fi
+}
+
+case "${1:-status}" in
+  mute)
+    pactl set-source-mute @DEFAULT_SOURCE@ 1
+    echo "  mic:  muted"
+    _notify
+    ;;
+  unmute|on)
+    pactl set-source-mute @DEFAULT_SOURCE@ 0
+    echo "  mic:  ON — remember to mute again when done"
+    _notify
+    ;;
+  toggle)
+    pactl set-source-mute @DEFAULT_SOURCE@ toggle
+    [[ "$(_state)" == "yes" ]] && echo "  mic:  muted" || echo "  mic:  ON — remember to mute again when done"
+    _notify
+    ;;
+  status)
+    if [[ "$(_state)" == "yes" ]]; then
+      echo "  mic:  muted"
+    else
+      echo "  mic:  ⚠  ON"
+    fi
+    ;;
+  *)
+    echo "arc-mic: unknown command '${1:-}'" >&2
+    echo "usage: arc mic [status|mute|unmute|toggle]" >&2
+    exit 1
+    ;;
+esac

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# arc-chkrootkit-check — runs after the stock chkrootkit.timer's daily
+# scan, checks the real log for anything concerning, notifies only if
+# found. Built 2026-08-22, same gap/fix as arc-lynis-check.
+#
+# Deliberately doesn't run its own chkrootkit scan -- chkrootkit.service
+# (stock Debian package) already does that. This just reads the result.
+set -uo pipefail
+
+LOG=/var/log/chkrootkit/chkrootkit-daily.log
+TARGET_USER="architect-of-chaos"
+
+notify() {
+  local urgency="$1" summary="$2" body="$3"
+  su "$TARGET_USER" -c "/home/architect-of-chaos/.local/bin/arc-pine-notify '${urgency}' arc-chkrootkit '${summary}' '${body}'" 2>/dev/null || true
+}
+
+[[ -f "$LOG" ]] || exit 0
+
+# chkrootkit's own convention: a real positive says "INFECTED", a real
+# problem running a check says "ERROR". Confirmed 2026-08-22 that a real,
+# expected, benign finding (wlan0 in promiscuous mode for Suricata's own
+# IDS sniffing) shows up as "PACKET SNIFFER" text, not INFECTED/ERROR --
+# deliberately not filtered here, it's real information worth seeing once,
+# just not something to treat as a rootkit finding.
+#
+# grep -c legitimately exits 1 (not 0) when it finds zero matches, even
+# though it still correctly prints "0" -- a bare `|| echo 0` fallback
+# can't tell that apart from a genuine failure and doubles the output
+# ("0\n0") in the zero-matches case. Real bug, hit live 2026-08-22 (same
+# class of bug this codebase already fixed once before elsewhere,
+# 2026-07-30). File existence is already checked above, so there's no
+# separate failure case left to guard against here.
+hits=$(grep -c "INFECTED\|ERROR:" "$LOG" 2>/dev/null)
+hits=${hits:-0}
+
+if [[ "$hits" -gt 0 ]]; then
+  detail=$(grep "INFECTED\|ERROR:" "$LOG" | head -3 | tr '\n' '; ')
+  notify critical "${hits} chkrootkit finding(s)" "${detail}
+run: arc sec chkrootkit"
+fi

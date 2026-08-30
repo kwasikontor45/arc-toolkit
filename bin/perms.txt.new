@@ -1,0 +1,8 @@
+# perms.txt -- exact octal permissions for each script.
+# git only tracks the executable bit (755 vs 644), not the exact mode --
+# after a fresh clone everything comes back at git's default. This manifest
+# lets 'arc hq pull' re-apply the real modes, especially the 700-only-owner
+# ones that are deliberately locked down (arc-mic, arc-sudo-session,
+# kbd-backlight, volume-ctl -- personal/sensitive, not meant to be group/
+# other readable even though the repo itself is private).
+# format: <octal> <filename>

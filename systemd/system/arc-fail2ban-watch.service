@@ -1,0 +1,13 @@
+[Unit]
+Description=arc-fail2ban-watch — desktop notifications for fail2ban bans
+After=fail2ban.service
+Requires=fail2ban.service
+
+[Service]
+Type=simple
+ExecStart=/home/architect-of-chaos/.local/bin/arc-fail2ban-watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

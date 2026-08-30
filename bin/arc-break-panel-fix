@@ -1,0 +1,60 @@
+#!/bin/bash
+# arc-break-panel-fix — self-healing check for the arc-break genmon taskbar
+# widget, run at every login (10s delay so the panel has finished its own
+# startup first).
+#
+# Real failure modes found and fixed here, 2026-08-15/16:
+#   1. This genmon plugin version resets its OWN properties to factory
+#      defaults every time its widget is freshly created (panel restart,
+#      reboot, logout/login) -- confirmed reproducible, not a one-off race.
+#   2. xfconfd only flushes panel config to disk on a debounced delay after
+#      a change -- restarting the panel inside that window can lose it
+#      permanently even before #1 applies.
+#   3. `xfce4-panel --add=genmon` assigns the next free plugin ID, not a
+#      fixed one -- hardcoding a plugin-N path breaks the next time this
+#      needs to fully self-heal.
+#   4. An early version of this script's own plugin-ID lookup matched ANY
+#      property in the whole xfconf tree with the right value, not just a
+#      real `/plugins/plugin-N/command` key -- it once matched a stray
+#      leftover path instead of the real (but reset) plugin, silently
+#      fixing the wrong thing. Fixed: strict `plugin-<digits>` anchor.
+#
+# Assumes at most one genmon plugin exists on this desktop, dedicated to
+# arc-break -- true as of 2026-08-16, not re-verified beyond that. If a
+# second, unrelated genmon plugin is ever added for something else, this
+# will misidentify it; there's no way to tell them apart once a reset has
+# wiped the command property that would otherwise distinguish them.
+sleep 10
+export DISPLAY=:0
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
+
+PANEL_SCRIPT="$HOME/.local/bin/arc-break-panel"
+
+# Strict: only a top-level /plugins/plugin-<digits> key whose value is
+# literally "genmon" -- not a substring match, not a nested path.
+plugin_id=$(xfconf-query -c xfce4-panel -p /plugins -lv 2>/dev/null \
+  | awk '$1 ~ /^\/plugins\/plugin-[0-9]+$/ && $2 == "genmon" {n=$1; sub(/^.*plugin-/,"",n); print n; exit}')
+
+if [[ -z "$plugin_id" ]]; then
+    xfce4-panel --add=genmon
+    sleep 1
+    plugin_id=$(xfconf-query -c xfce4-panel -p /plugins -lv 2>/dev/null \
+      | awk '$1 ~ /^\/plugins\/plugin-[0-9]+$/ && $2 == "genmon" {n=$1; sub(/^.*plugin-/,"",n); print n}' | tail -1)
+fi
+
+_set() {
+    local prop="/plugins/plugin-$plugin_id/$1" type="$2" val="$3"
+    xfconf-query -c xfce4-panel -p "$prop" -s "$val" 2>/dev/null \
+      || xfconf-query -c xfce4-panel -p "$prop" -n -t "$type" -s "$val" 2>/dev/null
+}
+_set command string "$PANEL_SCRIPT"
+_set update-period uint 5000
+_set use-label bool false
+
+# Deliberately NOT calling arc-break-start here (removed 2026-08-18) -- doing
+# so silently auto-started the break timer on every login, which directly
+# contradicts the standing 2026-08-06 decision that break-timer-class tools
+# start by hand only. The genmon widget already handles "not running"
+# gracefully (shows the dead-state emoji via arc-break-panel) and its own
+# <click>/<txtclick> actions already wire a click to arc-break-start -- that
+# IS the manual-start path, no login hook needed.

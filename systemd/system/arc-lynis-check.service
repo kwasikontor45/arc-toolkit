@@ -1,0 +1,6 @@
+[Unit]
+Description=arc-lynis-check — notify on real lynis findings (reads the stock scan's own report)
+
+[Service]
+Type=oneshot
+ExecStart=/home/architect-of-chaos/.local/bin/arc-lynis-check

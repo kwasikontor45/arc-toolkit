@@ -16,15 +16,29 @@ fi
 
 mkdir -p "$STAMP_DIR" "$ECHO_DIR/forge"
 
+# Real gap closed 2026-08-26: failures here only ever printed a red ✗ to
+# whatever terminal happened to be watching -- silent if this ever runs
+# unattended (cron, a future auto-fire-on-plug-in). A failed backup is
+# exactly the kind of thing that must never fail silently. No safe
+# auto-fix exists for a failed rsync (could be a real disk-full/permission
+# problem, not something to blindly retry), so this reports clearly
+# instead -- the "flag when there's no safe fix" half of today's principle.
+FAILED=()
+
 echo -e "  ${C}→${N}  dev-notes → vault..."
 rsync -a --delete "$HOME/dev-notes/" "$USB/dev-notes/" \
   && echo -e "  ${G}✓${N}  dev-notes synced" \
-  || echo -e "  ${R}✗${N}  dev-notes sync failed"
+  || { echo -e "  ${R}✗${N}  dev-notes sync failed"; FAILED+=("dev-notes"); }
 
 echo -e "  ${C}→${N}  vault/forge → .echo/forge..."
 rsync -a --delete "$USB/forge/" "$ECHO_DIR/forge/" \
   && echo -e "  ${G}✓${N}  .echo/forge mirrored" \
-  || echo -e "  ${R}✗${N}  .echo mirror failed"
+  || { echo -e "  ${R}✗${N}  .echo mirror failed"; FAILED+=(".echo/forge mirror"); }
 
 date "+%Y-%m-%d %H:%M" > "$STAMP"
 echo -e "  ${D}stamped: $(cat "$STAMP")${N}"
+
+if (( ${#FAILED[@]} > 0 )); then
+  "$HOME/.local/bin/arc-pine-notify" critical bakup-local "backup FAILED" \
+    "$(IFS=', '; echo "${FAILED[*]}") — check disk space / USB health, then re-run: bakup-local" 2>/dev/null
+fi

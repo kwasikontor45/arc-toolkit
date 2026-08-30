@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=arc-break panel fix
+Comment=Re-applies the arc-break genmon widget's panel config, which the plugin resets to defaults on every login
+Exec=/home/architect-of-chaos/.local/bin/arc-break-panel-fix
+Terminal=false
+StartupNotify=false
+NoDisplay=true

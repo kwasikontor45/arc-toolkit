@@ -70,13 +70,60 @@ def notify(title, body, urgency="normal"):
     )
 
 
+def boot_id():
+    # Unique per boot session, stable within one -- the standard Linux way
+    # to answer "has the machine rebooted since X" without any clock-skew
+    # reasoning. Used to fix a real bug (2026-08-26): state.json used to be
+    # treated as resumable on ANY restart, reboot or not, because a SIGTERM
+    # from a reboot and one from a deliberate `arc break stop` look
+    # identical from inside the signal handler -- there was no way to tell
+    # them apart. That made a manual stop+restart wrongly "pick up where it
+    # left off" instead of starting fresh, which is what a user stopping
+    # and restarting a timer actually expects. Comparing boot_id at
+    # save-time vs. resume-time distinguishes the two cases directly instead
+    # of trying to infer them from signal handling.
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except Exception:
+        return None
+
+
 def write_state(phase, phase_end):
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(json.dumps({
         "phase":       phase,
         "phase_start": time.time(),
         "phase_end":   phase_end,
+        "boot_id":     boot_id(),
     }))
+
+
+def resumable_state():
+    """Returns (phase, phase_end) if a genuinely reboot-interrupted session
+    is waiting to be resumed, else (None, None). Only true across a real
+    reboot (boot_id changed since the state was saved) -- a same-boot
+    restart (manual stop, then start again) always starts fresh, matching
+    what a user stopping/restarting a timer actually expects."""
+    if not STATE_PATH.exists():
+        return None, None
+    try:
+        saved = json.loads(STATE_PATH.read_text())
+        saved_boot = saved.get("boot_id")
+        # Live-caught bug while testing this same fix: a leftover state.json
+        # from before boot_id existed (or any other reason it's missing) has
+        # saved_boot=None, and None != a real current boot_id -- so a naive
+        # equality check here would treat "we don't actually know" as "yes,
+        # definitely a different boot," and wrongly resume it. Require an
+        # explicit, present, DIFFERENT boot_id before resuming -- anything
+        # else (missing, or matching) means don't resume.
+        if not saved_boot or saved_boot == boot_id():
+            return None, None
+        remaining = saved["phase_end"] - time.time()
+        if remaining > 0 and saved.get("phase") in ("work", "break"):
+            return saved["phase"], saved["phase_end"]
+    except Exception:
+        pass
+    return None, None
 
 
 def write_pid():
@@ -85,8 +132,16 @@ def write_pid():
 
 
 def cleanup(signum=None, frame=None):
+    # state.json is deliberately left in place here (only the PID file is
+    # removed) -- this is what lets main() resume the same phase/countdown
+    # on the next `arc break start` instead of always restarting from a
+    # full work_minutes block. A reboot sends the same SIGTERM a deliberate
+    # `arc break stop` does, so there's no reliable way to tell them apart
+    # from inside the signal handler -- resuming on either is the simpler,
+    # more useful behavior (see main()'s resume check for the actual logic
+    # and the staleness guard that keeps this from reviving a truly old,
+    # already-expired session).
     PID_PATH.unlink(missing_ok=True)
-    STATE_PATH.unlink(missing_ok=True)
     sys.exit(0)
 
 
@@ -188,20 +243,22 @@ def run_gui():
     def do_start():
         if daemon_running():
             return
-        subprocess.Popen(
-            [sys.executable, __file__],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        # Goes through systemd (arc-break.service), same as `arc break start` --
+        # NOT a raw subprocess.Popen. A directly-spawned child here used to be
+        # its own session/process group with no supervisor, so closing this
+        # GUI's own terminal (if it had one) or various panel/session restarts
+        # could orphan or silently lose track of it. systemd is the single
+        # source of truth for "is the timer running" now, from either CLI or
+        # GUI (2026-08-17 redesign).
+        subprocess.run(["systemctl", "--user", "start", "arc-break.service"],
+                        capture_output=True)
         root.after(800, update_btn_states)
 
     def do_stop():
-        if not PID_PATH.exists():
+        if not daemon_running():
             return
-        try:
-            os.kill(int(PID_PATH.read_text().strip()), signal.SIGTERM)
-        except Exception:
-            pass
+        subprocess.run(["systemctl", "--user", "stop", "arc-break.service"],
+                        capture_output=True)
         root.after(600, update_btn_states)
 
     def do_reset():
@@ -325,7 +382,17 @@ def run_gui():
     # ── Tick ───────────────────────────────────────────────────────────────────
     def tick():
         update_btn_states()
-        if not STATE_PATH.exists():
+        # Real bug, 2026-08-26: this used to check STATE_PATH.exists() to
+        # decide "is it running", which was correct back when cleanup()
+        # deleted state.json on every stop. Once the reboot-resume fix
+        # made cleanup() deliberately KEEP state.json after a stop (so a
+        # later start can resume it), this check went stale -- the GUI
+        # kept displaying the last-known phase/countdown off the leftover
+        # file even with the daemon dead, looking like it was stuck
+        # looping/still running. daemon_running() (an actual PID liveness
+        # check, already used for the button states two lines up) is the
+        # real "is it running" signal -- use that instead.
+        if not daemon_running():
             phase_lbl.configure(text="STOP", fg=FG_STOP)
             time_lbl.configure( text="--:--", fg=FG_STOP)
             status_lbl.configure(text="not running")
@@ -354,6 +421,23 @@ def run_gui():
     tick()
 
     def on_close():
+        # Window close/minimize is purely a GUI concern -- neither one calls
+        # do_stop(), so the arc-break.service daemon (and its countdown) keeps
+        # running exactly as it was. This window is a *view* onto that daemon,
+        # not its owner: closing this window only destroys the window and its
+        # own PID file, nothing about the timer itself. The genmon panel
+        # widget (arc-break-panel) is the persistent, always-visible view of
+        # the same running daemon, so there's no need for this window itself
+        # to linger. The only things that actually stop the timer are the
+        # Stop button above (do_stop, now via `systemctl --user stop
+        # arc-break.service`) or `arc break stop` from the CLI -- both paths
+        # converge on the same systemd unit, so "stopped" means the same
+        # thing everywhere. Minimize needs no extra handling here at all: the
+        # window manager's own iconify is a pure GUI-level operation that
+        # never reaches this process's Python code, so it can't touch the
+        # daemon by construction. (Redesigned 2026-08-17: unified GUI/CLI
+        # daemon control onto systemd; this close behavior itself was already
+        # correct since a 2026-08-13 revert, kept as-is.)
         GUI_PID_PATH.unlink(missing_ok=True)
         root.destroy()
 
@@ -385,6 +469,35 @@ def main():
                 pass
         if not gui_alive:
             launch_gui()
+
+    # Resume a leftover phase, but only across a genuine reboot -- see
+    # resumable_state()'s own docstring for why a same-boot restart must
+    # NOT resume. phase_end is an absolute wall-clock timestamp, so if
+    # it's still in the future the remaining time is just phase_end - now
+    # -- no need to track "how long was the machine down."
+    resume_phase, resume_end = resumable_state()
+    if resume_phase:
+        remaining = resume_end - time.time()
+        mins, secs = divmod(int(remaining), 60)
+        time_txt = f"{mins} min" if mins else f"{secs} sec"
+        notify(
+            "resumed",
+            f"{resume_phase} timer picked up where it left off — {time_txt} remaining.",
+            "low"
+        )
+        write_state(resume_phase, resume_end)
+        result = interruptible_sleep(int(remaining))
+        if resume_phase == "work" and result != "skip":
+            notify(
+                "break time",
+                f"{cfg['work_minutes']} min up — step away for {cfg['break_minutes']} min.",
+                "critical"
+            )
+            write_state("break", time.time() + break_sec)
+            interruptible_sleep(break_sec)
+            notify("back to work", f"Break over — {cfg['work_minutes']} min on the clock.", "normal")
+        elif resume_phase == "break":
+            notify("back to work", f"Break over — {cfg['work_minutes']} min on the clock.", "normal")
 
     while True:
         write_state("work", time.time() + work_sec)
@@ -442,6 +555,34 @@ if __name__ == "__main__":
             print(f"break: {cfg['break_minutes']} min")
             print(f"gui:   {cfg.get('gui_enabled', False)}")
             print(f"config: {CONFIG_PATH}")
+
+        elif cmd == "boot-check":
+            # Called from an XFCE autostart entry, not by hand. Deliberately
+            # NOT "always start on login" -- that would violate the standing
+            # manual-start-only policy (feedback_manual_start_tools). This
+            # only starts the daemon if a real, still-unexpired session was
+            # genuinely interrupted (state.json exists with phase_end still
+            # in the future) -- i.e. it was actually running before the
+            # reboot/logout, not "start something new just because login
+            # happened." No resumable state = silent no-op, same as if this
+            # entry didn't exist at all.
+            already_running = False
+            if PID_PATH.exists():
+                try:
+                    os.kill(int(PID_PATH.read_text().strip()), 0)
+                    already_running = True
+                except Exception:
+                    pass
+            if already_running:
+                sys.exit(0)
+            # Same resumable_state() check main() uses -- one shared
+            # definition of "is this actually resumable" instead of two
+            # separate copies that could quietly drift apart.
+            resume_phase, _ = resumable_state()
+            if resume_phase:
+                subprocess.run(["systemctl", "--user", "start", "arc-break.service"],
+                               capture_output=True)
+            sys.exit(0)
 
         else:
             print(f"unknown command: {cmd}", file=sys.stderr)

@@ -1,0 +1,8 @@
+# arc-heal-watchers — added 2026-08-26, part of closing a real gap: none of
+# these always-on watcher daemons were being checked for "is it actually
+# still running" at all before today -- if one silently died, nothing
+# would notice. NOPASSWD scoped to an exact, enumerated list of `systemctl
+# restart <unit>` commands, one per real watcher service -- no wildcard,
+# matches the same narrow-scoping convention as arc-nextdns-heal. Used by
+# arc-heal's check_watcher_daemons self-heal.
+architect-of-chaos ALL=(root) NOPASSWD: /usr/bin/systemctl restart arc-clamav-watch, /usr/bin/systemctl restart arc-fail2ban-watch, /usr/bin/systemctl restart arc-sagan-watch, /usr/bin/systemctl restart arc-suricata-watch, /usr/bin/systemctl restart arc-log-bridge@auth, /usr/bin/systemctl restart arc-log-bridge@ufw

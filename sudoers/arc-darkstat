@@ -1,0 +1,9 @@
+# arc-darkstat — added 2026-08-29, closing a real gap found while wiring
+# khaos-lab's SOC-interfaces panel: cmd_darkstat's start/stop call plain
+# `sudo systemctl start/stop darkstat` with no -n and no cached credential
+# path -- confirmed live (sudo -k then a real -n test) that this hangs
+# waiting for a password with no TTY to prompt on, exactly the scenario a
+# GUI button click hits. NOPASSWD scoped to the exact two commands
+# cmd_darkstat actually runs, matching the arc-heal-watchers/arc-nextdns-heal
+# narrow-scoping convention -- no wildcard.
+architect-of-chaos ALL=(root) NOPASSWD: /usr/bin/systemctl start darkstat, /usr/bin/systemctl stop darkstat

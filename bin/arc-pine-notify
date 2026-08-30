@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""
+arc-pine-notify — the single entry point arc-pine's own trusted watcher
+family (Suricata/Sagan/fail2ban/rkhunter/VPN/DNS/eero/lynis/chkrootkit/
+ClamAV) calls instead of notify-send. Built 2026-08-22.
+
+Does everything arc-pined's old passive D-Bus-observed path did (log to
+the shared history.db, play the notification sound, speak via Piper TTS
+if the app is in speak_apps) PLUS renders through arc-pine-bubbles' own
+stacking/auto-dismiss popup instead of xfce4-notifyd. Deliberately does
+NOT touch notify-send/D-Bus at all -- third-party apps (Brave, Bitwarden,
+etc.) never call this, so they keep rendering exactly as before, completely
+unaffected.
+
+Usage: arc-pine-notify <critical|normal|low> <app> <summary> [body]
+"""
+
+import json
+import os
+import socket
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _arc_pine_common as pine
+
+SOCK_PATH = "/run/user/{}/arc-pine-bubbles.sock".format(os.getuid())
+
+# freedesktop urgency convention arc-pined/arc-pine already use: 0=low,
+# 1=normal, 2=critical -- match it so entries show correctly in the
+# existing history viewer's URGENCY_COLOR mapping.
+URGENCY_INT = {"low": 0, "normal": 1, "critical": 2}
+
+
+def push_bubble(urgency, app, summary, body):
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(SOCK_PATH)
+        s.sendall(json.dumps({"urgency": urgency, "app": app, "summary": summary, "body": body}).encode())
+        s.close()
+    except Exception:
+        pass  # bubble renderer not running -- log/sound/speak above still happened
+
+
+def main():
+    if len(sys.argv) < 4:
+        print("usage: arc-pine-notify <critical|normal|low> <app> <summary> [body]", file=sys.stderr)
+        sys.exit(1)
+
+    urgency = sys.argv[1] if sys.argv[1] in URGENCY_INT else "normal"
+    app = sys.argv[2]
+    summary = sys.argv[3]
+    body = sys.argv[4] if len(sys.argv) > 4 else ""
+
+    cfg = pine.load_config()
+    if app in cfg.get("ignored_apps", []):
+        return
+
+    pine.log_notification(app, summary, body, URGENCY_INT[urgency])
+
+    sound_file = cfg.get("sound_file") if cfg.get("sound_enabled", True) else None
+    speak_text = None
+    if cfg.get("speak_enabled", True) and app in cfg.get("speak_apps", []):
+        speak_text = summary if not body else f"{summary}. {body}"
+
+    audio_thread = pine.emit_audio_async(sound_file, speak_text)
+
+    push_bubble(urgency, app, summary, body)
+
+    # This is a one-shot CLI script, not a persistent daemon -- if it exits
+    # while emit_audio is still mid-duck, the mute-restore in its `finally`
+    # never runs and the ducked stream (e.g. Brave) stays muted forever.
+    # Must join before exiting; 25s > emit_audio's own internal 20s thread
+    # timeout so this never cuts the restore off early.
+    if audio_thread is not None:
+        audio_thread.join(timeout=25)
+
+
+if __name__ == "__main__":
+    main()

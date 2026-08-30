@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# build-master-book — recompiles khaos-lab/master-archive/master-book.md from
+# the current state of dev-notes/khaos-lab/arc-lt-cmc. Rebuilt 2026-08-17 --
+# the original was never added to bakup-usb's PORTABLE_BIN, so it had zero
+# backup coverage anywhere and was lost (likely in the Mint->Kali reimage,
+# never confirmed which event exactly). This is a from-spec reconstruction
+# based on the real output format still on disk plus GAMEPLAN.md's history of
+# the original's bug fixes (see: .venv exclusion, image path rewriting).
+set -euo pipefail
+
+TREES=("$HOME/dev-notes" "$HOME/khaos-lab" "$HOME/arc-lt-cmc")
+OUT="$HOME/khaos-lab/master-archive/master-book.md"
+REWRITE_IMAGES="$HOME/.local/bin/build-master-book-rewrite-images.py"
+
+EXCLUDE_DIRS=(-path "*/.git/*" -o -path "*/node_modules/*" -o -path "*/__pycache__/*" \
+  -o -path "*/.venv/*" -o -path "*/venv/*" -o -path "*/site-packages/*")
+
+: > "$OUT"
+count=0
+
+for tree in "${TREES[@]}"; do
+  [[ -d "$tree" ]] || continue
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    rel="${f#"$HOME"/}"
+    {
+      echo '<div style="page-break-before: always;"></div>'
+      echo ""
+      echo "# $rel"
+      echo ""
+      if [[ -x "$REWRITE_IMAGES" ]]; then
+        python3 "$REWRITE_IMAGES" "$f"
+      else
+        cat "$f"
+      fi
+      echo ""
+    } >> "$OUT"
+    count=$(( count + 1 ))
+  done < <(find "$tree" \( "${EXCLUDE_DIRS[@]}" \) -prune -o \
+    -type f \( -name "*.md" -o -name "*.txt" \) -print | sort)
+done
+
+lines=$(wc -l < "$OUT")
+echo "built: $OUT"
+echo "$count files, $lines lines"

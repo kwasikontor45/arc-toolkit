@@ -1,0 +1,6 @@
+# arc-aide-watch (daily user timer) runs the check as root via this one
+# narrowly-scoped NOPASSWD rule -- exact command only, no wildcard args.
+# Added 2026-08-22. Updated 2026-08-26: this AIDE build has no compiled-in
+# default config, so --config is now a required, permanent part of the
+# invocation -- the exact match here must stay in sync with arc-aide-watch.
+architect-of-chaos ALL=(root) NOPASSWD: /usr/bin/aide --config /etc/aide/aide.conf --check

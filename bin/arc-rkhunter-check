@@ -19,8 +19,11 @@ LOG=/var/log/rkhunter.log
 
 notify() {
   local urgency="$1" summary="$2" body="$3"
-  su "$TARGET_USER" -c "DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${TARGET_UID}/bus notify-send -u ${urgency} -i security-high 'arc-rkhunter' '${summary}
-${body}'" 2>/dev/null || true
+  # Rewired 2026-08-22 to call arc-pine-notify instead of notify-send --
+  # see arc-suricata-watch's own comment for the full reasoning (arc-pine
+  # now owns rendering for this whole watcher family, real stacking cap +
+  # auto-dismiss, third-party notifications completely unaffected).
+  su "$TARGET_USER" -c "DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${TARGET_UID}/bus /home/architect-of-chaos/.local/bin/arc-pine-notify ${urgency} arc-rkhunter '${summary}' '${body}'" 2>/dev/null || true
 }
 
 rkhunter --check --sk --rwo >/dev/null 2>&1 || true

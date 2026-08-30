@@ -1,0 +1,6 @@
+[Unit]
+Description=arc-chkrootkit-check — notify on real chkrootkit findings (reads the stock scan's own log)
+
+[Service]
+Type=oneshot
+ExecStart=/home/architect-of-chaos/.local/bin/arc-chkrootkit-check

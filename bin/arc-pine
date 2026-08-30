@@ -16,8 +16,22 @@ from tkinter import ttk
 from pathlib import Path
 from datetime import datetime, timedelta
 
-DB_PATH   = Path.home() / ".local/share/arc-pine/history.db"
-ICON_PATH = Path.home() / ".local/share/arc-pine/icon.png"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _arc_pine_common as pine
+
+DB_PATH     = pine.DB_PATH
+ICON_PATH   = Path.home() / ".local/share/arc-pine/icon.png"
+
+# Same theme palette arc-pine-bubbles renders with -- kept in one place
+# there, mirrored here just for the Settings preview swatches (this
+# viewer's own chrome always stays Rose Pine Moon regardless of the
+# selected bubble theme -- only the popups themselves change).
+THEMES = {
+    "rose-pine-moon": {"bg": "#2a273f", "accent": "#eb6f92", "fg": "#e0def4"},
+    "nord":           {"bg": "#3b4252", "accent": "#bf616a", "fg": "#eceff4"},
+    "dracula":        {"bg": "#282a36", "accent": "#ff5555", "fg": "#f8f8f2"},
+    "gruvbox":        {"bg": "#3c3836", "accent": "#fb4934", "fg": "#ebdbb2"},
+}
 
 # Rose Pine Moon
 BG       = "#232136"
@@ -69,6 +83,9 @@ class ArcPine(tk.Tk):
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self.refresh())
 
+        self.config = pine.load_config()
+        self.view = "history"
+
         self._build_ui()
         self.refresh()
 
@@ -79,14 +96,46 @@ class ArcPine(tk.Tk):
         tk.Label(top, text="arc pine", font=("JetBrains Mono", 14, "bold"),
                  bg=BG, fg=GOLD).pack(side="left")
 
-        entry = tk.Entry(top, textvariable=self.search_var, font=("JetBrains Mono", 10),
-                          bg=SURFACE, fg=FG, insertbackground=FG, relief="flat")
-        entry.pack(side="right", fill="x", expand=True, padx=(10, 0))
-        entry.insert(0, "")
-        entry.focus()
+        self.settings_btn = tk.Button(
+            top, text="⚙ settings", font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
+            activebackground=OVERLAY, activeforeground=TEAL, relief="flat", bd=0,
+            padx=8, pady=4, cursor="hand2", command=self.toggle_view,
+        )
+        self.settings_btn.pack(side="right", padx=(10, 0))
+
+        self.search_entry = tk.Entry(top, textvariable=self.search_var, font=("JetBrains Mono", 10),
+                                      bg=SURFACE, fg=FG, insertbackground=FG, relief="flat")
+        self.search_entry.pack(side="right", fill="x", expand=True)
+        self.search_entry.focus()
+
+        # Body: history view and settings view share the same slot, only
+        # one packed at a time -- simplest way to keep this single-window,
+        # no extra Toplevel/dialog clutter.
+        self.body = tk.Frame(self, bg=BG)
+        self.body.pack(fill="both", expand=True)
+
+        self._build_history_view()
+        self._build_settings_view()
+
+    def toggle_view(self):
+        if self.view == "history":
+            self.view = "settings"
+            self.settings_btn.configure(text="✕ close")
+            self.history_view.pack_forget()
+            self.settings_view.pack(fill="both", expand=True)
+            self._load_settings_into_ui()
+        else:
+            self.view = "history"
+            self.settings_btn.configure(text="⚙ settings")
+            self.settings_view.pack_forget()
+            self.history_view.pack(fill="both", expand=True)
+
+    def _build_history_view(self):
+        self.history_view = tk.Frame(self.body, bg=BG)
+        self.history_view.pack(fill="both", expand=True)
 
         # Scrollable list
-        container = tk.Frame(self, bg=BG)
+        container = tk.Frame(self.history_view, bg=BG)
         container.pack(fill="both", expand=True, padx=10)
 
         canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
@@ -103,7 +152,7 @@ class ArcPine(tk.Tk):
         scrollbar.pack(side="right", fill="y")
 
         # Bottom action bar
-        bottom = tk.Frame(self, bg=BG)
+        bottom = tk.Frame(self.history_view, bg=BG)
         bottom.pack(fill="x", padx=10, pady=10)
 
         BTN = dict(font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
@@ -116,6 +165,110 @@ class ArcPine(tk.Tk):
 
         self.count_lbl = tk.Label(bottom, text="", font=("JetBrains Mono", 9), bg=BG, fg=FG_MUTED)
         self.count_lbl.pack(side="right")
+
+    def _build_settings_view(self):
+        self.settings_view = tk.Frame(self.body, bg=BG)
+        # not packed yet -- history view shows first
+
+        pad = dict(padx=14, pady=(14, 4))
+
+        def section(text):
+            tk.Label(self.settings_view, text=text, font=("JetBrains Mono", 10, "bold"),
+                      bg=BG, fg=GOLD, anchor="w").pack(fill="x", **pad)
+
+        def row():
+            r = tk.Frame(self.settings_view, bg=BG)
+            r.pack(fill="x", padx=14, pady=2)
+            return r
+
+        # -- Bubble popups --
+        section("bubble popups")
+
+        r = row()
+        tk.Label(r, text="theme", font=("JetBrains Mono", 9), bg=BG, fg=FG, width=16, anchor="w").pack(side="left")
+        self.theme_var = tk.StringVar()
+        theme_menu = ttk.Combobox(r, textvariable=self.theme_var, values=list(THEMES.keys()),
+                                   state="readonly", font=("JetBrains Mono", 9), width=18)
+        theme_menu.pack(side="left")
+        theme_menu.bind("<<ComboboxSelected>>", lambda e: self._save_setting("bubble_theme", self.theme_var.get()))
+
+        r = row()
+        tk.Label(r, text="max visible", font=("JetBrains Mono", 9), bg=BG, fg=FG, width=16, anchor="w").pack(side="left")
+        self.max_visible_var = tk.IntVar()
+        tk.Spinbox(r, from_=1, to=10, textvariable=self.max_visible_var, width=6,
+                   font=("JetBrains Mono", 9), bg=SURFACE, fg=FG, insertbackground=FG,
+                   relief="flat", command=lambda: self._save_setting("bubble_max_visible", self.max_visible_var.get())
+                   ).pack(side="left")
+
+        r = row()
+        tk.Label(r, text="duration (sec)", font=("JetBrains Mono", 9), bg=BG, fg=FG, width=16, anchor="w").pack(side="left")
+        self.duration_var = tk.IntVar()
+        tk.Spinbox(r, from_=3, to=60, textvariable=self.duration_var, width=6,
+                   font=("JetBrains Mono", 9), bg=SURFACE, fg=FG, insertbackground=FG,
+                   relief="flat",
+                   command=lambda: self._save_setting("bubble_duration_ms", self.duration_var.get() * 1000)
+                   ).pack(side="left")
+        tk.Label(r, text="always auto-clears, never sticks around", font=("JetBrains Mono", 8),
+                  bg=BG, fg=FG_MUTED).pack(side="left", padx=(10, 0))
+
+        # -- Sound & voice --
+        section("sound & voice")
+
+        r = row()
+        self.sound_var = tk.BooleanVar()
+        tk.Checkbutton(r, text="sound on new notification", variable=self.sound_var,
+                       font=("JetBrains Mono", 9), bg=BG, fg=FG, selectcolor=SURFACE,
+                       activebackground=BG, activeforeground=FG, anchor="w",
+                       command=lambda: self._save_setting("sound_enabled", self.sound_var.get())
+                       ).pack(side="left")
+
+        r = row()
+        self.speak_var = tk.BooleanVar()
+        tk.Checkbutton(r, text="speak notifications (arc-break only)", variable=self.speak_var,
+                       font=("JetBrains Mono", 9), bg=BG, fg=FG, selectcolor=SURFACE,
+                       activebackground=BG, activeforeground=FG, anchor="w",
+                       command=lambda: self._save_setting("speak_enabled", self.speak_var.get())
+                       ).pack(side="left")
+
+        # -- App lists --
+        section("ignored apps  (comma-separated, never notify)")
+        r = row()
+        self.ignored_var = tk.StringVar()
+        ignored_entry = tk.Entry(r, textvariable=self.ignored_var, font=("JetBrains Mono", 9),
+                                  bg=SURFACE, fg=FG, insertbackground=FG, relief="flat")
+        ignored_entry.pack(side="left", fill="x", expand=True)
+        ignored_entry.bind("<FocusOut>", lambda e: self._save_setting(
+            "ignored_apps", [a.strip() for a in self.ignored_var.get().split(",") if a.strip()]))
+        ignored_entry.bind("<Return>", lambda e: self._save_setting(
+            "ignored_apps", [a.strip() for a in self.ignored_var.get().split(",") if a.strip()]))
+
+        section("speak apps  (comma-separated, TTS-eligible)")
+        r = row()
+        self.speak_apps_var = tk.StringVar()
+        speak_entry = tk.Entry(r, textvariable=self.speak_apps_var, font=("JetBrains Mono", 9),
+                                bg=SURFACE, fg=FG, insertbackground=FG, relief="flat")
+        speak_entry.pack(side="left", fill="x", expand=True)
+        speak_entry.bind("<FocusOut>", lambda e: self._save_setting(
+            "speak_apps", [a.strip() for a in self.speak_apps_var.get().split(",") if a.strip()]))
+        speak_entry.bind("<Return>", lambda e: self._save_setting(
+            "speak_apps", [a.strip() for a in self.speak_apps_var.get().split(",") if a.strip()]))
+
+        tk.Label(self.settings_view, text="changes apply live -- no restart needed",
+                 font=("JetBrains Mono", 8), bg=BG, fg=FG_MUTED).pack(anchor="w", padx=14, pady=(16, 0))
+
+    def _load_settings_into_ui(self):
+        self.config = pine.load_config()
+        self.theme_var.set(self.config.get("bubble_theme", "rose-pine-moon"))
+        self.max_visible_var.set(self.config.get("bubble_max_visible", 4))
+        self.duration_var.set(self.config.get("bubble_duration_ms", 12000) // 1000)
+        self.sound_var.set(self.config.get("sound_enabled", True))
+        self.speak_var.set(self.config.get("speak_enabled", True))
+        self.ignored_var.set(", ".join(self.config.get("ignored_apps", [])))
+        self.speak_apps_var.set(", ".join(self.config.get("speak_apps", ["arc-break"])))
+
+    def _save_setting(self, key, value):
+        self.config[key] = value
+        pine.save_config(self.config)
 
     def refresh(self):
         for w in self.list_frame.winfo_children():

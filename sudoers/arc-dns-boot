@@ -1,0 +1,6 @@
+# arc-dns-boot — narrow NOPASSWD grant so arc-dns-boot.service (arc-dns-hot's
+# "enable at boot" toggle) can non-interactively re-wire NextDNS at login.
+# Scoped to the exact commands arc-dns's on)/off) cases use, profile ID fixed
+# to the one actually configured (~/.config/nextdns-profile).
+architect-of-chaos ALL=(root) NOPASSWD: /usr/bin/nextdns config set --profile=bdd599
+architect-of-chaos ALL=(root) NOPASSWD: /usr/bin/nextdns activate

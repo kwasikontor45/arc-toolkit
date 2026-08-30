@@ -1,0 +1,98 @@
+#!/bin/bash
+# arc-kismet — Kismet wrapper for arc.
+# hook: arc kismet <cmd>
+#
+# Manual-start only, same principle as arc-zap/arc darkstat --
+# no systemd auto-start, nothing brings this up on its own. This machine has
+# one WiFi adapter (wlan0) -- running Kismet takes it into monitor mode,
+# which drops whatever network/VPN connection was using it for the duration.
+#
+# Real incident, 2026-08-23: a live test crashed kismet's own datasource
+# helper (kismet_cap_linux_wifi -- "FATAL: Datasource helper (linuxwifi)
+# failed") mid-run and left wlan0 DOWN in monitor mode with no cleanup.
+# Kismet's own shutdown path never ran, so nothing restored the interface --
+# WiFi stayed dead until a full reboot. `stop` here does NOT trust Kismet to
+# have cleaned up after itself: it force-restores wlan0 to managed mode via
+# a dedicated NOPASSWD root script (arc-kismet-iface-restore, scoped in
+# /etc/sudoers.d/arc-kismet-restore) every single time, regardless of how
+# Kismet exited or whether sudo's timestamp cache happens to be fresh.
+#
+# Second real bug found during the 2026-08-24 disk sweep: with no --log-prefix,
+# kismet writes its .kismet/.kismet-journal capture files to whatever the
+# caller's cwd happened to be -- two of them ended up sitting directly at
+# $HOME's top level, violating this machine's own "only 4 dirs visible at
+# $HOME" standing policy. Fixed by pinning captures to a real, permanent
+# location instead.
+
+set -uo pipefail
+
+IFACE="wlan0"
+STATE_DIR="$HOME/.local/state/arc-kismet"
+CAPTURE_DIR="$HOME/khaos-lab/session-logs/kismet-captures"
+mkdir -p "$STATE_DIR" "$CAPTURE_DIR"
+
+_restore_iface() {
+  echo "  restoring ${IFACE} to managed mode..."
+  sudo -n /usr/local/bin/arc-kismet-iface-restore
+  sleep 2
+  nmcli device connect "$IFACE" >/dev/null 2>&1 || true
+  sleep 1
+  local state
+  state=$(nmcli -t -g GENERAL.STATE device show "$IFACE" 2>/dev/null)
+  if [[ "$state" == 100* ]]; then
+    echo "  ✓  ${IFACE} back up and connected"
+  else
+    echo "  ✗  ${IFACE} not reconnected — check: nmcli device status"
+    return 1
+  fi
+}
+
+start() {
+  if ! id -nG "$USER" | grep -qw kismet; then
+    echo "  ✗  not in the 'kismet' group yet — open a fresh terminal (group"
+    echo "     membership only applies to new logins/shells) and retry"
+    return 1
+  fi
+  if pgrep -x kismet >/dev/null; then
+    echo "  already running — http://127.0.0.1:2501"
+    return 0
+  fi
+  echo "  ⚠  this takes ${IFACE} into monitor mode — WiFi/VPN drops for the"
+  echo "     duration. run 'arc kismet stop' when done to restore it."
+  kismet -c "$IFACE" --daemonize --no-ncurses --log-prefix "$CAPTURE_DIR"
+  sleep 3
+  if pgrep -x kismet >/dev/null; then
+    echo "  ✓  running — http://127.0.0.1:2501  (set a username/password on first visit)"
+  else
+    echo "  ✗  didn't start — restoring interface just in case"
+    _restore_iface
+    return 1
+  fi
+}
+
+stop() {
+  pkill -x kismet 2>/dev/null || true
+  pkill -f kismet_cap_linux_wifi 2>/dev/null || true
+  sleep 1
+  _restore_iface
+}
+
+status() {
+  if pgrep -x kismet >/dev/null; then
+    echo "  kismet:  running — http://127.0.0.1:2501"
+  else
+    echo "  kismet:  not running"
+  fi
+  echo "  ${IFACE}:   $(iw dev "$IFACE" info 2>/dev/null | awk '/type/{print $2}')  ·  $(nmcli -t -g GENERAL.STATE device show "$IFACE" 2>/dev/null)"
+}
+
+case "${1:-status}" in
+  start)  start ;;
+  stop)   stop ;;
+  status) status ;;
+  *)
+    echo "arc-kismet: unknown command '$1'" >&2
+    echo "usage: arc kismet [start|stop|status]" >&2
+    exit 1
+    ;;
+esac

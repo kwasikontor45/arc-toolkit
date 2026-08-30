@@ -1,0 +1,7 @@
+[Unit]
+Description=arc-break — break timer daemon (survives terminal close, stop with: arc break stop)
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/bin/arc-break
+Restart=no

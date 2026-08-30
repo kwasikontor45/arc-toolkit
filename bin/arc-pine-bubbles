@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""
+arc-pine-bubbles — the actual visual notification renderer for arc-pine's
+own family of watchers (Suricata/Sagan/fail2ban/rkhunter/VPN/DNS/eero/
+lynis/chkrootkit/ClamAV). Built 2026-08-22, replacing the old design where
+those watchers called notify-send directly and got rendered by xfce4-notifyd
+alongside every other app's notifications with no shared stacking/dismiss
+policy -- that's what let a burst of alerts genuinely cover the whole
+screen, needing manual one-by-one dismissal.
+
+Deliberately its own small process, not folded into arc-pined: arc-pined
+runs a GLib main loop (for its D-Bus monitor), and Tkinter needs its own
+main loop -- running both in one process is a real source of the exact
+"heavy/janky" behavior this was asked to avoid. Two small, single-purpose
+processes are simpler to reason about than one process juggling two event
+loops.
+
+Listens on a local Unix socket for render requests (one JSON object per
+line: {"urgency": "critical|normal|low", "app": "...", "summary": "...",
+"body": "..."}), sent by `arc-pine-notify`. Nothing else talks to this
+socket -- third-party app notifications (Brave, Bitwarden, etc.) never
+reach it, they keep rendering via xfce4-notifyd exactly as before,
+completely unaffected by any of this.
+
+Stacks bubbles from the top-right corner, hard cap on how many are visible
+at once (extra ones queue and appear as earlier ones auto-dismiss or get
+clicked away) -- this is the actual fix for "covers the whole screen."
+"""
+
+import json
+import os
+import socket
+import threading
+import queue
+import time
+import tkinter as tk
+from pathlib import Path
+
+SOCK_PATH = "/run/user/{}/arc-pine-bubbles.sock".format(os.getuid())
+CONFIG_PATH = Path.home() / ".config/arc-pine/config.json"
+
+DEFAULT_CONFIG = {
+    "sound_enabled": True,
+    "sound_file": "/usr/share/sounds/freedesktop/stereo/bell.oga",
+    "speak_enabled": True,
+    "speak_apps": ["arc-break"],
+    "ignored_apps": [],
+    "bubble_theme": "rose-pine-moon",
+    "bubble_max_visible": 4,
+    "bubble_duration_ms": 12000,
+    "bubble_width": 340,
+}
+
+THEMES = {
+    "rose-pine-moon": {
+        "bg": "#2a273f", "border": "#393552", "fg": "#e0def4", "fg_muted": "#6e6a86",
+        "critical": "#eb6f92", "normal": "#3e8fb0", "low": "#6e6a86",
+    },
+    "nord": {
+        "bg": "#3b4252", "border": "#4c566a", "fg": "#eceff4", "fg_muted": "#81a1c1",
+        "critical": "#bf616a", "normal": "#88c0d0", "low": "#616e88",
+    },
+    "dracula": {
+        "bg": "#282a36", "border": "#44475a", "fg": "#f8f8f2", "fg_muted": "#6272a4",
+        "critical": "#ff5555", "normal": "#8be9fd", "low": "#6272a4",
+    },
+    "gruvbox": {
+        "bg": "#3c3836", "border": "#504945", "fg": "#ebdbb2", "fg_muted": "#928374",
+        "critical": "#fb4934", "normal": "#83a598", "low": "#928374",
+    },
+}
+
+
+def load_config():
+    cfg = DEFAULT_CONFIG.copy()
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH) as f:
+                cfg.update(json.load(f))
+        except Exception:
+            pass
+    return cfg
+
+
+class Bubble(tk.Toplevel):
+    """One rounded-card notification, self-contained and self-dismissing."""
+
+    def __init__(self, master, theme, width, urgency, app, summary, body, duration_ms, on_close):
+        super().__init__(master)
+        self.on_close = on_close
+        colors = THEMES.get(theme, THEMES["rose-pine-moon"])
+        accent = colors.get(urgency, colors["normal"])
+
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.configure(bg=colors["border"])
+
+        pad = 2  # border thickness, drawn as an outer frame in the border color
+        inner = tk.Frame(self, bg=colors["bg"])
+        inner.pack(padx=pad, pady=pad, fill="both", expand=True)
+
+        # left accent strip signals urgency at a glance without needing to
+        # read anything -- a thin colored bar, not a loud full-card color.
+        strip = tk.Frame(inner, bg=accent, width=4)
+        strip.pack(side="left", fill="y")
+
+        body_frame = tk.Frame(inner, bg=colors["bg"])
+        body_frame.pack(side="left", fill="both", expand=True, padx=(10, 12), pady=10)
+
+        header = tk.Frame(body_frame, bg=colors["bg"])
+        header.pack(fill="x")
+        tk.Label(header, text=app, font=("DejaVu Sans", 9, "bold"),
+                 bg=colors["bg"], fg=accent).pack(side="left")
+        close_btn = tk.Label(header, text="✕", font=("DejaVu Sans", 9),
+                              bg=colors["bg"], fg=colors["fg_muted"], cursor="hand2")
+        close_btn.pack(side="right")
+        close_btn.bind("<Button-1>", lambda e: self._dismiss())
+
+        tk.Label(body_frame, text=summary, font=("DejaVu Sans", 10, "bold"),
+                 bg=colors["bg"], fg=colors["fg"], wraplength=width - 60,
+                 justify="left", anchor="w").pack(fill="x", pady=(4, 0))
+
+        if body:
+            tk.Label(body_frame, text=body, font=("DejaVu Sans", 9),
+                      bg=colors["bg"], fg=colors["fg_muted"], wraplength=width - 60,
+                      justify="left", anchor="w").pack(fill="x", pady=(2, 0))
+
+        # click anywhere on the card to dismiss early, not just the x
+        for w in (inner, body_frame, header):
+            w.bind("<Button-1>", lambda e: self._dismiss())
+
+        # Real bug found live 2026-08-22: measuring winfo_reqheight() before
+        # the window's own width was ever constrained let Tkinter compute
+        # wraplength-based label heights against an unconstrained natural
+        # width, not the real 340px target -- produced a wrong height (and
+        # from there a garbled geometry string) for some bubbles but not
+        # others, seemingly at random, in a burst. Explicitly constrain the
+        # window to the real width FIRST, then measure the height it
+        # actually needs at that width -- the standard correct order.
+        self.geometry(f"{width}x1")
+        self.update_idletasks()
+        self._width = width
+        self._height = max(self.winfo_reqheight(), 50)
+        self._dismissed = False
+        self._timer = self.after(duration_ms, self._dismiss)
+
+    def _dismiss(self):
+        if self._dismissed:
+            return
+        self._dismissed = True
+        try:
+            self.after_cancel(self._timer)
+        except Exception:
+            pass
+        self.destroy()
+        self.on_close(self)
+
+
+class BubbleManager:
+    """Owns the stack -- positions, enforces the visible cap, promotes
+    queued bubbles as room opens up. This is the actual fix for the
+    "covers the whole screen" problem: no matter how many alerts fire,
+    only bubble_max_visible are ever on screen at once."""
+
+    MARGIN = 16
+    GAP = 10
+
+    def __init__(self, root, cfg):
+        self.root = root
+        self.cfg = cfg
+        self.active = []
+        self.pending = queue.deque()
+
+    def screen_geom(self):
+        return self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+
+    def push(self, urgency, app, summary, body):
+        self.pending.append((urgency, app, summary, body))
+        self._drain()
+
+    def _drain(self):
+        max_visible = self.cfg.get("bubble_max_visible", 4)
+        while self.pending and len(self.active) < max_visible:
+            urgency, app, summary, body = self.pending.popleft()
+            self._spawn(urgency, app, summary, body)
+
+    def _spawn(self, urgency, app, summary, body):
+        theme = self.cfg.get("bubble_theme", "rose-pine-moon")
+        width = self.cfg.get("bubble_width", 340)
+        duration = self.cfg.get("bubble_duration_ms", 12000)
+        b = Bubble(self.root, theme, width, urgency, app, summary, body,
+                   duration, on_close=self._on_close)
+        self.active.append(b)
+        self._reflow()
+
+    def _on_close(self, bubble):
+        if bubble in self.active:
+            self.active.remove(bubble)
+        self._reflow()
+        self._drain()
+
+    def _reflow(self):
+        sw, sh = self.screen_geom()
+        y = self.MARGIN
+        for b in self.active:
+            try:
+                x = sw - b._width - self.MARGIN
+                self._place(b, x, y)
+                y += b._height + self.GAP
+            except tk.TclError:
+                pass  # window already gone (user dismissed it mid-reflow)
+
+    def _place(self, b, x, y):
+        # Real bug found live 2026-08-22, reproduced consistently (always
+        # exactly the 4th bubble in a burst -- matching bubble_max_visible's
+        # default, suggesting a real timing interaction with how fast
+        # `poll()` can drain several queued pushes in one pass, not a
+        # one-off): a single geometry()+deiconify()+lift() call sometimes
+        # doesn't stick -- the window ends up somewhere else entirely
+        # (top-left) instead of the requested position, no error raised.
+        # Rather than chase the exact root cause further, verify the
+        # geometry actually landed and force-correct it if not -- this is
+        # correct regardless of *why* the first attempt didn't take.
+        b.geometry(f"{b._width}x{b._height}+{x}+{y}")
+        b.deiconify()
+        b.lift()
+        b.update_idletasks()
+        if (b.winfo_x(), b.winfo_y()) != (x, y):
+            b.geometry(f"{b._width}x{b._height}+{x}+{y}")
+            b.update_idletasks()
+
+
+def socket_listener(sock_path, out_queue):
+    try:
+        os.unlink(sock_path)
+    except FileNotFoundError:
+        pass
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(sock_path)
+    os.chmod(sock_path, 0o600)
+    srv.listen(8)
+    while True:
+        conn, _ = srv.accept()
+        try:
+            data = b""
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            if data:
+                msg = json.loads(data.decode())
+                out_queue.put(msg)
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+
+def main():
+    root = tk.Tk()
+    root.withdraw()
+
+    cfg = load_config()
+    mgr = BubbleManager(root, cfg)
+    q = queue.Queue()
+
+    t = threading.Thread(target=socket_listener, args=(SOCK_PATH, q), daemon=True)
+    t.start()
+
+    def poll():
+        # reload config on the fly so theme/timing/cap changes from the
+        # Settings UI take effect without needing to restart this daemon
+        nonlocal cfg
+        try:
+            while True:
+                msg = q.get_nowait()
+                mgr.push(
+                    msg.get("urgency", "normal"),
+                    msg.get("app", "arc-pine"),
+                    msg.get("summary", ""),
+                    msg.get("body", ""),
+                )
+        except queue.Empty:
+            pass
+        root.after(150, poll)
+
+    def reload_config_periodically():
+        nonlocal cfg
+        new_cfg = load_config()
+        if new_cfg != cfg:
+            cfg = new_cfg
+            mgr.cfg = cfg
+        root.after(3000, reload_config_periodically)
+
+    root.after(150, poll)
+    root.after(3000, reload_config_periodically)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

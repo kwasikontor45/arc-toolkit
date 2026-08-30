@@ -1,0 +1,25 @@
+# enabled-state.txt -- which units were enabled on the source machine,
+# captured alongside the unit files so 'arc-hq pull' knows what to
+# 'systemctl enable' vs leave static/disabled (e.g. arc-break.service
+# is deliberately static/manual-start-only, not a bug to fix).
+# format: <scope:system|user> <state> <unit>
+system static arc-chkrootkit-check.service
+system enabled arc-clamav-watch.service
+system enabled arc-fail2ban-watch.service
+system indirect arc-log-bridge@.service
+system static arc-lynis-check.service
+system static arc-nextdns-healthcheck.service
+system static arc-rkhunter-check.service
+system enabled arc-sagan-watch.service
+system enabled arc-suricata-watch.service
+system enabled arc-chkrootkit-check.timer
+system enabled arc-lynis-check.timer
+system enabled arc-nextdns-healthcheck.timer
+system enabled arc-rkhunter-check.timer
+user static arc-aide-watch.service
+user static arc-break.service
+user enabled arc-dns-boot.service
+user enabled arc-pine-bubbles.service
+user static arc-quiet-clean.service
+user enabled arc-aide-watch.timer
+user enabled arc-quiet-clean.timer

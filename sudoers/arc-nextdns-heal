@@ -1,0 +1,20 @@
+# arc-nextdns-heal — rebuilt 2026-08-22 (original from 2026-07-31 was wiped
+# by a later OS recovery). NOPASSWD scoped to the exact command
+# `systemctl restart nextdns` only, nothing else -- safe specifically
+# because /usr/lib/systemd/system/nextdns.service is root:root and not
+# user-writable, so this can't be turned into an escalation path by
+# editing ExecStart then "restarting" it. Used by `arc dns restart` /
+# `arc dns flush`.
+architect-of-chaos ALL=(root) NOPASSWD: /usr/bin/systemctl restart nextdns
+
+# Added 2026-08-26: `ss -4tnp` (read-only -- lists TCP connections, no
+# state modification, no escalation path) needs root on this system to
+# show the process-owner column reliably (confirmed live 2026-08-22).
+# Without this, arc-dns's own DNS-leak routing check -- and arc-heal's
+# check_dns_leak self-heal, which reads that check's output -- silently
+# degrades to "can't check" every time either runs non-interactively
+# (cron has no cached sudo credential), which is every scheduled run.
+# That's a real gap: it meant the leak self-heal could only ever actually
+# fire when run by hand with a fresh sudo prompt, never on its own
+# 3-hourly cron schedule.
+architect-of-chaos ALL=(root) NOPASSWD: /usr/bin/ss -4tnp

@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily lynis findings check, 1h after the stock scan (both nominally midnight, real jitter observed within that hour)
+
+[Timer]
+OnCalendar=*-*-* 01:00:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

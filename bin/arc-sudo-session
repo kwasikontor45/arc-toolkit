@@ -1,0 +1,103 @@
+#!/bin/bash
+# arc-sudo-session — keeps the sudo credential cache alive in the background,
+# refreshed on a short interval, until explicitly stopped.
+# hook: arc sudo <cmd>
+#
+# Source material: khaos-lab/work-bench/refresh-sudo-v (a saved browser AI
+# research thread that converged on a start/stop/status keepalive design
+# after a few iterations). Two real bugs in that draft, fixed here:
+#   - PID file moved to $HOME/.local/state/ (matches every other arc-*
+#     wrapper's own state dir) instead of /tmp/sudo_keepalive_$USER.pid --
+#     avoids a shared-/tmp race, even though this is a single-user box.
+#   - Dropped the draft's "kill -0 $$" parent-liveness check inside the
+#     loop. That only makes sense sourced as a shell function into a live
+#     interactive shell, where $$ is the real long-lived shell PID. Run as
+#     its own script ($0), $$ inside the backgrounded loop is this script's
+#     OWN top-level PID -- which exits within milliseconds of forking the
+#     loop, since the whole point of `start` is to fork it and hand control
+#     straight back to the caller. Keeping that check would have silently
+#     killed the loop on its very first tick, every time. `sudo -n -v ||
+#     exit 0` inside the loop is the real liveness check that matters: the
+#     loop dies on its own the moment the cache can't be renewed silently
+#     (e.g. someone runs a plain `sudo -k` elsewhere), rather than spinning
+#     forever failing loud.
+#
+# `start` needs a real TTY to prompt for the password (plain `sudo -v`, no
+# askpass wired) -- run it from an actual terminal. `status`/`stop` don't
+# need a password (`stop` calls `sudo -k`, which only clears the cache) and
+# are safe to run from anywhere, including khaos-panel.
+#
+# Manual-start only, same principle as every other personal arc-* tool on
+# this machine -- no systemd unit, nothing brings this up on its own, and it
+# does not survive a reboot (which is correct: sudo's own cache doesn't
+# either).
+
+set -uo pipefail
+
+STATE_DIR="$HOME/.local/state/arc-sudo-session"
+PIDFILE="$STATE_DIR/keeper.pid"
+INTERVAL=60   # seconds -- comfortably under sudo's default 15min timestamp_timeout
+
+mkdir -p "$STATE_DIR"
+
+_alive() {
+  [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
+}
+
+start() {
+  if _alive; then
+    echo "  already running — PID $(cat "$PIDFILE")"
+    return 0
+  fi
+  rm -f "$PIDFILE"
+
+  echo "  authenticating sudo (one-time password prompt)..."
+  sudo -v || { echo "  ✗  authentication failed"; return 1; }
+
+  (
+    while true; do
+      sleep "$INTERVAL"
+      sudo -n -v 2>/dev/null || exit 0
+    done
+  ) &
+  echo $! > "$PIDFILE"
+
+  echo "  ✓  sudo cache kept alive — PID $(cat "$PIDFILE")  (refreshing every ${INTERVAL}s)"
+  echo "  arc sudo stop  ·  arc sudo status"
+}
+
+stop() {
+  if _alive; then
+    kill "$(cat "$PIDFILE")" 2>/dev/null
+    rm -f "$PIDFILE"
+    sudo -k
+    echo "  ✓  stopped — sudo cache cleared"
+  else
+    rm -f "$PIDFILE"
+    echo "  ·  not running"
+  fi
+}
+
+status() {
+  if _alive; then
+    echo "  keeper:  running — PID $(cat "$PIDFILE")  (every ${INTERVAL}s)"
+    if sudo -n -v 2>/dev/null; then
+      echo "  sudo:    ✓  credentials valid"
+    else
+      echo "  sudo:    ⚠  credentials not currently valid (next tick will retry)"
+    fi
+  else
+    echo "  keeper:  not running  —  arc sudo start to begin"
+  fi
+}
+
+case "${1:-status}" in
+  start)  start ;;
+  stop)   stop ;;
+  status) status ;;
+  *)
+    echo "arc-sudo-session: unknown command '${1:-}'" >&2
+    echo "usage: arc sudo [start|stop|status]" >&2
+    exit 1
+    ;;
+esac

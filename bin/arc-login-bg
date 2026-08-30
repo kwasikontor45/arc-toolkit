@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# arc-login-bg — set/change the LightDM (slick-greeter) login background.
+# arc-login-bg — set/change the LightDM (lightdm-gtk-greeter) login background.
+# Ported from the old slick-greeter version (Kali ships lightdm-gtk-greeter by
+# default, not slick-greeter) — config path, section case ([greeter], not
+# [Greeter]), and key spacing ("key = value") all differ; gtk-greeter has no
+# per-user AccountsService override to fight with, so that part's dropped.
 #
 # Always copies the image out to /etc/lightdm/backgrounds/ (root:root, 644)
 # rather than pointing the greeter at anything under the home directory --
@@ -8,7 +12,7 @@
 # replaces the manual version of.
 set -euo pipefail
 
-CONF=/etc/lightdm/slick-greeter.conf
+CONF=/etc/lightdm/lightdm-gtk-greeter.conf
 BGDIR=/etc/lightdm/backgrounds
 
 usage() {
@@ -23,9 +27,7 @@ case "${1:-}" in
     ;;
   status)
     echo "configured background:"
-    grep '^background=' "$CONF" 2>/dev/null | sed 's/^/  /' || echo "  (none set)"
-    echo "draw-user-backgrounds:"
-    grep '^draw-user-backgrounds=' "$CONF" 2>/dev/null | sed 's/^/  /' || echo "  (unset -- greeter default)"
+    grep '^background' "$CONF" 2>/dev/null | sed 's/^/  /' || echo "  (none set)"
     exit 0
     ;;
 esac
@@ -53,17 +55,10 @@ sudo cp "$IMG" "$DEST"
 sudo chown root:root "$DEST"
 sudo chmod 644 "$DEST"
 
-if sudo grep -q '^background=' "$CONF" 2>/dev/null; then
-  sudo sed -i "s|^background=.*|background=$DEST|" "$CONF"
+if sudo grep -q '^background' "$CONF" 2>/dev/null; then
+  sudo sed -i "s|^background.*|background = $DEST|" "$CONF"
 else
-  sudo sed -i "/^\[Greeter\]/a background=$DEST" "$CONF"
-fi
-
-# Keep the per-user AccountsService wallpaper from silently overriding this.
-if sudo grep -q '^draw-user-backgrounds=' "$CONF" 2>/dev/null; then
-  sudo sed -i 's|^draw-user-backgrounds=.*|draw-user-backgrounds=false|' "$CONF"
-else
-  sudo sed -i "/^\[Greeter\]/a draw-user-backgrounds=false" "$CONF"
+  sudo sed -i "/^\[greeter\]/a background = $DEST" "$CONF"
 fi
 
 echo "login background set: $DEST"

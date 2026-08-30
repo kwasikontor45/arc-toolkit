@@ -1,14 +1,27 @@
 #!/bin/bash
-# Panel status script for arc-break — MATE Command applet (plain text, no
-# markup support to rely on, unlike XFCE's Genmon which this replaces).
-# Setup: right-click panel -> Add to Panel -> Command
-#   Command:  /home/architect-of-chaos/.local/bin/arc-break-panel
-#   Interval: 5000 (ms)
+# Panel status script for arc-break — Xfce Generic Monitor (Genmon) plugin.
+# Output is genmon's XML format (<txt>/<click>/<txtclick> tags), not plain
+# text -- click(any state)/txtclick starts the daemon if it isn't running
+# already (arc-break-start no-ops if it is, so this is always safe to have
+# wired up, running or not).
+# Setup: right-click panel -> Panel -> Add New Items -> Generic Monitor
+#   Command:        /home/architect-of-chaos/.local/bin/arc-break-panel
+#   Update period:  5000  (xfconf property is update-period, in MS -- NOT
+#                    the "Period" field genmon's own properties dialog shows
+#                    in seconds; found the hard way, wired to the wrong
+#                    property once already)
 STATE="$HOME/.local/share/arc-break/state.json"
 PID_F="$HOME/.local/share/arc-break/arc-break.pid"
+START="$HOME/.local/bin/arc-break-start"
+
+emit() {
+    echo "<txt>$1</txt>"
+    echo "<click>$START</click>"
+    echo "<txtclick>$START</txtclick>"
+}
 
 if [[ ! -f "$PID_F" ]] || ! kill -0 "$(cat "$PID_F" 2>/dev/null)" 2>/dev/null; then
-    echo "💀 --:--"
+    emit "💀 --:--"
     exit 0
 fi
 
@@ -19,7 +32,7 @@ with open('$STATE') as f:
 print(d['phase'], int(d['phase_start']), int(d['phase_end']))
 " 2>/dev/null)
 
-[[ -z "$phase" ]] && { echo "💀 --:--"; exit 0; }
+[[ -z "$phase" ]] && { emit "💀 --:--"; exit 0; }
 
 now=$(date +%s)
 remaining=$(( phase_end - now ))
@@ -58,4 +71,4 @@ else
     fi
 fi
 
-echo "$emoji $fmt"
+emit "$emoji $fmt"

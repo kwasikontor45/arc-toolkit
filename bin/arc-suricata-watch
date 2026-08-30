@@ -10,7 +10,12 @@ other script, safe to stop/delete alone.
 
 import json
 import subprocess
+import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _arc_watch_common as watch
 
 EVE_LOG = "/var/log/suricata/eve.json"
 TARGET_USER = "architect-of-chaos"
@@ -36,50 +41,66 @@ SEV_URGENCY = {1: "critical", 2: "normal", 3: "low"}
 # is ever silenced, only de-duplicated within the window.
 FLUSH_INTERVAL = 8.0
 
+# Real, separate flood vector from the per-signature batching above: a burst
+# of GENUINELY DIFFERENT alerts (several signatures/sources at once, e.g. an
+# actual port scan) still produces one popup per unique key, unbounded.
+# Cap the popups any single flush can actually spawn -- anything beyond this
+# collapses into one summary notification instead of N more individual ones.
+MAX_POPUPS_PER_FLUSH = 4
 
+# Rewired 2026-08-22 to call arc-pine-notify instead of notify-send/
+# xfce4-notifyd directly -- arc-pine now owns rendering for this whole
+# watcher family with its own real stacking cap + auto-dismiss (the actual
+# fix for "covers the whole screen"), not just a -t timeout on individual
+# calls. Third-party app notifications are completely unaffected -- they
+# never call this, they keep rendering via xfce4-notifyd exactly as before.
 def notify(summary: str, body: str, urgency: str):
     env = f"DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{TARGET_UID}/bus"
-    cmd = f"{env} notify-send -u {urgency} -i security-high 'arc-suricata' {json.dumps(summary + chr(10) + body)}"
+    cmd = f"{env} /home/architect-of-chaos/.local/bin/arc-pine-notify {urgency} arc-suricata {json.dumps(summary)} {json.dumps(body)}"
     subprocess.run(["su", TARGET_USER, "-c", cmd], check=False)
 
 
 def flush(pending):
-    for (sig, src, dst), entry in pending.items():
+    items = list(pending.items())
+    shown, overflow = items[:MAX_POPUPS_PER_FLUSH], items[MAX_POPUPS_PER_FLUSH:]
+    for (sig, src, dst), entry in shown:
         count = entry["count"]
         urgency = SEV_URGENCY.get(entry["sev"], "normal")
         prefix = f"x{count}  " if count > 1 else ""
         notify("Suricata alert", f"{sig}\n{prefix}{src} -> {dst}", urgency)
+    if overflow:
+        worst_sev = min(entry["sev"] for _key, entry in overflow)
+        notify(
+            "Suricata alert",
+            f"+{len(overflow)} more alert type(s) in this window — see: arc sec suricata",
+            SEV_URGENCY.get(worst_sev, "normal"),
+        )
 
 
 def main():
     pending = {}
     last_flush = time.time()
-    with open(EVE_LOG, "r") as f:
-        f.seek(0, 2)  # start at end -- don't replay history on (re)start
-        while True:
-            line = f.readline()
-            if line:
-                try:
-                    ev = json.loads(line)
-                except Exception:
-                    ev = None
-                if ev is not None and ev.get("event_type") == "alert":
-                    alert = ev.get("alert", {})
-                    sev = alert.get("severity", 3)
-                    if sev <= MIN_NOTIFY_SEVERITY:
-                        sig = alert.get("signature", "unknown signature")
-                        src = ev.get("src_ip", "?")
-                        dst = ev.get("dest_ip", "?")
-                        key = (sig, src, dst)
-                        entry = pending.setdefault(key, {"count": 0, "sev": sev})
-                        entry["count"] += 1
-            else:
-                time.sleep(0.5)
+    for line in watch.follow(EVE_LOG):
+        if line:
+            try:
+                ev = json.loads(line)
+            except Exception:
+                ev = None
+            if ev is not None and ev.get("event_type") == "alert":
+                alert = ev.get("alert", {})
+                sev = alert.get("severity", 3)
+                if sev <= MIN_NOTIFY_SEVERITY:
+                    sig = alert.get("signature", "unknown signature")
+                    src = ev.get("src_ip", "?")
+                    dst = ev.get("dest_ip", "?")
+                    key = (sig, src, dst)
+                    entry = pending.setdefault(key, {"count": 0, "sev": sev})
+                    entry["count"] += 1
 
-            if pending and (time.time() - last_flush) >= FLUSH_INTERVAL:
-                flush(pending)
-                pending.clear()
-                last_flush = time.time()
+        if pending and (time.time() - last_flush) >= FLUSH_INTERVAL:
+            flush(pending)
+            pending.clear()
+            last_flush = time.time()
 
 
 if __name__ == "__main__":

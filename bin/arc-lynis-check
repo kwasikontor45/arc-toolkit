@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# arc-lynis-check — runs after the stock lynis.timer's daily scan, checks
+# the real report for anything concerning, notifies only if found. Built
+# 2026-08-22: lynis was running silently on its own daily timer with zero
+# notification wiring, same gap rkhunter had before today.
+#
+# Deliberately doesn't run its own lynis scan -- lynis.service (stock
+# Debian package) already does that. This just reads the result.
+set -uo pipefail
+
+REPORT=/var/log/lynis-report.dat
+TARGET_USER="architect-of-chaos"
+
+notify() {
+  local urgency="$1" summary="$2" body="$3"
+  su "$TARGET_USER" -c "/home/architect-of-chaos/.local/bin/arc-pine-notify '${urgency}' arc-lynis '${summary}' '${body}'" 2>/dev/null || true
+}
+
+[[ -f "$REPORT" ]] || exit 0
+
+# grep -c exits 1 (not 0) on zero matches despite correctly printing "0"
+# -- see arc-chkrootkit-check's comment for the full explanation of why a
+# bare `|| echo 0` fallback doubles the output in that case.
+warnings=$(grep -c "^warning\[\]=" "$REPORT" 2>/dev/null)
+warnings=${warnings:-0}
+index=$(grep "^hardening_index=" "$REPORT" 2>/dev/null | cut -d= -f2)
+
+if [[ "$warnings" -gt 0 ]]; then
+  detail=$(grep "^warning\[\]=" "$REPORT" | head -3 | cut -d'|' -f2 | tr '\n' '; ')
+  notify normal "${warnings} lynis warning(s), hardening index ${index:-?}" "${detail}
+run: arc sec lynis"
+fi

@@ -1,0 +1,9 @@
+# arc-maint — narrow NOPASSWD grants for arc-quiet-clean's unattended cron pass,
+# plus interactive commands SOT.md's SECURITY RULES section already documents as
+# NOPASSWD (arc-journal-vacuum, timeshift-check) but which weren't actually wired
+# until this pass.
+# Scoped to exact commands only, no wildcards beyond the fixed args the scripts use.
+architect-of-chaos ALL=(root) NOPASSWD: /usr/local/bin/arc-journal-vacuum
+architect-of-chaos ALL=(root) NOPASSWD: /usr/bin/tail -c 5M /var/log/fail2ban.log
+architect-of-chaos ALL=(root) NOPASSWD: /usr/bin/mv /tmp/f2b-trim.log /var/log/fail2ban.log
+architect-of-chaos ALL=(root) NOPASSWD: /usr/local/bin/timeshift-check --manual

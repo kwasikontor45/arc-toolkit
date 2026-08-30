@@ -1,0 +1,60 @@
+# perms.txt -- exact octal permissions for each script.
+# git only tracks the executable bit (755 vs 644), not the exact mode --
+# after a fresh clone everything comes back at git's default. This manifest
+# lets 'arc hq pull' re-apply the real modes, especially the 700-only-owner
+# ones that are deliberately locked down (arc-mic, arc-sudo-session,
+# kbd-backlight, volume-ctl -- personal/sensitive, not meant to be group/
+# other readable even though the repo itself is private).
+# format: <octal> <filename>
+755 arc
+711 arc-aide-watch
+775 arc-aws-killswitch
+755 arc-break
+755 arc-break-panel
+755 arc-break-panel-fix
+755 arc-break-start
+711 arc-cf-watch
+711 arc-chkrootkit-check
+711 arc-clamav-watch
+755 arc-dns
+711 arc-dns-cold
+711 arc-dns-hot
+775 arc-fail2ban-watch
+711 arc-gate-bypass
+711 arc-heal
+750 arc-home-sweep
+775 arc-ip-sync
+711 arc-kismet
+755 arc-login-bg
+711 arc-lynis-check
+700 arc-mic
+775 arc-nextdns-healthcheck
+755 arc-pine
+711 arc-pine-bubbles
+664 _arc_pine_common.py
+755 arc-pined
+711 arc-pine-notify
+755 arc-pine-speak
+711 arc-quiet-clean
+711 arc-rkhunter-check
+711 arc-sagan-watch
+711 arc-sop
+711 arc-sop-gate-hook
+700 arc-sudo-session
+711 arc-suricata-watch
+775 arc-vpn
+664 _arc_watch_common.py
+775 auto-move-large-files
+711 bakup-local
+755 bakup-usb
+775 build-master-book
+775 build-master-book-rewrite-images.py
+711 build-notes-site
+755 disable-middle-paste
+775 emoji-pick
+700 kbd-backlight
+775 khaos-lab
+711 lt
+755 rename-case
+711 sync-mirrors
+700 volume-ctl

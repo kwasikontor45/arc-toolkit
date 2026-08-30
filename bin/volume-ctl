@@ -1,0 +1,42 @@
+#!/bin/bash
+# volume-ctl — speaker volume control, bound to Fn F10 (mute) / F11 (down) / F12 (up).
+# usage: volume-ctl up|down|mute
+#
+# Built 2026-08-26 alongside kbd-backlight -- same underlying gap: no volume-key
+# daemon exists on this system (checked: xfce4-volumed / xfce4-volumed-pulse,
+# the usual XFCE component for this, isn't in Kali's repos at all, and nothing
+# else was grabbing these keys -- confirmed live, no XF86Audio* entries existed
+# anywhere in xfce4-keyboard-shortcuts before this). Talks to the default sink
+# directly via pactl (PipeWire's pulse-compat layer, confirmed live on this
+# system) rather than pulling in a whole extra daemon. Shows a progress-bar
+# style OSD via notify-send's "value" hint, which xfce4-notifyd (already
+# running) renders as a real popup -- same visual language a native
+# volume-key daemon would give, without needing one.
+#
+# Deliberately does NOT touch @DEFAULT_SOURCE@ (the mic) -- that's a separate,
+# explicit privacy default handled by arc-mic / mic-default-mute.desktop, see
+# reference.md's 2026-08-26 session note. Keeping mute/vol keys scoped to
+# output only avoids any chance of a keybinding accidentally reactivating
+# the mic.
+
+set -euo pipefail
+
+STEP=5   # percent
+
+case "${1:-}" in
+  up)   pactl set-sink-volume @DEFAULT_SINK@ "+${STEP}%" ;;
+  down) pactl set-sink-volume @DEFAULT_SINK@ "-${STEP}%" ;;
+  mute) pactl set-sink-mute @DEFAULT_SINK@ toggle ;;
+  *)    echo "usage: volume-ctl up|down|mute" >&2; exit 1 ;;
+esac
+
+MUTED=$(pactl get-sink-mute @DEFAULT_SINK@ | awk '{print $2}')
+PCT=$(pactl get-sink-volume @DEFAULT_SINK@ | grep -oP '\d+(?=%)' | head -1)
+
+if [[ "$MUTED" == "yes" ]]; then
+  notify-send -a "volume" -h string:x-canonical-private-synchronous:volume-ctl \
+    -i audio-volume-muted "Volume muted"
+else
+  notify-send -a "volume" -h string:x-canonical-private-synchronous:volume-ctl \
+    -h "int:value:${PCT}" -i audio-volume-high "Volume ${PCT}%"
+fi

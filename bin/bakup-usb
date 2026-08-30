@@ -81,10 +81,15 @@ if ! mountpoint -q "$MOUNT" 2>/dev/null; then
   exit 0
 fi
 
+# Real gap closed 2026-08-26: same reasoning as bakup-local -- failures here
+# only ever printed to whatever terminal happened to be watching. No safe
+# auto-fix for a failed rsync, so report clearly instead of silently.
+FAILED=()
+
 echo -e "  ${C}→${N}  dev-notes → vault..."
 rsync -a --delete "$HOME/dev-notes/" "$USB/dev-notes/" \
   && echo -e "  ${G}✓${N}  dev-notes synced" \
-  || echo -e "  ${R}✗${N}  dev-notes sync failed"
+  || { echo -e "  ${R}✗${N}  dev-notes sync failed"; FAILED+=("dev-notes"); }
 
 echo -e "  ${C}→${N}  khaos-lab → vault/khaos-lab...  ${D}(VM disks/vbox-vms excluded — waste of space)${N}"
 rsync -a --delete --delete-excluded \
@@ -93,19 +98,20 @@ rsync -a --delete --delete-excluded \
   --exclude='*.qcow2' --exclude='*.ova' --exclude='*.ovf' --exclude='*.img' \
   "$HOME/khaos-lab/" "$USB/khaos-lab/" \
   && echo -e "  ${G}✓${N}  khaos-lab synced" \
-  || echo -e "  ${R}✗${N}  khaos-lab sync failed"
+  || { echo -e "  ${R}✗${N}  khaos-lab sync failed"; FAILED+=("khaos-lab"); }
 
 echo -e "  ${C}→${N}  manifests → vault..."
 rsync -a --delete "$MANIFEST_DIR/" "$USB/manifests/" \
   && echo -e "  ${G}✓${N}  manifests synced" \
-  || echo -e "  ${R}✗${N}  manifests sync failed"
+  || { echo -e "  ${R}✗${N}  manifests sync failed"; FAILED+=("manifests"); }
 
 echo -e "  ${C}→${N}  arc-portable → vault..."
 PORTABLE_BIN=(
   arc arc-aws-killswitch arc-cf-watch arc-dns arc-dns-cold arc-dns-hot
-  arc-gate-bypass arc-heal arc-ip-sync arc-quiet-clean arc-rkhunter-check
-  arc-sop arc-sop-gate-hook arc-suricata-watch arc-vpn auto-move-large-files
-  bakup-local bakup-usb build-notes-site sync-mirrors lt
+  arc-gate-bypass arc-heal arc-quiet-clean arc-rkhunter-check
+  arc-sop arc-sop-gate-hook arc-suricata-watch arc-vpn
+  bakup-local bakup-usb build-notes-site build-master-book
+  build-master-book-rewrite-images.py sync-mirrors lt
 )
 mkdir -p "$USB/arc-portable/bin" "$USB/arc-portable/config" "$USB/arc-portable/systemd" "$USB/arc-portable/docs"
 for f in "${PORTABLE_BIN[@]}"; do
@@ -117,5 +123,29 @@ cp -a "$HOME/.config/arc/greeting.sh" "$HOME/.config/arc/motd" "$HOME/.config/ar
 crontab -l > "$USB/arc-portable/docs/crontab.txt" 2>/dev/null
 echo -e "  ${G}✓${N}  arc-portable refreshed (excludes: LUKS keyfile, SOP db, gate-owner-uid, last-known-ip — machine-specific by design)"
 
+# Tails Persistent Storage view -- Tails only bind-mounts $USB/Persistent/<name>
+# into a live Tails session, not the top-level paths above. This is the
+# emergency-boot copy (no internet, corrupted Timeshift, no other backups) --
+# was found 13 days stale 2026-08-15 since nothing kept it in sync; wiring it
+# in here so it never silently drifts again. athena.kdbx and misc-kspm/ are
+# Persistent-only and deliberately untouched.
+echo -e "  ${C}→${N}  Persistent/ (Tails emergency-boot view)..."
+PERSISTENT_DIRS=(archive arc-portable arc-sop dev-notes forge khaos-lab manifests notes-site)
+persistent_failed=0
+for d in "${PERSISTENT_DIRS[@]}"; do
+  rsync -a --delete "$USB/$d/" "$USB/Persistent/$d/" 2>/dev/null || persistent_failed=1
+done
+if (( persistent_failed )); then
+  echo -e "  ${R}✗${N}  Persistent/ sync had errors"
+  FAILED+=("Persistent/")
+else
+  echo -e "  ${G}✓${N}  Persistent/ synced (Tails-boot view now matches live vault)"
+fi
+
 date "+%Y-%m-%d %H:%M" > "$STAMP"
 echo -e "  ${D}stamped: $(cat "$STAMP")${N}"
+
+if (( ${#FAILED[@]} > 0 )); then
+  "$HOME/.local/bin/arc-pine-notify" critical bakup-usb "backup FAILED" \
+    "$(IFS=', '; echo "${FAILED[*]}") — check disk space / USB health, then re-run: bakup-usb" 2>/dev/null
+fi

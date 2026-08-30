@@ -1,0 +1,6 @@
+[Unit]
+Description=arc-aide-watch — daily AIDE file-integrity check, notifies via arc-pine only on real drift
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/arc-aide-watch

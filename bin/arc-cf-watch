@@ -67,14 +67,22 @@ LAST_DAY="${LAST%%:*}"
 LAST_LEVEL="${LAST#*:}"
 [[ "$LAST_DAY" != "$TODAY_KEY" ]] && LAST_LEVEL="none"
 
+# Rewired 2026-08-26 to call arc-pine-notify instead of notify-send directly
+# -- matches every other arc-* watcher now, so this shows up in the same
+# unified notification history instead of being the one silent exception.
+# No su/env bridge needed here (unlike root-run services) -- this already
+# runs in the user's own cron, correct session already.
 notify() {
-  notify-send -u "$1" -i "$2" "arc · Cloudflare Workers" "$3" 2>/dev/null || true
+  local urgency="$1" summary="$2"
+  local pine_urgency="normal"
+  [[ "$urgency" == "critical" ]] && pine_urgency="critical"
+  /home/architect-of-chaos/.local/bin/arc-pine-notify "$pine_urgency" arc-cf-watch "arc · Cloudflare Workers" "$summary" 2>/dev/null || true
 }
 
 if (( PCT >= CRIT_PCT )) && [[ "$LAST_LEVEL" != "crit" ]]; then
-  notify critical dialog-error "${TOTAL}/${CAP} requests today (${PCT}%) — close to the free-tier cap, requests will start erroring soon"
+  notify critical "${TOTAL}/${CAP} requests today (${PCT}%) — close to the free-tier cap, requests will start erroring soon"
   echo "${TODAY_KEY}:crit" > "$STATE_FILE"
 elif (( PCT >= WARN_PCT )) && [[ "$LAST_LEVEL" == "none" ]]; then
-  notify normal dialog-warning "${TOTAL}/${CAP} requests today (${PCT}%) — approaching the free-tier daily cap"
+  notify normal "${TOTAL}/${CAP} requests today (${PCT}%) — approaching the free-tier daily cap"
   echo "${TODAY_KEY}:warn" > "$STATE_FILE"
 fi

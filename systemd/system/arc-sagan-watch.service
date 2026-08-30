@@ -1,0 +1,15 @@
+[Unit]
+Description=arc-sagan-watch — desktop notifications for real Sagan correlation alerts
+# Sagan runs inside a Docker container, not as its own systemd unit -- soft
+# ordering hint only (Docker being up doesn't guarantee the container is),
+# Restart=on-failure below covers the file-not-there-yet case regardless.
+After=docker.service
+
+[Service]
+Type=simple
+ExecStart=/home/architect-of-chaos/.local/bin/arc-sagan-watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -275,7 +275,7 @@ check_cron_health() {
   done
 }
 
-check_arc_hq_drift() {
+check_arc_sot_drift() {
   # Self-heal (2026-08-29): the canonical-SOT repo (~/khaos-lab/arc-toolkit)
   # symlinks every personal script from ~/.local/bin -- the one real risk
   # in that design is something replacing a symlink with a real file via
@@ -306,7 +306,7 @@ check_mirror_freshness
 check_watcher_daemons
 check_docker_health
 check_cron_health
-check_arc_hq_drift
+check_arc_sot_drift
 
 RUN_END=$(date +%s)
 DURATION=$(( RUN_END - RUN_START ))

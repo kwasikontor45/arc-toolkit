@@ -53,7 +53,6 @@
 700 kbd-backlight
 775 khaos-lab
 711 lt
-664 perms.txt.new
 755 rename-case
 711 sync-mirrors
 700 volume-ctl

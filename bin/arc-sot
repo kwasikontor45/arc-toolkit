@@ -109,7 +109,9 @@ cmd_snapshot() {
     grep '^#' "$BIN/perms.txt" 2>/dev/null
     for f in "$BIN"/*; do
       local n; n=$(basename "$f")
-      if [[ -f "$f" && "$n" != "perms.txt" ]]; then
+      # perms.txt.new excluded too -- the redirect below creates it before
+      # this loop's glob expands, so without this it captures itself.
+      if [[ -f "$f" && "$n" != "perms.txt" && "$n" != "perms.txt.new" ]]; then
         echo "$(stat -c '%a' "$f") $n"
       fi
     done

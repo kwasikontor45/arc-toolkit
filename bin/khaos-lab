@@ -250,6 +250,15 @@ CATEGORIES = {
         Action("Deep clean (cache/apt/journal)", "arc clean", confirm=True, timeout=120),
         Action("Update system (apt)", "arc update", confirm=True, timeout=300),
         Action("Backup now",        "arc backup", confirm=True, timeout=60),
+        # arc-sot: the canonical SOT repo for every personal script (incl.
+        # this app) -- status is a safe read-only drift check, snapshot
+        # commits+pushes+mirrors to USB (confirm-gated, real network/git
+        # action). pull/bootstrap deliberately not buttons here -- both are
+        # rarer, more consequential operations (pull needs a clean working
+        # tree or it refuses; bootstrap is for a machine that isn't this
+        # one) better run deliberately from a terminal, not a one-click.
+        Action("Personal tooling: status (arc sot)", "arc sot status"),
+        Action("Personal tooling: snapshot (arc sot)", "arc sot snapshot", confirm=True, timeout=60),
     ],
     "Personal": [
         Action("Break timer status", "arc break status"),

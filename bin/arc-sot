@@ -97,14 +97,34 @@ cmd_snapshot() {
   echo "captured"
 
   echo -n "  perms.txt... "
+  # Real bug found+fixed 2026-08-29, live: stat'd the bare basename while
+  # cwd was $REPO (not $BIN), so every stat failed silently ("No such file
+  # or directory" x52) and the whole braced block's exit status went
+  # nonzero from the last failed stat -- which meant the `&&` before `mv`
+  # never ran, so perms.txt.new was left as a near-empty stray file and
+  # (harmlessly, this time) the ORIGINAL perms.txt was never touched. Fixed
+  # by stat'ing the real path ($f) and printing the basename ($n)
+  # explicitly instead of relying on %n to do it.
   {
     grep '^#' "$BIN/perms.txt" 2>/dev/null
     for f in "$BIN"/*; do
       local n; n=$(basename "$f")
-      [[ -f "$f" && "$n" != "perms.txt" ]] && stat -c "%a %n" "$n"
+      if [[ -f "$f" && "$n" != "perms.txt" ]]; then
+        echo "$(stat -c '%a' "$f") $n"
+      fi
     done
-  } > "$BIN/perms.txt.new" && mv "$BIN/perms.txt.new" "$BIN/perms.txt"
-  echo "refreshed"
+  } > "$BIN/perms.txt.new"
+  # Safety net for the NEXT bug like the one above: never let a near-empty
+  # result silently replace a real manifest. 40 is well under the real
+  # count (52+) but well above what a broken run (just the 7-line header)
+  # would produce.
+  local new_count; new_count=$(grep -vc '^#' "$BIN/perms.txt.new" 2>/dev/null || echo 0)
+  if (( new_count < 40 )); then
+    echo "${R}✗${N} only ${new_count} entries -- looks broken, NOT replacing perms.txt (left at $BIN/perms.txt.new for inspection)"
+  else
+    mv "$BIN/perms.txt.new" "$BIN/perms.txt"
+    echo "refreshed ($new_count scripts)"
+  fi
 
   echo "  sudoers fragments..."
   for f in "$REPO"/sudoers/*; do

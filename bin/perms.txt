@@ -8,7 +8,6 @@
 # format: <octal> <filename>
 755 arc
 711 arc-aide-watch
-775 arc-aws-killswitch
 755 arc-break
 755 arc-break-panel
 755 arc-break-panel-fix
@@ -23,7 +22,6 @@
 711 arc-gate-bypass
 711 arc-heal
 750 arc-home-sweep
-775 arc-ip-sync
 711 arc-kismet
 755 arc-login-bg
 711 arc-lynis-check
@@ -40,11 +38,11 @@
 711 arc-sagan-watch
 711 arc-sop
 711 arc-sop-gate-hook
+755 arc-sot
 700 arc-sudo-session
 711 arc-suricata-watch
 775 arc-vpn
 664 _arc_watch_common.py
-775 auto-move-large-files
 711 bakup-local
 755 bakup-usb
 775 build-master-book
@@ -55,6 +53,7 @@
 700 kbd-backlight
 775 khaos-lab
 711 lt
+664 perms.txt.new
 755 rename-case
 711 sync-mirrors
 700 volume-ctl

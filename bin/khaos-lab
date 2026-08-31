@@ -171,9 +171,12 @@ class Action:
 CATEGORIES = {
     "Status": [],  # special-cased: live dashboard, not a button list
     "Network": [
-        Action("VPN status",        "arc vpn status"),
-        Action("VPN public IP",     "arc vpn ip"),
-        Action("VPN kill switch",   "arc vpn killswitch"),
+        # ProtonVPN purged 2026-08-31 (user's call, clean slate) -- the 3
+        # VPN-specific actions that used to live here (status/IP/kill
+        # switch, via the now-deleted arc-vpn wrapper) are gone with it.
+        # DNS leak check stays -- it's generic (detects any WireGuard-type
+        # interface, not ProtonVPN-specific) and already reports "no VPN
+        # active" cleanly when there isn't one.
         Action("DNS status",        "arc dns status"),
         Action("DNS leak check",    "arc dns check", timeout=15),
         Action("Restart NextDNS",   "arc dns restart", confirm=True),
@@ -591,23 +594,21 @@ def main():
             val.pack(anchor="w", padx=12, pady=(0, 10))
             status_tiles[key] = val
 
-        tile(0, 0, "vpn", "VPN")
-        tile(0, 1, "dns", "DNS")
-        tile(1, 0, "break", "Break timer")
-        tile(1, 1, "disk", "Disk")
-        tile(2, 0, "services", "Failed services")
-        tile(2, 1, "uptime", "Uptime / load")
-        tile(3, 0, "selfheal", "Self-heal (arc-heal)")
-        tile(3, 1, "idsips", "IDS/IPS")
+        # VPN tile removed 2026-08-31 (ProtonVPN purged) -- reflowed the
+        # remaining 7 rather than leave a gap in the middle of the grid.
+        tile(0, 0, "dns", "DNS")
+        tile(0, 1, "break", "Break timer")
+        tile(1, 0, "disk", "Disk")
+        tile(1, 1, "services", "Failed services")
+        tile(2, 0, "uptime", "Uptime / load")
+        tile(2, 1, "selfheal", "Self-heal (arc-heal)")
+        tile(3, 0, "idsips", "IDS/IPS")
 
         refresh_status()
 
     def refresh_status():
         def worker():
             checks = {}
-            ok, out = run("arc vpn status", timeout=8)
-            checks["vpn"] = out.replace("Status: ", "") if ok or out else "unavailable"
-
             ok, out = run("arc dns status", timeout=8)
             mode_line = next((l for l in out.splitlines() if "mode:" in l), "")
             checks["dns"] = mode_line.split("mode:")[-1].strip() if mode_line else (out[:60] or "unavailable")
@@ -669,10 +670,6 @@ def main():
                         color = FG
                         if key == "services" and "failed" in val and "0 failed" not in val:
                             color = ROSE
-                        if key == "vpn" and "Disconnected" in val:
-                            color = FG_MUTED
-                        if key == "vpn" and "Connected" in val:
-                            color = TEAL
                         if key == "selfheal":
                             flagged = re.search(r"(\d+) flagged", val)
                             healed = re.search(r"(\d+) healed", val)

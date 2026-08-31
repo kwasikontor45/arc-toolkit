@@ -4054,7 +4054,6 @@ cmd_help() {
   echo -e "  ${D}arc ${C}dns ${W}[on|off|restart|flush|check|status|profile|blocklists]${N}   ${M}NextDNS toggle${N}"
   echo -e "  ${D}arc-dns-hot${N}                 ${M}enable NextDNS boot + activate aggressive filtering${N}"
   echo -e "  ${D}arc-dns-cold${N}                ${M}disable NextDNS boot + deactivate to system DNS${N}"
-  echo -e "  ${D}arc ${C}vpn ${W}[status|ip|killswitch|refresh]${N}   ${M}ProtonVPN GUI status wrapper — connect/disconnect are GUI-only${N}"
   echo -e "  ${D}arc ${C}kismet ${W}[start|stop|status]${N}   ${M}wireless recon (wlan0 → monitor mode, drops WiFi/VPN while running) — manual-start only${N}"
   echo -e "  ${D}arc ${C}lab${N}                    ${M}khaos-lab control panel — GUI dashboard/launcher over the arc toolkit — manual-start only${N}"
   echo -e "  ${D}arc ${C}sudo ${W}[start|stop|status]${N}   ${M}keep the sudo credential cache alive in the background — start needs a real TTY${N}"
@@ -5160,7 +5159,6 @@ case "${1:-}" in
   sync)            cmd_sync ;;
   mega)            cmd_mega "${2:-}" "${3:-}" ;;
   net)             cmd_net "${@:2}" ;;
-  vpn)             arc-vpn "${@:2}" ;;
   kismet)          arc-kismet "${@:2}" ;;
   sot)             arc-sot "${@:2}" ;;
   lab)             nohup khaos-lab &>/dev/null & disown ;;

@@ -41,7 +41,6 @@
 755 arc-sot
 700 arc-sudo-session
 711 arc-suricata-watch
-775 arc-vpn
 664 _arc_watch_common.py
 711 bakup-local
 755 bakup-usb

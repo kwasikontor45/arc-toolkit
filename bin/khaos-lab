@@ -220,6 +220,26 @@ CATEGORIES = {
         Action("DNS leak check",    "arc dns check", timeout=15),
         Action("Restart NextDNS",   "arc dns restart", confirm=True),
         Action("Network stats",     "arc net stats"),
+        # bandwhich/iftop/nethogs deliberately not wired here -- all three
+        # are full-screen TUIs that also need sudo, same shape as "Sudo
+        # keepalive: start" above being left out on purpose: no real TTY
+        # for the sudo prompt from this console, and a TUI can't be
+        # captured as one-shot output anyway. Run `arc net bandwhich`,
+        # `arc net iftop`, or `arc net nethogs` from a real terminal.
+        Action("Eero: start monitor", "arc eero-watch", confirm=True),
+        # `arc eero-logs` itself pipes through glow/less then a `read`
+        # prompt to clear/keep -- also not one-shot-capturable, so this
+        # reads the log file directly instead.
+        Action("Eero: recent log (last 30 lines)",
+               "tail -n 30 /home/architect-of-chaos/dev-notes/surgery-tools/eero/eero-watch.log"),
+        Action("Eero: stop monitor",  "arc stop-eero", confirm=True),
+    ],
+    "Reference": [
+        Action("Book: status",          "arc book"),
+        Action("Book: rebuild",         "arc book rebuild", confirm=True, timeout=30),
+        Action("Site: status",          "arc site"),
+        Action("Site: build",           "arc site build", confirm=True, timeout=30),
+        Action("Site: open (browser)",  "arc site open"),
     ],
     "Security": [
         Action("SOP status",        "arc sop status"),

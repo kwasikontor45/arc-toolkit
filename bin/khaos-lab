@@ -703,11 +703,20 @@ def main():
         _embed_content(wrap, scrollable=True)
 
         for action in CATEGORIES[name]:
+            # Real usability gap found 2026-08-30 (user report): the label
+            # sits far-left, the button far-right, nothing visually ties
+            # them together -- easy to lose track of which button belongs
+            # to which row once a category has more than a handful of
+            # actions (SOC has 18). Fix: the whole row highlights together
+            # on hover, so you get a clear "this is the one" confirmation
+            # before you click, regardless of the horizontal gap.
             row = tk.Frame(wrap, bg=SURFACE)
-            row.pack(fill="x", pady=3)
-            tk.Label(
-                row, text=action.label, font=label_font, bg=SURFACE, fg=FG, anchor="w",
-            ).pack(side="left", fill="x", expand=True)
+            row.pack(fill="x", pady=1)
+            label = tk.Label(
+                row, text=action.label, font=label_font, bg=SURFACE, fg=FG,
+                anchor="w", padx=10, pady=6,
+            )
+            label.pack(side="left", fill="x", expand=True)
 
             def make_cmd(a=action):
                 def go():
@@ -719,11 +728,24 @@ def main():
                         run_async(a.cmd, timeout=a.timeout, on_done=refresh_status)
                 return go
 
-            tk.Button(
+            btn = tk.Button(
                 row, text="run", command=make_cmd(), font=small_font,
                 bg=OVERLAY, fg=TEAL, activebackground=BG, activeforeground=TEAL,
                 relief="flat", bd=0, padx=14, pady=4, cursor="hand2",
-            ).pack(side="right")
+            )
+            btn.pack(side="right", padx=10, pady=6)
+
+            def _hover_on(_e, row=row, label=label):
+                row.configure(bg=OVERLAY)
+                label.configure(bg=OVERLAY)
+
+            def _hover_off(_e, row=row, label=label):
+                row.configure(bg=SURFACE)
+                label.configure(bg=SURFACE)
+
+            for w in (row, label, btn):
+                w.bind("<Enter>", _hover_on)
+                w.bind("<Leave>", _hover_off)
 
         # Rows are all packed by now -- safe to measure the frame's real
         # required height and size the scrollbar to match. Doing this

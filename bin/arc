@@ -3103,6 +3103,7 @@ _sec_overview() {
   echo -e "  ${D}arc sec suricata  — network IDS status + recent alerts${N}"
   echo -e "  ${D}arc sagan/evebox  — SOC lab: correlated alerts (fail2ban+ufw feed in too now)${N}"
   echo -e "  ${D}arc soc-lab       — Splunk lab (local Docker, khaos-lab/soc-lab -- SQL Server + Nessus both purged, see 2026-08-31/08-25)${N}"
+  echo -e "  ${D}arc gvm           — GVM/OpenVAS vuln scanner (native services, manual-start, needs 4GB+ free RAM)${N}"
   echo -e "  ${D}arc zap           — OWASP ZAP web app scanner (manual-start, lab-only targets by default)${N}"
   echo -e "  ${D}arc darkstat      — live traffic dashboard (manual-start, loopback only)${N}"
   echo -e "$HR"
@@ -3972,6 +3973,8 @@ cmd_help() {
   echo -e "  ${D}arc ${C}evebox open${N}           ${M}open the web UI (http://127.0.0.1:5636)${N}"
   echo -e "  ${D}arc ${C}soc-lab${N}               ${M}status of the Splunk + SQL Server + Nessus lab containers${N}"
   echo -e "  ${D}arc ${C}soc-lab start/stop/restart/logs${N}  ${M}manage all three containers (docker compose under the hood)${N}"
+  echo -e "  ${D}arc ${C}gvm${N}                   ${M}status of GVM/OpenVAS (native services, not docker)${N}"
+  echo -e "  ${D}arc ${C}gvm start/stop/restart/logs/open${N}  ${M}manage it — needs 4GB+ free RAM, manual-start only${N}"
   echo -e "  ${D}arc ${C}zap${N}                   ${M}OWASP ZAP web app scanner (manual-start, lab-only targets by default)${N}"
   echo -e "  ${D}arc ${C}darkstat${N}              ${M}live traffic dashboard (manual-start, loopback only)${N}"
   echo -e "  ${D}arc ${C}desktop${N}               ${M}all outside access to THIS machine — tunnel (ssh+VNC) + desktop sharing, bundled${N}"
@@ -4886,6 +4889,97 @@ cmd_evebox() {
   esac
 }
 
+cmd_gvm() {
+  local sub="${1:-}"
+  # Native systemd services, not docker -- gvmd (manager+DB), gsad (web UI),
+  # ospd-openvas (the actual scanner engine) + its redis backend. Greenbone
+  # ships gvm-start/gvm-stop as the real orchestration (handles service
+  # ordering, VT sync wait, etc.) -- wrapped here rather than reimplemented,
+  # same reasoning as soc-lab wrapping `docker compose` instead of per-
+  # container commands. Manual-start only, same as zap/darkstat/kismet --
+  # GVM alone wants 4GB+ RAM, never appropriate to auto-start at boot/login.
+  local units=(gvmd gsad ospd-openvas notus-scanner)
+  # gvm-start/gvm-stop's own exit codes are unreliable (confirmed live
+  # 2026-08-31: gvm-stop reported failure while every unit had actually
+  # stopped cleanly, likely because gsad's redirect-daemon sub-process logs
+  # a CRITICAL that trips the wrapper's own exit status even when the
+  # actual stop succeeded). Verify real state via systemctl after calling
+  # it instead of trusting the wrapper's exit code -- same "don't trust the
+  # tool summary, check directly" discipline used throughout this session.
+  _gvm_all_active() { for u in "${units[@]}"; do systemctl is-active --quiet "$u" || return 1; done; return 0; }
+  _gvm_all_inactive() { for u in "${units[@]}"; do systemctl is-active --quiet "$u" && return 1; done; return 0; }
+  case "$sub" in
+    start)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc gvm start${N}  —  start GVM/OpenVAS"
+      echo -e "$HR\n"
+      sudo gvm-start >/dev/null 2>&1
+      if _gvm_all_active; then
+        echo -e "\n  ${G}✓${N}  running — ${C}https://127.0.0.1:9392${N}  ${D}(self-signed cert, expected)${N}"
+      else
+        echo -e "\n  ${R}✗${N}  not all services came up — arc gvm status  ·  sudo gvm-check-setup"
+      fi
+      echo -e "\n$HR"
+      ;;
+    stop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc gvm stop${N}"
+      echo -e "$HR\n"
+      sudo gvm-stop >/dev/null 2>&1
+      if _gvm_all_inactive; then
+        echo -e "\n  ${G}✓${N}  stopped"
+      else
+        echo -e "\n  ${R}✗${N}  failed to stop — arc gvm status"
+      fi
+      echo -e "\n$HR"
+      ;;
+    restart)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc gvm restart${N}"
+      echo -e "$HR\n"
+      sudo gvm-stop >/dev/null 2>&1
+      sudo gvm-start >/dev/null 2>&1
+      if _gvm_all_active; then
+        echo -e "\n  ${G}✓${N}  restarted"
+      else
+        echo -e "\n  ${R}✗${N}  restart failed — arc gvm status"
+      fi
+      echo -e "\n$HR"
+      ;;
+    status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc gvm status${N}"
+      echo -e "$HR\n"
+      local all_up=1
+      for u in "${units[@]}"; do
+        if systemctl is-active --quiet "$u"; then
+          echo -e "  ${G}·${N}  ${u}"
+        else
+          echo -e "  ${R}·${N}  ${u}  ${D}(not running)${N}"
+          all_up=0
+        fi
+      done
+      [[ "$all_up" -eq 1 ]] && echo -e "\n  ${C}url${N}  https://127.0.0.1:9392" \
+        || echo -e "\n  ${D}(arc gvm start)${N}"
+      echo -e "\n$HR"
+      ;;
+    logs)
+      journalctl -u gvmd -u gsad -u ospd-openvas -u notus-scanner -f
+      ;;
+    open)
+      xdg-open "https://127.0.0.1:9392" >/dev/null 2>&1 &
+      echo -e "  ${G}✓${N}  opening ${C}https://127.0.0.1:9392${N}  ${D}(self-signed cert, expected — login is manual, arc never handles the password)${N}"
+      ;;
+    '')
+      cmd_gvm status
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc gvm $sub"
+      echo -e "${D}options: (bare) status · start · stop · restart · logs · open${N}"
+      ;;
+  esac
+}
+
 cmd_desktop() {
   local sub="${1:-}"
   # GUI + SSH access to THIS machine from outside, over a Cloudflare Tunnel —
@@ -5154,6 +5248,7 @@ case "${1:-}" in
   sagan)          cmd_sagan "${@:2}" ;;
   evebox)         cmd_evebox "${@:2}" ;;
   soc-lab)        cmd_soclab "${@:2}" ;;
+  gvm)            cmd_gvm "${@:2}" ;;
   zap)            cmd_zap "${@:2}" ;;
   darkstat)       cmd_darkstat "${@:2}" ;;
   desktop)        cmd_desktop "${@:2}" ;;

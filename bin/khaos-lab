@@ -296,18 +296,11 @@ CATEGORIES = {
         Action("Darkstat: start",   "arc darkstat start", confirm=True, timeout=15),
         Action("Darkstat: stop",    "arc darkstat stop", confirm=True, timeout=15),
         Action("Open darkstat dashboard (browser)", "arc darkstat open"),
-        # GVM/OpenVAS: native services (not docker), wants 4GB+ free RAM --
-        # confirmed live 2026-08-31 it pulls a combined ~1GB+ within minutes
-        # of starting (gvmd + ospd-openvas + notus-scanner). Manual-start
-        # only, same reasoning as kismet/darkstat -- never appropriate to
-        # bring up automatically. start/stop confirm-gated given the real
-        # RAM cost; NOPASSWD sudoers scoped to just gvm-start/gvm-stop
-        # (arc-gvm, same pattern as arc-darkstat) so the button doesn't hang
-        # on a password prompt with no TTY to answer it.
-        Action("GVM/OpenVAS: status", "arc gvm status"),
-        Action("GVM/OpenVAS: start (needs 4GB+ free RAM)", "arc gvm start", confirm=True, timeout=60),
-        Action("GVM/OpenVAS: stop", "arc gvm stop", confirm=True, timeout=30),
-        Action("Open GVM dashboard (browser)", "arc gvm open"),
+        # GVM/OpenVAS: local native install fully purged 2026-08-31 (was the
+        # single biggest local RAM/CPU cost on this 7.7GB box) -- moving to
+        # on-demand AWS. `arc gvm` is a placeholder pointing at
+        # ~/khaos-lab/aws-infra/ until the cloud-* subcommands land; nothing
+        # to wire here yet, deliberately not adding a button for a stub.
         # ZAP's real day-to-day "interface" is its desktop GUI app, not a
         # browser tab -- daemon mode (arc zap start) is an API-only scan
         # backend for `arc zap spider/active <target>`, out of scope for a

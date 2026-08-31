@@ -1,6 +1,0 @@
-# arc-gvm — added 2026-08-31, same gap as arc-darkstat: cmd_gvm's start/stop
-# call `sudo gvm-start`/`sudo gvm-stop` with no cached credential path --
-# would hang waiting for a password with no TTY the moment this gets wired
-# into a khaos-lab GUI button. NOPASSWD scoped to the exact two commands
-# cmd_gvm actually runs, matching the arc-darkstat precedent -- no wildcard.
-architect-of-chaos ALL=(root) NOPASSWD: /usr/bin/gvm-start, /usr/bin/gvm-stop

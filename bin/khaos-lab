@@ -267,6 +267,11 @@ CATEGORIES = {
         Action("Firewall status (ufw)", "arc sec firewall"),
         Action("Installed apps audit (apt/snap/flatpak)", "arc sec apps", timeout=20),
         Action("Recent security logs (auth/sudo/ufw)", "arc sec logs"),
+        # AWS account-level audit trail (management-events-cloudtrail,
+        # set up 2026-08-31, log file validation on) -- needs the AWS CLI
+        # + claude-ops credentials already used by the AWS Lab tile, no
+        # separate sudo/local access required.
+        Action("CloudTrail: recent AWS events", "arc sec cloudtrail", timeout=15),
     ],
     # SOC -- every local Docker + monitor interface with a real UI, lab or
     # not (2026-08-29 -- widened from IDS/IPS-only per explicit request:
@@ -668,6 +673,12 @@ def main():
 
     # ── Status dashboard (live tiles) ──────────────────────────────────────
     status_tiles = {}
+    # AWS lab status is polled on its own slower 90s timer, not the 15s
+    # status loop -- added 2026-08-31. Two AWS API calls (describe-instances
+    # + describe-budget) on every 15s refresh would add real, felt latency
+    # to the whole dashboard and needlessly hammers AWS for state that
+    # rarely changes second-to-second. The 15s loop just reads this cache.
+    aws_lab_cache = {"text": "checking…", "ok": True}
 
     def build_status_view():
         _clear_content()
@@ -696,8 +707,10 @@ def main():
         tile(2, 1, "selfheal", "Self-heal (arc-heal)")
         tile(3, 0, "idsips", "IDS/IPS")
         tile(3, 1, "calendar", "Upcoming (Orage)")
+        tile(4, 0, "awslab", "AWS Lab (gvm/soc-lab-cloud)")
 
         refresh_status()
+        aws_lab_poll()
 
     def refresh_status():
         def worker():
@@ -789,6 +802,71 @@ def main():
             root.after(0, apply)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def aws_lab_poll():
+        def apply_cache():
+            if "awslab" not in status_tiles:
+                return
+            color = FG
+            if not aws_lab_cache["ok"]:
+                color = ROSE
+            elif aws_lab_cache.get("any_running"):
+                color = TEAL  # visible reminder something is live/billing
+            status_tiles["awslab"].configure(text=aws_lab_cache["text"], fg=color)
+
+        def worker():
+            conf_path = Path.home() / ".config/arc/aws-lab.conf"
+            if not conf_path.exists():
+                aws_lab_cache.update(text="not configured", ok=True, any_running=False)
+                root.after(0, apply_cache)
+                return
+            conf = {}
+            for line in conf_path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                conf[k] = v
+            region = conf.get("AWS_LAB_REGION", "us-east-1")
+            gvm_id = conf.get("GVM_INSTANCE_ID", "")
+            soclab_id = conf.get("SOCLAB_INSTANCE_ID", "")
+            ok, out = run(
+                f"aws ec2 describe-instances --instance-ids {gvm_id} {soclab_id} "
+                f"--region {region} --query 'Reservations[*].Instances[*].{{N:Tags[?Key==`Name`]|[0].Value,S:State.Name}}' "
+                f"--output text",
+                timeout=15,
+            )
+            if not ok:
+                aws_lab_cache.update(text="unreachable (check aws configure / network)", ok=False, any_running=False)
+                root.after(0, apply_cache)
+                return
+            states = {}
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) == 2:
+                    states[parts[0]] = parts[1]
+            gvm_s = states.get("gvm-cloud", "?")
+            soclab_s = states.get("soclab-cloud", "?")
+            ok2, out2 = run(
+                "aws budgets describe-budget --account-id 433985779144 "
+                "--budget-name aws-credits-100 --region us-east-1 "
+                "--query 'Budget.CalculatedSpend.ActualSpend.Amount' --output text",
+                timeout=15,
+            )
+            spend = f"${out2.strip()}/100" if ok2 else "spend n/a"
+            # "ok" here just means the check itself succeeded, not that
+            # nothing is running -- a running instance is normal/expected
+            # mid-session, not a fault. any_running just drives a visible
+            # color cue so it's never silently forgotten in the background.
+            aws_lab_cache.update(
+                text=f"gvm {gvm_s}  ·  soc-lab {soclab_s}  ·  {spend}",
+                ok=True,
+                any_running=(gvm_s == "running" or soclab_s == "running"),
+            )
+            root.after(0, apply_cache)
+
+        threading.Thread(target=worker, daemon=True).start()
+        root.after(90000, aws_lab_poll)
 
     # ── Category action view ───────────────────────────────────────────────
     def build_category_view(name):

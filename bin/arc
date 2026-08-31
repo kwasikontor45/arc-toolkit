@@ -2840,6 +2840,34 @@ print(f\"  {d.get('timestamp','?')[:19]}  {a.get('signature','?')}  ({d.get('src
   esac
 }
 
+_sec_cloudtrail() {
+  _sec_hdr "cloudtrail  —  recent AWS management-plane events (management-events-cloudtrail)"
+
+  if ! command -v aws >/dev/null 2>&1; then
+    echo -e "  ${R}✗${N}  aws CLI not found"
+    echo -e "\n$HR"; return 1
+  fi
+
+  local out
+  out=$(aws cloudtrail lookup-events --max-results 15 --region us-east-1 \
+    --query 'Events[*].{Time:EventTime,User:Username,Event:EventName}' \
+    --output text 2>&1)
+  if [[ $? -ne 0 ]]; then
+    echo -e "  ${R}✗${N}  lookup failed"
+    echo "$out" | head -3
+    echo -e "\n$HR"; return 1
+  fi
+  if [[ -z "$out" ]]; then
+    echo -e "  ${D}no events in the lookup window${N}"
+  else
+    echo -e "  ${C}last 15 management events${N}"
+    echo "$out" | while IFS=$'\t' read -r ev time user; do
+      echo -e "  ${D}${time}${N}  ${Y}${user:-?}${N}  ${ev}"
+    done
+  fi
+  echo -e "\n$HR"
+}
+
 _sec_f2b() {
   local sub="${1:-}"
   shift 2>/dev/null
@@ -3101,6 +3129,7 @@ _sec_overview() {
   echo -e "  ${D}arc sec rkhunter  — rootkit hunter scan${N}"
   echo -e "  ${D}arc sec clamav    — antivirus scan of \$HOME (background)${N}"
   echo -e "  ${D}arc sec suricata  — network IDS status + recent alerts${N}"
+  echo -e "  ${D}arc sec cloudtrail — recent AWS management events (management-events-cloudtrail)${N}"
   echo -e "  ${D}arc sagan/evebox  — SOC lab: correlated alerts (fail2ban+ufw feed in too now)${N}"
   echo -e "  ${D}arc soc-lab       — Splunk lab (local Docker, khaos-lab/soc-lab -- SQL Server + Nessus both purged, see 2026-08-31/08-25)${N}"
   echo -e "  ${D}arc gvm           — GVM/OpenVAS vuln scanner (local removed 2026-08-31, moving to on-demand AWS)${N}"
@@ -3125,10 +3154,11 @@ cmd_sec() {
     rkhunter) _sec_rkhunter ;;
     clamav)   _sec_clamav "${2:-}" ;;
     suricata) _sec_suricata ;;
+    cloudtrail) _sec_cloudtrail ;;
     '')       _sec_overview ;;
     *)
       echo -e "${R}unknown:${N} arc sec $1"
-      echo -e "${D}options: audit · users · net · firewall · apps · logs · f2b · lynis · docker-bench · aide · chkrootkit · rkhunter · clamav · suricata${N}"
+      echo -e "${D}options: audit · users · net · firewall · apps · logs · f2b · lynis · docker-bench · aide · chkrootkit · rkhunter · clamav · suricata · cloudtrail${N}"
       return 1
       ;;
   esac
@@ -4869,7 +4899,7 @@ cmd_soclab() {
       local stamp; stamp=$(date +%Y%m%dT%H%M%SZ)
       echo -e "  ${D}archiving splunk-data volume...${N}"
       _aws_lab_ssh "$SOCLAB_INSTANCE_ID" "sudo docker run --rm -v admin_splunk-data:/data -v /tmp:/backup alpine tar czf /backup/splunk-data.tar.gz -C /data ." >/dev/null 2>&1
-      if scp -i "$AWS_LAB_SSH_KEY" -o StrictHostKeyChecking=accept-new \
+      if scp -i "$AWS_LAB_SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
           "${AWS_LAB_SSH_USER}@$(_aws_lab_ip "$SOCLAB_INSTANCE_ID"):/tmp/splunk-data.tar.gz" \
           "$backup_dir/splunk-data-${stamp}.tar.gz" 2>/dev/null; then
         echo -e "  ${G}✓${N}  backed up → $backup_dir/splunk-data-${stamp}.tar.gz"
@@ -4993,7 +5023,18 @@ _aws_lab_ssh() {
   ip=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
     --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>/dev/null)
   [[ -z "$ip" || "$ip" == "None" ]] && { echo -e "  ${R}✗${N}  instance has no public IP — is it running?"; return 1; }
-  ssh -i "$AWS_LAB_SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
+  # BatchMode=yes -- real bug found live 2026-08-31 during a resilience
+  # sweep: this desktop session has DISPLAY set (X11), and OpenSSH falls
+  # back to trying a graphical askpass helper for host-key prompts when no
+  # TTY is attached but DISPLAY is present -- /usr/bin/ssh-askpass doesn't
+  # exist on this system, so that path hard-fails instead of just accepting
+  # the new host key like accept-new is supposed to guarantee with zero
+  # interaction. BatchMode=yes forces SSH to never attempt any interactive
+  # fallback (askpass included) and fail cleanly instead -- since every
+  # instance gets a fresh IP on every start (no Elastic IP), every single
+  # cloud-start/cloud-stop is a "first contact" connection, so this can't
+  # be left to chance timing.
+  ssh -i "$AWS_LAB_SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=15 \
     "${AWS_LAB_SSH_USER}@${ip}" "$@"
 }
 

@@ -4003,6 +4003,7 @@ cmd_help() {
   echo -e "  ${D}arc ${C}evebox open${N}           ${M}open the web UI (http://127.0.0.1:5636)${N}"
   echo -e "  ${D}arc ${C}soc-lab${N}               ${M}status of the Splunk + SQL Server + Nessus lab containers${N}"
   echo -e "  ${D}arc ${C}soc-lab start/stop/restart/logs${N}  ${M}manage all three containers (docker compose under the hood)${N}"
+  echo -e "  ${D}arc ${C}aws-status${N}             ${M}quick combined snapshot -- both cloud instances + budget spend${N}"
   echo -e "  ${D}arc ${C}gvm${N}                   ${M}GVM/OpenVAS -- local removed 2026-08-31, moving to on-demand AWS${N}"
   echo -e "  ${D}arc ${C}zap${N}                   ${M}OWASP ZAP web app scanner (manual-start, lab-only targets by default)${N}"
   echo -e "  ${D}arc ${C}darkstat${N}              ${M}live traffic dashboard (manual-start, loopback only)${N}"
@@ -5051,6 +5052,36 @@ _aws_lab_check_local_docker() {
   docker inspect --format '{{.State.Status}}' "$1" 2>/dev/null | grep -q "^running$"
 }
 
+cmd_aws_status() {
+  # Quick combined snapshot -- both cloud instances + budget spend, one
+  # command. Queries AWS directly rather than round-tripping through the
+  # khaos-lab-credit-demo Lambda -- lower latency, no dependency on that
+  # function staying deployed (it exists for its own reasons, this doesn't
+  # need it). Same helpers cmd_gvm/cmd_soclab's cloud-* already use.
+  _aws_lab_conf || { echo -e "$HR"; return 1; }
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc aws-status${N}"
+  echo -e "$HR\n"
+  for pair in "gvm-cloud:$GVM_INSTANCE_ID" "soclab-cloud:$SOCLAB_INSTANCE_ID"; do
+    local label="${pair%%:*}"; local iid="${pair#*:}"
+    local state; state=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
+      --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
+    local keep; keep=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$iid" "Name=key,Values=KeepRunning" \
+      --region "$AWS_LAB_REGION" --query 'Tags[0].Value' --output text 2>/dev/null)
+    if [[ "$state" == "running" ]]; then
+      local suffix=""
+      [[ "$keep" == "true" ]] && suffix="  ${Y}(KeepRunning -- won't auto-stop)${N}"
+      echo -e "  ${G}·${N}  ${label}  running${suffix}"
+    else
+      echo -e "  ${D}·${N}  ${label}  ${state:-unknown}"
+    fi
+  done
+  local spend; spend=$(aws budgets describe-budget --account-id 433985779144 --budget-name aws-credits-100 \
+    --region us-east-1 --query 'Budget.CalculatedSpend.ActualSpend.Amount' --output text 2>/dev/null)
+  echo -e "\n  ${C}budget${N}  \$${spend:-?}/100"
+  echo -e "\n$HR"
+}
+
 cmd_gvm() {
   local sub="${1:-}"
   _aws_lab_conf || { echo -e "$HR"; return 1; }
@@ -5391,6 +5422,7 @@ case "${1:-}" in
   sagan)          cmd_sagan "${@:2}" ;;
   evebox)         cmd_evebox "${@:2}" ;;
   soc-lab)        cmd_soclab "${@:2}" ;;
+  aws-status)     cmd_aws_status ;;
   gvm)            cmd_gvm "${@:2}" ;;
   zap)            cmd_zap "${@:2}" ;;
   darkstat)       cmd_darkstat "${@:2}" ;;

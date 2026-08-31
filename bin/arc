@@ -2223,6 +2223,13 @@ _sec_docker_bench() {
     return 1
   fi
 
+  # -l appends rather than overwrites -- confirmed live 2026-08-31 (a scan
+  # from 10 days earlier was still in the file, forcing a manual
+  # `grep -n "^Initializing"` just to isolate the latest run). Rotate the
+  # previous run out of the way first so each invocation's log is exactly
+  # one scan, no boundary-hunting required to read it.
+  [[ -f /var/log/docker-bench-security.log ]] && sudo mv /var/log/docker-bench-security.log /var/log/docker-bench-security.log.previous
+
   # Needs cwd == repo root: the script sources ./functions/*.sh via a
   # relative LIBEXEC path, not an absolute one -- fails silently-ish
   # (missing-function errors) if called from anywhere else. Prints its own
@@ -2232,6 +2239,7 @@ _sec_docker_bench() {
 
   echo -e "\n$HR"
   echo -e "  ${D}full log:${N}  /var/log/docker-bench-security.log"
+  echo -e "  ${D}previous run:${N}  /var/log/docker-bench-security.log.previous"
   echo -e "$HR"
 }
 

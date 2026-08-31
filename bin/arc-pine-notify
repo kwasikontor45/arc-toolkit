@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 arc-pine-notify — the single entry point arc-pine's own trusted watcher
-family (Suricata/Sagan/fail2ban/rkhunter/VPN/DNS/eero/lynis/chkrootkit/
-ClamAV) calls instead of notify-send. Built 2026-08-22.
+family (Suricata/Sagan/fail2ban/rkhunter/DNS/eero/lynis/chkrootkit/
+ClamAV/Orage) calls instead of notify-send. Built 2026-08-22. (VPN removed
+from this list 2026-08-31 -- arc-vpn purged along with ProtonVPN; Orage
+added the same day, wired for calendar alarms.)
 
 Does everything arc-pined's old passive D-Bus-observed path did (log to
 the shared history.db, play the notification sound, speak via Piper TTS

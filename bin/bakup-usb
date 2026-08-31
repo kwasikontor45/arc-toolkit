@@ -92,8 +92,13 @@ rsync -a --delete "$HOME/dev-notes/" "$USB/dev-notes/" \
   || { echo -e "  ${R}✗${N}  dev-notes sync failed"; FAILED+=("dev-notes"); }
 
 echo -e "  ${C}→${N}  khaos-lab → vault/khaos-lab...  ${D}(VM disks/vbox-vms excluded — waste of space)${N}"
+# arc-toolkit excluded 2026-08-31 -- it's a real git repo (2 GitHub remotes
+# + its own dedicated `arc sot snapshot` mirror at vault/arc-toolkit-mirror,
+# real history preserved) living inside khaos-lab/, so this general sweep
+# was triplicating it as a plain, non-git file copy with no unique value.
 rsync -a --delete --delete-excluded \
   --exclude='vbox-vms/' \
+  --exclude='arc-toolkit/' \
   --exclude='*.vdi' --exclude='*.vmdk' --exclude='*.vhd' --exclude='*.vhdx' \
   --exclude='*.qcow2' --exclude='*.ova' --exclude='*.ovf' --exclude='*.img' \
   "$HOME/khaos-lab/" "$USB/khaos-lab/" \

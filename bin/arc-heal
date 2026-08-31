@@ -215,6 +215,96 @@ check_docker_health() {
   fi
 }
 
+# ── AWS on-demand lab: idle backstop, stale-sync check, dual-active check ──
+# Added 2026-08-31 with the aws-infra build (gvm-cloud/soclab-cloud on-demand
+# EC2 instances). Deliberately a *backstop* under the CloudWatch idle-stop
+# alarm and Budget Action killswitch, not the primary defense -- if AWS CLI
+# isn't configured at all (this check running on some other machine, or
+# before aws-infra exists), fails soft and says nothing, matching the rest
+# of this file's "never break, only check/fix/flag" philosophy.
+_aws_lab_conf_quiet() {
+  local conf="$HOME/.config/arc/aws-lab.conf"
+  [[ -f "$conf" ]] || return 1
+  source "$conf"
+}
+
+check_aws_lab_idle() {
+  _aws_lab_conf_quiet || return 0
+  command -v aws >/dev/null 2>&1 || return 0
+  local any_flagged=0
+  for pair in "gvm:$GVM_INSTANCE_ID:gvm" "soclab:$SOCLAB_INSTANCE_ID:soc-lab"; do
+    local label="${pair%%:*}"; local rest="${pair#*:}"; local iid="${rest%%:*}"; local arc_sub="${rest#*:}"
+    local info; info=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
+      --query 'Reservations[0].Instances[0].{State:State.Name,Launch:LaunchTime}' --output json 2>/dev/null)
+    [[ -z "$info" ]] && continue
+    local state launch
+    state=$(echo "$info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('State',''))" 2>/dev/null)
+    [[ "$state" != "running" ]] && continue
+    launch=$(echo "$info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Launch',''))" 2>/dev/null)
+    local launch_epoch now_epoch hours_up
+    launch_epoch=$(date -d "$launch" +%s 2>/dev/null) || continue
+    now_epoch=$(date +%s)
+    hours_up=$(( (now_epoch - launch_epoch) / 3600 ))
+    # 6h backstop -- generous on purpose (the real defenses are the
+    # CloudWatch idle-stop alarm and the 85% Budget Action), this only
+    # exists to catch both of those having somehow failed.
+    if (( hours_up >= 6 )); then
+      if "$HOME/.local/bin/arc" "$arc_sub" cloud-stop >/dev/null 2>&1; then
+        note "HEALED::aws-lab-idle::${label}-cloud was running ${hours_up}h with no idle-alarm/budget-action catching it — stopped + synced via arc ${arc_sub} cloud-stop"
+        any_flagged=1
+      else
+        note "FLAG::aws-lab-idle::${label}-cloud running ${hours_up}h, auto-stop attempt failed — check manually: arc ${arc_sub} cloud-status"
+        any_flagged=1
+      fi
+    fi
+  done
+  [[ "$any_flagged" -eq 0 ]] && note "OK::aws-lab-idle::no cloud instance stuck running past the backstop window"
+}
+
+check_aws_lab_sync() {
+  _aws_lab_conf_quiet || return 0
+  command -v aws >/dev/null 2>&1 || return 0
+  # Uses launch-time as the "has this instance ever actually been used"
+  # signal: an instance with a LaunchTime exists the moment it's first
+  # created (running or not), so a stopped instance whose launch was more
+  # than a day ago has, by construction, been through at least one real
+  # start/stop cycle -- if the backup directory is still empty at that
+  # point, its cloud-stop sync step silently failed at some point and
+  # nobody caught the scrolled-by warning at the time.
+  local gvm_state gvm_launch
+  gvm_state=$(aws ec2 describe-instances --instance-ids "$GVM_INSTANCE_ID" --region "$AWS_LAB_REGION" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
+  gvm_launch=$(aws ec2 describe-instances --instance-ids "$GVM_INSTANCE_ID" --region "$AWS_LAB_REGION" \
+    --query 'Reservations[0].Instances[0].LaunchTime' --output text 2>/dev/null)
+  if [[ "$gvm_state" == "stopped" && -n "$gvm_launch" ]]; then
+    local launch_epoch now_epoch
+    launch_epoch=$(date -d "$gvm_launch" +%s 2>/dev/null)
+    now_epoch=$(date +%s)
+    if [[ -n "$launch_epoch" ]] && (( now_epoch - launch_epoch > 86400 )); then
+      if [[ -z "$(find "$HOME/khaos-lab/gvm-lab/backups" -name '*.sql' 2>/dev/null)" ]]; then
+        note "FLAG::aws-lab-sync::gvm-cloud has existed >24h with zero backups in ~/khaos-lab/gvm-lab/backups — a cloud-stop sync step likely failed silently at some point"
+        return
+      fi
+    fi
+  fi
+  note "OK::aws-lab-sync::gvm backup directory has data, or instance too new to expect any yet"
+}
+
+check_aws_lab_conflict() {
+  _aws_lab_conf_quiet || return 0
+  command -v aws >/dev/null 2>&1 || return 0
+  local soclab_cloud_state
+  soclab_cloud_state=$(aws ec2 describe-instances --instance-ids "$SOCLAB_INSTANCE_ID" --region "$AWS_LAB_REGION" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
+  local soclab_local_state
+  soclab_local_state=$(docker inspect --format '{{.State.Status}}' soc-lab-splunk 2>/dev/null)
+  if [[ "$soclab_cloud_state" == "running" && "$soclab_local_state" == "running" ]]; then
+    note "FLAG::aws-lab-conflict::soc-lab running BOTH locally AND in the cloud right now — likely started outside arc's lock (e.g. AWS console directly). Not auto-stopping either side without a human call: arc soc-lab stop  ·  arc soc-lab cloud-stop"
+  else
+    note "OK::aws-lab-conflict::local/cloud soc-lab never both active at once"
+  fi
+}
+
 check_audio_profile() {
   local card active
   card=$(pactl list cards short 2>/dev/null | awk '{print $2}' | head -1)
@@ -307,6 +397,9 @@ check_watcher_daemons
 check_docker_health
 check_cron_health
 check_arc_sot_drift
+check_aws_lab_idle
+check_aws_lab_sync
+check_aws_lab_conflict
 
 RUN_END=$(date +%s)
 DURATION=$(( RUN_END - RUN_START ))

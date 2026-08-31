@@ -4771,6 +4771,16 @@ cmd_soclab() {
       echo -e "$HR"
       echo -e "  ${C}${B}arc soc-lab start${N}  —  bring up Splunk"
       echo -e "$HR\n"
+      if _aws_lab_conf 2>/dev/null; then
+        local cloud_state
+        cloud_state=$(aws ec2 describe-instances --instance-ids "$SOCLAB_INSTANCE_ID" --region "$AWS_LAB_REGION" \
+          --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
+        if [[ "$cloud_state" == "running" ]]; then
+          echo -e "  ${R}✗${N}  soclab-cloud is currently running — stop it first: ${C}arc soc-lab cloud-stop${N}"
+          echo -e "  ${D}(or accept running both knowingly — no --force yet, ask if you actually need this)${N}"
+          echo -e "\n$HR"; return 1
+        fi
+      fi
       (cd "$dir" && docker compose up -d) \
         && echo -e "  ${G}✓${N}  started" \
         || echo -e "  ${R}✗${N}  failed — check: cd $dir && docker compose up -d"
@@ -4814,12 +4824,91 @@ cmd_soclab() {
       xdg-open "http://127.0.0.1:8000" >/dev/null 2>&1 &
       echo -e "  ${G}✓${N}  opening ${C}http://127.0.0.1:8000${N}  ${D}(Splunk)${N}"
       ;;
+    cloud-start)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc soc-lab cloud-start${N}  —  bring up soclab-cloud (on-demand)"
+      echo -e "$HR\n"
+      _aws_lab_conf || { echo -e "\n$HR"; return 1; }
+      if docker inspect --format '{{.State.Status}}' soc-lab-splunk 2>/dev/null | grep -q "^running$"; then
+        echo -e "  ${R}✗${N}  local soc-lab is currently running — stop it first: ${C}arc soc-lab stop${N}"
+        echo -e "\n$HR"; return 1
+      fi
+      aws ec2 start-instances --instance-ids "$SOCLAB_INSTANCE_ID" --region "$AWS_LAB_REGION" >/dev/null 2>&1
+      echo -e "  ${D}waiting for instance + SSH...${N}"
+      aws ec2 wait instance-status-ok --instance-ids "$SOCLAB_INSTANCE_ID" --region "$AWS_LAB_REGION" 2>/dev/null
+      local ip; ip=$(_aws_lab_ip "$SOCLAB_INSTANCE_ID")
+      _aws_lab_ssh "$SOCLAB_INSTANCE_ID" "sudo docker compose -f ~/docker-compose.yml up -d" >/dev/null 2>&1
+      # Splunk genuinely takes a couple minutes to finish its own internal
+      # init after the container reports "up" -- confirmed live 2026-08-31,
+      # checking once immediately after `up -d` false-negatived on a
+      # perfectly healthy start. Poll instead of a single check.
+      echo -e "  ${D}waiting for Splunk's own web UI (can take a couple minutes)...${N}"
+      local tries=0 ok=0
+      while (( tries < 20 )); do
+        if _aws_lab_ssh "$SOCLAB_INSTANCE_ID" "curl -sL -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/" 2>/dev/null | grep -q "200"; then
+          ok=1; break
+        fi
+        sleep 15; tries=$((tries+1))
+      done
+      if (( ok == 1 )); then
+        echo -e "  ${G}✓${N}  up — ${C}${ip}${N}"
+        echo -e "  ${D}tunnel:${N}  ssh -i ~/.ssh/aws-lab-key -L 18000:127.0.0.1:8000 ${AWS_LAB_SSH_USER}@${ip}"
+        echo -e "  ${D}then:${N}    http://127.0.0.1:18000"
+      else
+        echo -e "  ${R}✗${N}  Splunk didn't come up within 5min — arc soc-lab cloud-status"
+      fi
+      echo -e "\n$HR"
+      ;;
+    cloud-stop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc soc-lab cloud-stop${N}  —  sync data down, then stop soclab-cloud"
+      echo -e "$HR\n"
+      _aws_lab_conf || { echo -e "\n$HR"; return 1; }
+      local backup_dir="$HOME/khaos-lab/soc-lab/cloud-backups"
+      mkdir -p "$backup_dir"
+      local stamp; stamp=$(date +%Y%m%dT%H%M%SZ)
+      echo -e "  ${D}archiving splunk-data volume...${N}"
+      _aws_lab_ssh "$SOCLAB_INSTANCE_ID" "sudo docker run --rm -v admin_splunk-data:/data -v /tmp:/backup alpine tar czf /backup/splunk-data.tar.gz -C /data ." >/dev/null 2>&1
+      if scp -i "$AWS_LAB_SSH_KEY" -o StrictHostKeyChecking=accept-new \
+          "${AWS_LAB_SSH_USER}@$(_aws_lab_ip "$SOCLAB_INSTANCE_ID"):/tmp/splunk-data.tar.gz" \
+          "$backup_dir/splunk-data-${stamp}.tar.gz" 2>/dev/null; then
+        echo -e "  ${G}✓${N}  backed up → $backup_dir/splunk-data-${stamp}.tar.gz"
+      else
+        echo -e "  ${Y}!${N}  backup failed — stopping anyway, but check manually"
+      fi
+      _aws_lab_ssh "$SOCLAB_INSTANCE_ID" "sudo docker compose -f ~/docker-compose.yml stop" >/dev/null 2>&1
+      aws ec2 stop-instances --instance-ids "$SOCLAB_INSTANCE_ID" --region "$AWS_LAB_REGION" >/dev/null 2>&1
+      aws ec2 wait instance-stopped --instance-ids "$SOCLAB_INSTANCE_ID" --region "$AWS_LAB_REGION" 2>/dev/null
+      echo -e "  ${G}✓${N}  stopped"
+      echo -e "\n$HR"
+      ;;
+    cloud-status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc soc-lab cloud-status${N}"
+      echo -e "$HR\n"
+      _aws_lab_conf || { echo -e "\n$HR"; return 1; }
+      local state; state=$(aws ec2 describe-instances --instance-ids "$SOCLAB_INSTANCE_ID" --region "$AWS_LAB_REGION" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
+      echo -e "  ${C}instance${N}  ${state}"
+      if [[ "$state" == "running" ]]; then
+        local ip; ip=$(_aws_lab_ip "$SOCLAB_INSTANCE_ID")
+        echo -e "  ${C}ip${N}        ${ip}"
+        _aws_lab_ssh "$SOCLAB_INSTANCE_ID" "sudo docker ps --format 'table {{.Names}}\t{{.Status}}'" 2>/dev/null
+      fi
+      echo -e "\n$HR"
+      ;;
+    cloud-open)
+      _aws_lab_conf || return 1
+      echo -e "  ${D}no direct browser access (SSH-only security group, by design)${N}"
+      echo -e "  ${D}tunnel:${N}  ssh -i ~/.ssh/aws-lab-key -L 18000:127.0.0.1:8000 ${AWS_LAB_SSH_USER}@$(_aws_lab_ip "$SOCLAB_INSTANCE_ID")"
+      echo -e "  ${D}then:${N}    http://127.0.0.1:18000"
+      ;;
     '')
       cmd_soclab status
       ;;
     *)
       echo -e "${R}unknown:${N} arc soc-lab $sub"
-      echo -e "${D}options: status · start · stop · restart · logs · open${N}"
+      echo -e "${D}options: status · start · stop · restart · logs · open · cloud-start · cloud-stop · cloud-status · cloud-open${N}"
       ;;
   esac
 }
@@ -4888,19 +4977,109 @@ cmd_evebox() {
   esac
 }
 
+_aws_lab_conf() {
+  local conf="$HOME/.config/arc/aws-lab.conf"
+  if [[ ! -f "$conf" ]]; then
+    echo -e "  ${R}✗${N}  $conf not found — run terraform apply in ~/khaos-lab/aws-infra/ first"
+    return 1
+  fi
+  source "$conf"
+}
+
+_aws_lab_ssh() {
+  # $1 = instance id, rest = remote command
+  local iid="$1"; shift
+  local ip
+  ip=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
+    --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>/dev/null)
+  [[ -z "$ip" || "$ip" == "None" ]] && { echo -e "  ${R}✗${N}  instance has no public IP — is it running?"; return 1; }
+  ssh -i "$AWS_LAB_SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
+    "${AWS_LAB_SSH_USER}@${ip}" "$@"
+}
+
+_aws_lab_ip() {
+  aws ec2 describe-instances --instance-ids "$1" --region "$AWS_LAB_REGION" \
+    --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>/dev/null
+}
+
+# Conflict lock -- local↔cloud mutual exclusion. GVM has no local install
+# anymore (purged 2026-08-31) so this only matters for soc-lab, but kept
+# generic/shared so it applies uniformly if local GVM is ever reinstalled.
+_aws_lab_check_local_docker() {
+  # $1 = container name to check isn't already running locally
+  docker inspect --format '{{.State.Status}}' "$1" 2>/dev/null | grep -q "^running$"
+}
+
 cmd_gvm() {
-  # Local native GVM install fully purged 2026-08-31 (packages, systemd
-  # units, /var/lib/gvm + /var/lib/postgresql + /var/lib/openvas data, the
-  # _gvm service account) -- user's call, it was the single biggest local
-  # RAM/CPU cost on a 7.7GB box. Being replaced with `arc gvm cloud-*`
-  # (on-demand AWS instance, Greenbone's own official Docker Compose stack)
-  # as part of the aws-infra build -- see ~/khaos-lab/aws-infra/. This stub
-  # is a deliberate placeholder, not an oversight -- fill in cloud-*
-  # subcommands here once that instance's compose stack is live and tested.
-  echo -e "$HR"
-  echo -e "  ${Y}!${N}  local GVM was removed 2026-08-31 -- moving to on-demand AWS"
-  echo -e "  ${D}cloud wiring in progress, see ~/khaos-lab/aws-infra/${N}"
-  echo -e "$HR"
+  local sub="${1:-}"
+  _aws_lab_conf || { echo -e "$HR"; return 1; }
+  case "$sub" in
+    cloud-start)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc gvm cloud-start${N}  —  bring up gvm-cloud (t3/c7i-flex.large, on-demand)"
+      echo -e "$HR\n"
+      aws ec2 start-instances --instance-ids "$GVM_INSTANCE_ID" --region "$AWS_LAB_REGION" >/dev/null 2>&1
+      echo -e "  ${D}waiting for instance + SSH...${N}"
+      aws ec2 wait instance-status-ok --instance-ids "$GVM_INSTANCE_ID" --region "$AWS_LAB_REGION" 2>/dev/null
+      local ip; ip=$(_aws_lab_ip "$GVM_INSTANCE_ID")
+      _aws_lab_ssh "$GVM_INSTANCE_ID" "sudo docker compose -f ~/compose.yaml up -d" >/dev/null 2>&1
+      if _aws_lab_ssh "$GVM_INSTANCE_ID" "curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:443/" 2>/dev/null | grep -q "200\|303"; then
+        echo -e "  ${G}✓${N}  up — ${C}${ip}${N}"
+        echo -e "  ${D}tunnel:${N}  ssh -i ~/.ssh/aws-lab-key -L 9392:127.0.0.1:443 ${AWS_LAB_SSH_USER}@${ip}"
+        echo -e "  ${D}then:${N}    https://127.0.0.1:9392  ${D}(admin / see ~/.config/arc/gvm-cloud.conf)${N}"
+      else
+        echo -e "  ${R}✗${N}  containers didn't come up cleanly — arc gvm cloud-status"
+      fi
+      echo -e "\n$HR"
+      ;;
+    cloud-stop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc gvm cloud-stop${N}  —  sync data down, then stop gvm-cloud"
+      echo -e "$HR\n"
+      local backup_dir="$HOME/khaos-lab/gvm-lab/backups"
+      mkdir -p "$backup_dir"
+      local stamp; stamp=$(date +%Y%m%dT%H%M%SZ)
+      echo -e "  ${D}pg_dump gvmd database...${N}"
+      if _aws_lab_ssh "$GVM_INSTANCE_ID" "sudo docker compose -f ~/compose.yaml exec -T -u postgres pg-gvm pg_dump gvmd" > "$backup_dir/gvmd-${stamp}.sql" 2>/dev/null \
+         && [[ -s "$backup_dir/gvmd-${stamp}.sql" ]]; then
+        echo -e "  ${G}✓${N}  backed up → $backup_dir/gvmd-${stamp}.sql"
+      else
+        echo -e "  ${Y}!${N}  backup empty/failed — stopping anyway, but check manually"
+        rm -f "$backup_dir/gvmd-${stamp}.sql"
+      fi
+      _aws_lab_ssh "$GVM_INSTANCE_ID" "sudo docker compose -f ~/compose.yaml stop" >/dev/null 2>&1
+      aws ec2 stop-instances --instance-ids "$GVM_INSTANCE_ID" --region "$AWS_LAB_REGION" >/dev/null 2>&1
+      aws ec2 wait instance-stopped --instance-ids "$GVM_INSTANCE_ID" --region "$AWS_LAB_REGION" 2>/dev/null
+      echo -e "  ${G}✓${N}  stopped"
+      echo -e "\n$HR"
+      ;;
+    cloud-status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc gvm cloud-status${N}"
+      echo -e "$HR\n"
+      local state; state=$(aws ec2 describe-instances --instance-ids "$GVM_INSTANCE_ID" --region "$AWS_LAB_REGION" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
+      echo -e "  ${C}instance${N}  ${state}"
+      if [[ "$state" == "running" ]]; then
+        local ip; ip=$(_aws_lab_ip "$GVM_INSTANCE_ID")
+        echo -e "  ${C}ip${N}        ${ip}"
+        _aws_lab_ssh "$GVM_INSTANCE_ID" "sudo docker compose -f ~/compose.yaml ps --format 'table {{.Name}}\t{{.Status}}'" 2>/dev/null
+      fi
+      echo -e "\n$HR"
+      ;;
+    cloud-open)
+      echo -e "  ${D}no direct browser access (SSH-only security group, by design)${N}"
+      echo -e "  ${D}tunnel:${N}  ssh -i ~/.ssh/aws-lab-key -L 9392:127.0.0.1:443 ${AWS_LAB_SSH_USER}@$(_aws_lab_ip "$GVM_INSTANCE_ID")"
+      echo -e "  ${D}then:${N}    https://127.0.0.1:9392"
+      ;;
+    '')
+      cmd_gvm cloud-status
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc gvm $sub"
+      echo -e "${D}options: cloud-start · cloud-stop · cloud-status · cloud-open${N}"
+      ;;
+  esac
 }
 
 cmd_desktop() {

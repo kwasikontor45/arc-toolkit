@@ -3094,7 +3094,7 @@ _sec_overview() {
   echo -e "  ${D}arc sec clamav    — antivirus scan of \$HOME (background)${N}"
   echo -e "  ${D}arc sec suricata  — network IDS status + recent alerts${N}"
   echo -e "  ${D}arc sagan/evebox  — SOC lab: correlated alerts (fail2ban+ufw feed in too now)${N}"
-  echo -e "  ${D}arc soc-lab       — Splunk + SQL Server lab (local Docker, khaos-lab/soc-lab -- Nessus purged 2026-08-25)${N}"
+  echo -e "  ${D}arc soc-lab       — Splunk lab (local Docker, khaos-lab/soc-lab -- SQL Server + Nessus both purged, see 2026-08-31/08-25)${N}"
   echo -e "  ${D}arc zap           — OWASP ZAP web app scanner (manual-start, lab-only targets by default)${N}"
   echo -e "  ${D}arc darkstat      — live traffic dashboard (manual-start, loopback only)${N}"
   echo -e "$HR"
@@ -4760,7 +4760,7 @@ cmd_soclab() {
   case "$sub" in
     start)
       echo -e "$HR"
-      echo -e "  ${C}${B}arc soc-lab start${N}  —  bring up Splunk + SQL Server"
+      echo -e "  ${C}${B}arc soc-lab start${N}  —  bring up Splunk"
       echo -e "$HR\n"
       (cd "$dir" && docker compose up -d) \
         && echo -e "  ${G}✓${N}  started" \
@@ -4789,19 +4789,11 @@ cmd_soclab() {
       echo -e "$HR"
       echo -e "  ${C}${B}arc soc-lab status${N}"
       echo -e "$HR\n"
-      local splunk_state sql_state nessus_state
+      local splunk_state
       splunk_state=$(docker inspect --format '{{.State.Status}}' soc-lab-splunk 2>/dev/null)
-      sql_state=$(docker inspect --format '{{.State.Status}}' soc-lab-sqlserver 2>/dev/null)
-      nessus_state=$(docker inspect --format '{{.State.Status}}' soc-lab-nessus 2>/dev/null)
       [[ "$splunk_state" == "running" ]] \
         && echo -e "  ${G}·${N}  splunk:      running  ${D}(http://127.0.0.1:8000)${N}" \
         || echo -e "  ${R}·${N}  splunk:      ${splunk_state:-not found}"
-      [[ "$sql_state" == "running" ]] \
-        && echo -e "  ${G}·${N}  sql-server:  running  ${D}(127.0.0.1:1433, sa / see .env)${N}" \
-        || echo -e "  ${R}·${N}  sql-server:  ${sql_state:-not found}"
-      [[ "$nessus_state" == "running" ]] \
-        && echo -e "  ${G}·${N}  nessus:      running  ${D}(https://127.0.0.1:8834, admin / see .env)${N}" \
-        || echo -e "  ${R}·${N}  nessus:      ${nessus_state:-not found}"
       echo -e "\n$HR"
       ;;
     logs)

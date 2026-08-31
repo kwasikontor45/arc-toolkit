@@ -205,13 +205,12 @@ CATEGORIES = {
         Action("Sagan: recent alerts (native, no browser)", "arc sagan alerts", timeout=15),
         Action("Restart Sagan + EveBox", "bash -c 'arc sagan restart && arc evebox restart'", confirm=True, timeout=30),
         Action("Open EveBox dashboard (browser)", "arc evebox open"),
-        # soc-lab: Splunk + SQL Server training containers -- Splunk has a
-        # real web UI (8000), SQL Server is a bare DB port (1433, no
-        # browser interface possible). Both stopped by default (~4 days
-        # exited as of 2026-08-29) -- start is confirm-gated and given a
-        # longer timeout since a cold Splunk container genuinely takes a
-        # while to initialize.
-        Action("soc-lab: status (Splunk + SQL Server)", "arc soc-lab status"),
+        # soc-lab: Splunk training container -- SQL Server torn down
+        # 2026-08-31 (never held real data, confirmed empty first) and
+        # Nessus purged 2026-08-25, both gone from this lab entirely now.
+        # start is confirm-gated and given a longer timeout since a cold
+        # Splunk container genuinely takes a while to initialize.
+        Action("soc-lab: status (Splunk)", "arc soc-lab status"),
         Action("soc-lab: start",    "arc soc-lab start", confirm=True, timeout=120),
         Action("soc-lab: stop",     "arc soc-lab stop", confirm=True, timeout=30),
         Action("Open Splunk dashboard (browser)", "arc soc-lab open"),

@@ -240,6 +240,19 @@ check_aws_lab_idle() {
     local state launch
     state=$(echo "$info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('State',''))" 2>/dev/null)
     [[ "$state" != "running" ]] && continue
+    # Explicit human override, added 2026-08-31: a KeepRunning=true tag
+    # means the user deliberately left this instance running on purpose
+    # ("leave it running till further notice") -- this backstop exists to
+    # catch *forgotten* idle instances, not to override a real, current
+    # instruction. Tag check is a live read each run, not cached, so
+    # removing the tag re-arms this check immediately on the next cron pass.
+    local keep_running
+    keep_running=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$iid" "Name=key,Values=KeepRunning" \
+      --region "$AWS_LAB_REGION" --query 'Tags[0].Value' --output text 2>/dev/null)
+    if [[ "$keep_running" == "true" ]]; then
+      note "OK::aws-lab-idle::${label}-cloud running, KeepRunning tag set -- not auto-stopping"
+      continue
+    fi
     launch=$(echo "$info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Launch',''))" 2>/dev/null)
     local launch_epoch now_epoch hours_up
     launch_epoch=$(date -d "$launch" +%s 2>/dev/null) || continue

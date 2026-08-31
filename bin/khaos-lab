@@ -25,6 +25,7 @@ import subprocess
 import threading
 import time
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import font as tkfont
 
@@ -34,6 +35,7 @@ SIDEBAR_BG_PATH  = Path.home() / ".local/share/khaos-lab/sidebar-bg.png"
 CONTENT_BG_PATH  = Path.home() / ".local/share/khaos-lab/content-bg.png"
 TASKBAR_ICON_PATH = Path.home() / ".local/share/khaos-lab/taskbar-icon.png"
 HEAL_LOG_PATH    = Path.home() / "khaos-lab/arc-heal-log/latest-status.md"
+ORAGE_ICS_PATH   = Path.home() / ".local/share/orage/orage.ics"
 # Taskbar-icon bug (2026-08-27, real root cause found 2026-08-29): the
 # window-list entry showed a generic icon instead of khaos-lab's own art.
 # className="khaos-lab" (below) was a real, separate correctness fix
@@ -78,6 +80,43 @@ def load_image(path):
         return tk.PhotoImage(file=str(path))
     except Exception:
         return None
+
+
+def get_upcoming_events(limit=3):
+    """Read Orage's real calendar file directly and return the next few
+    upcoming events, briefly formatted. Deliberately a lightweight regex
+    parser, not a full RFC5545 library -- this file only has 3 VEVENT
+    blocks and a single-line DTSTART/SUMMARY format (confirmed by reading
+    it directly, 2026-08-31), so a targeted parser is proportionate; a
+    full icalendar dependency isn't installed and isn't worth adding just
+    for this. Only SUMMARY + DTSTART are read -- never DESCRIPTION, which
+    can hold considerably more personal detail than belongs in a glanced-at
+    dashboard tile."""
+    if not ORAGE_ICS_PATH.exists():
+        return []
+    try:
+        text = ORAGE_ICS_PATH.read_text()
+    except Exception:
+        return []
+
+    events = []
+    for block in re.findall(r"BEGIN:VEVENT.*?END:VEVENT", text, re.DOTALL):
+        summary_m = re.search(r"^SUMMARY:(.*)$", block, re.MULTILINE)
+        dtstart_m = re.search(r"^DTSTART[^:]*:(\d{8}T\d{6})", block, re.MULTILINE)
+        if not (summary_m and dtstart_m):
+            continue
+        try:
+            dt = datetime.strptime(dtstart_m.group(1), "%Y%m%dT%H%M%S")
+        except ValueError:
+            continue
+        events.append((dt, summary_m.group(1).strip()))
+
+    now = datetime.now()
+    upcoming = sorted((e for e in events if e[0] >= now), key=lambda e: e[0])
+    out = []
+    for dt, summary in upcoming[:limit]:
+        out.append(f"{dt.strftime('%b %d, %I:%M %p').replace(' 0', ' ')} — {summary}")
+    return out
 
 
 def strip_banner(text, cmd=None):
@@ -196,6 +235,18 @@ CATEGORIES = {
         Action("Sudo keepalive: stop",   "arc sudo stop"),
         Action("Mic status",        "arc mic status"),
         Action("Mic: toggle on/off", "arc mic toggle"),
+        # Security audit suite -- 2nd of 3 things picked from `arc help`
+        # (2026-08-31). `arc sec audit` deliberately NOT included -- it
+        # needs sudo access to /etc/shadow and /etc/sudoers with no
+        # existing NOPASSWD coverage, and granting that passwordlessly is
+        # a real, meaningfully bigger security tradeoff than the narrow
+        # read-only grants made elsewhere -- not worth it for GUI
+        # convenience alone. firewall/apps/logs all verified safe first
+        # (firewall needed one new narrow NOPASSWD rule for read-only
+        # `ufw status`, added 2026-08-31; apps/logs need no sudo at all).
+        Action("Firewall status (ufw)", "arc sec firewall"),
+        Action("Installed apps audit (apt/snap/flatpak)", "arc sec apps", timeout=20),
+        Action("Recent security logs (auth/sudo/ufw)", "arc sec logs"),
     ],
     # SOC -- every local Docker + monitor interface with a real UI, lab or
     # not (2026-08-29 -- widened from IDS/IPS-only per explicit request:
@@ -261,6 +312,19 @@ CATEGORIES = {
         # one) better run deliberately from a terminal, not a one-click.
         Action("Personal tooling: status (arc sot)", "arc sot status"),
         Action("Personal tooling: snapshot (arc sot)", "arc sot snapshot", confirm=True, timeout=60),
+        # Quick Fixes -- one of 3 things picked from `arc help`'s full list
+        # (2026-08-31) to wire in here: one-click remediation for the
+        # handful of annoyances that otherwise mean remembering a terminal
+        # command. Brave/WiFi confirm-gated since they have a real,
+        # if brief, disruptive side effect (closed tabs / dropped
+        # connectivity); display/audio are quick and safe, left one-click.
+        # Panel gets its own extra-cautious label -- a real outage happened
+        # once this session restarting it, not a hypothetical risk.
+        Action("Fix: relaunch Brave",       "arc fix brave", confirm=True),
+        Action("Fix: restart display compositor", "arc fix display"),
+        Action("Fix: WiFi toggle off/on",   "arc fix wifi", confirm=True, timeout=15),
+        Action("Fix: audio profile",        "arc fix audio"),
+        Action("Fix: taskbar panel (has caused a real outage before)", "arc fix panel", confirm=True),
     ],
     "Personal": [
         Action("Break timer status", "arc break status"),
@@ -276,6 +340,9 @@ CATEGORIES = {
         # gotcha, not an arc-break-specific issue).
         Action("Break: open GUI",   "arc-break gui", detach=True),
         Action("Open arc-pine (notification history/settings)", "arc-pine", detach=True),
+        # 3rd of 3 things picked from `arc help` (2026-08-31) -- quick,
+        # non-interactive count check, distinct from the GUI launch above.
+        Action("Notification history: count", "arc notify status"),
         Action("Emoji picker",      "arc emoji", detach=True),
         Action("TOTP authenticator", "arc auth", detach=True),
     ],
@@ -603,6 +670,7 @@ def main():
         tile(2, 0, "uptime", "Uptime / load")
         tile(2, 1, "selfheal", "Self-heal (arc-heal)")
         tile(3, 0, "idsips", "IDS/IPS")
+        tile(3, 1, "calendar", "Upcoming (Orage)")
 
         refresh_status()
 
@@ -663,6 +731,12 @@ def main():
             ok, out = run("docker inspect --format '{{.State.Status}}' evebox", timeout=5)
             evebox_state = out.strip() if ok else "missing"
             checks["idsips"] = f"suricata {suricata_state}  ·  sagan {sagan_state}  ·  evebox {evebox_state}"
+
+            try:
+                upcoming = get_upcoming_events(limit=2)
+                checks["calendar"] = "\n".join(upcoming) if upcoming else "nothing scheduled"
+            except Exception:
+                checks["calendar"] = "unavailable"
 
             def apply():
                 for key, val in checks.items():

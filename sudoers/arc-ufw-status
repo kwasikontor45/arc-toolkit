@@ -1,0 +1,8 @@
+# arc-ufw-status — added 2026-08-31, closing a real gap while wiring khaos-lab's
+# Security category: `arc sec firewall` (bare, read-only status check) calls
+# `sudo ufw status verbose` with no NOPASSWD coverage -- confirmed it would
+# hang a GUI button click waiting for a password with no TTY to answer it,
+# same class of bug already fixed once for darkstat this session. NOPASSWD
+# scoped to exactly the read-only status commands, not `allow`/`deny`/`reset`/
+# any state-changing ufw subcommand -- those stay password-gated on purpose.
+architect-of-chaos ALL=(root) NOPASSWD: /usr/sbin/ufw status, /usr/sbin/ufw status verbose

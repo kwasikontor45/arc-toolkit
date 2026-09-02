@@ -85,13 +85,20 @@ def load_image(path):
 def get_upcoming_events(limit=3):
     """Read Orage's real calendar file directly and return the next few
     upcoming events, briefly formatted. Deliberately a lightweight regex
-    parser, not a full RFC5545 library -- this file only has 3 VEVENT
-    blocks and a single-line DTSTART/SUMMARY format (confirmed by reading
-    it directly, 2026-08-31), so a targeted parser is proportionate; a
-    full icalendar dependency isn't installed and isn't worth adding just
-    for this. Only SUMMARY + DTSTART are read -- never DESCRIPTION, which
-    can hold considerably more personal detail than belongs in a glanced-at
-    dashboard tile."""
+    parser, not a full RFC5545 library -- a full icalendar dependency
+    isn't installed and isn't worth adding just for this. Only SUMMARY +
+    DTSTART are read -- never DESCRIPTION, which can hold considerably
+    more personal detail than belongs in a glanced-at dashboard tile.
+
+    Handles both DTSTART forms Orage actually writes: timed
+    (DTSTART:20260918T143000) and all-day (DTSTART;VALUE=DATE:20281009,
+    no time component at all). The original version only matched the
+    timed form, so any all-day event silently failed the regex and never
+    appeared here regardless of how soon it was -- real bug, found
+    2026-08-31 when a same-day-added all-day event ("phoenix-home-
+    stretch") never showed up. All-day events sort/compare by date only
+    (comparing them to `now` as midnight would wrongly exclude one dated
+    today, since midnight has already passed) and print without a time."""
     if not ORAGE_ICS_PATH.exists():
         return []
     try:
@@ -102,20 +109,30 @@ def get_upcoming_events(limit=3):
     events = []
     for block in re.findall(r"BEGIN:VEVENT.*?END:VEVENT", text, re.DOTALL):
         summary_m = re.search(r"^SUMMARY:(.*)$", block, re.MULTILINE)
-        dtstart_m = re.search(r"^DTSTART[^:]*:(\d{8}T\d{6})", block, re.MULTILINE)
+        dtstart_m = re.search(r"^DTSTART[^:]*:(\d{8})(?:T(\d{6}))?", block, re.MULTILINE)
         if not (summary_m and dtstart_m):
             continue
+        date_part, time_part = dtstart_m.group(1), dtstart_m.group(2)
         try:
-            dt = datetime.strptime(dtstart_m.group(1), "%Y%m%dT%H%M%S")
+            if time_part:
+                dt = datetime.strptime(date_part + "T" + time_part, "%Y%m%dT%H%M%S")
+                all_day = False
+            else:
+                dt = datetime.strptime(date_part, "%Y%m%d")
+                all_day = True
         except ValueError:
             continue
-        events.append((dt, summary_m.group(1).strip()))
+        events.append((dt, summary_m.group(1).strip(), all_day))
 
     now = datetime.now()
-    upcoming = sorted((e for e in events if e[0] >= now), key=lambda e: e[0])
+    upcoming = sorted(
+        (e for e in events if (e[0].date() >= now.date() if e[2] else e[0] >= now)),
+        key=lambda e: e[0],
+    )
     out = []
-    for dt, summary in upcoming[:limit]:
-        out.append(f"{dt.strftime('%b %d, %I:%M %p').replace(' 0', ' ')} — {summary}")
+    for dt, summary, all_day in upcoming[:limit]:
+        when = dt.strftime("%b %d") if all_day else dt.strftime("%b %d, %I:%M %p").replace(" 0", " ")
+        out.append(f"{when} — {summary}")
     return out
 
 

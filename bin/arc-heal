@@ -366,6 +366,19 @@ check_aws_lab_ip_drift() {
   command -v aws >/dev/null 2>&1 || return 0
   command -v terraform >/dev/null 2>&1 || { note "FLAG::aws-lab-ip::terraform not installed -- can't auto-update the SSH allowlist if the home IP has drifted"; return; }
 
+  # Real incident, 2026-09-07: with ProtonVPN connected, "current public IP"
+  # (checkip.amazonaws.com) is the VPN's exit IP, not the real home IP --
+  # this check applied that straight to the SG once, live, breaking SSH to
+  # both instances (allowlisted a VPN exit IP that itself rotated away
+  # minutes later on Free tier's automatic server switching). Same WireGuard
+  # detection already used by arc-dns's leak check -- skip entirely rather
+  # than risk corrupting the SG with an IP that isn't actually the home ISP
+  # address, even briefly, while a tunnel is up.
+  if [[ -n "$(ip -o link show type wireguard 2>/dev/null)" ]]; then
+    note "OK::aws-lab-ip::VPN active, skipping this run -- current public IP would be the tunnel's exit, not home -- checked again once it's off"
+    return
+  fi
+
   local tf_dir="$HOME/khaos-lab/aws-infra"
   [[ -f "$tf_dir/variables.tf" ]] || return 0
 

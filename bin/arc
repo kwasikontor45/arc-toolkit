@@ -2074,6 +2074,24 @@ _vpn_run() {
 
 _vpn_state_file() { echo "$HOME/.config/arc/vpn-desired-state"; }
 
+# Real bug found live 2026-09-07: ProtonVPN's own client sets
+# NetworkManager's connection.autoconnect=yes on whatever WireGuard profile
+# it creates for the current server. That means `protonvpn disconnect`
+# doesn't actually hold -- NM just reconnects it right back underneath,
+# regardless of the app's own "disconnected" state or our desired-state
+# file. Our own arc-vpn-watch/arc-vpn-autoconnect already handle reconnect
+# logic properly (desired-state-aware, respects a deliberate disconnect) --
+# NM's blunt always-reconnect flag is redundant and actively dangerous, so
+# force it off on every ProtonVPN profile that exists (old profiles from
+# previous servers can accumulate the same flag, not just the current one).
+_vpn_disable_nm_autoconnect() {
+  command -v nmcli >/dev/null 2>&1 || return 0
+  nmcli -t -f NAME,TYPE connection show 2>/dev/null | awk -F: '$2=="wireguard" && $1 ~ /^ProtonVPN/ {print $1}' | \
+    while IFS= read -r name; do
+      nmcli connection modify "$name" connection.autoconnect no 2>/dev/null
+    done
+}
+
 cmd_vpn() {
   local sub="${1:-}"
   command -v protonvpn >/dev/null 2>&1 || { echo -e "  ${R}✗${N}  protonvpn not installed — sudo apt install proton-vpn-cli"; return 1; }
@@ -2093,6 +2111,7 @@ cmd_vpn() {
       mkdir -p "$(dirname "$(_vpn_state_file)")"
       echo "connected" > "$(_vpn_state_file)"
       _vpn_run connect "$@"
+      _vpn_disable_nm_autoconnect
       echo -e "\n$HR"
       ;;
     disconnect)
@@ -2102,6 +2121,7 @@ cmd_vpn() {
       mkdir -p "$(dirname "$(_vpn_state_file)")"
       echo "disconnected" > "$(_vpn_state_file)"
       _vpn_run disconnect
+      _vpn_disable_nm_autoconnect
       echo -e "\n$HR"
       ;;
     autoconnect)

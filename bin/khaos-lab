@@ -226,13 +226,18 @@ class Action:
 
 CATEGORIES = {
     "Status": [],  # special-cased: live dashboard, not a button list
+    "Cockpit": [],  # special-cased: network/pipeline/cloud/local live overview, added 2026-09-07
     "Network": [
-        # ProtonVPN purged 2026-08-31 (user's call, clean slate) -- the 3
-        # VPN-specific actions that used to live here (status/IP/kill
-        # switch, via the now-deleted arc-vpn wrapper) are gone with it.
-        # DNS leak check stays -- it's generic (detects any WireGuard-type
-        # interface, not ProtonVPN-specific) and already reports "no VPN
-        # active" cleanly when there isn't one.
+        # ProtonVPN reinstalled 2026-09-07 -- CLI-only this time
+        # (proton-vpn-cli, WireGuard-based), no GTK app. `arc vpn connect`/
+        # `disconnect` is one-shot-safe (real output, no TUI); `signin` is
+        # deliberately NOT wired here -- it needs a real interactive
+        # credential prompt, run it from a terminal.
+        Action("VPN: status",       "arc vpn status"),
+        Action("VPN: connect (fastest)", "arc vpn connect", confirm=True, timeout=30),
+        Action("VPN: disconnect",   "arc vpn disconnect", confirm=True, timeout=15),
+        Action("VPN: leak check",   "arc vpn leak-check", timeout=15),
+        Action("VPN: autoconnect status", "arc vpn autoconnect"),
         Action("DNS status",        "arc dns status"),
         Action("DNS leak check",    "arc dns check", timeout=15),
         Action("Restart NextDNS",   "arc dns restart", confirm=True),
@@ -400,8 +405,9 @@ CATEGORIES = {
         # 3rd of 3 things picked from `arc help` (2026-08-31) -- quick,
         # non-interactive count check, distinct from the GUI launch above.
         Action("Notification history: count", "arc notify status"),
-        Action("Emoji picker",      "arc emoji", detach=True),
-        Action("TOTP authenticator", "arc auth", detach=True),
+        # Emoji picker + TOTP authenticator removed from this panel 2026-09-07
+        # (user's call) -- both still exist and work as `arc emoji`/`arc auth`
+        # from a real terminal, just not surfaced as panel buttons anymore.
     ],
 }
 
@@ -895,6 +901,96 @@ def main():
         threading.Thread(target=worker, daemon=True).start()
         root.after(90000, aws_lab_poll)
 
+    # ── Cockpit view (2026-09-07) ────────────────────────────────────────────
+    # Network/pipeline/cloud/local overview -- distinct from the general
+    # Status dashboard above, and not a button list like the other
+    # categories. Every check here is real work (a subprocess, some of them
+    # real network calls), so it's polled on its own slower timer, same
+    # reasoning as aws_lab_poll -- doing this on the fast 15s status loop
+    # would add felt latency for data that doesn't change second to second.
+    cockpit_tiles = {}
+
+    def build_cockpit_view():
+        _clear_content()
+        cockpit_tiles.clear()
+
+        grid = tk.Frame(content, bg=SURFACE)
+        _embed_content(grid)
+
+        def tile(row, col, key, title):
+            f = tk.Frame(grid, bg=OVERLAY)
+            f.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
+            grid.columnconfigure(col, weight=1)
+            tk.Label(f, text=title, font=small_font, bg=OVERLAY, fg=FG_MUTED).pack(
+                anchor="w", padx=12, pady=(10, 2))
+            val = tk.Label(f, text="checking…", font=label_font, bg=OVERLAY, fg=FG, justify="left")
+            val.pack(anchor="w", padx=12, pady=(0, 10))
+            cockpit_tiles[key] = val
+
+        tile(0, 0, "vpn", "VPN (ProtonVPN)")
+        tile(0, 1, "dns", "DNS + leak check")
+        tile(1, 0, "netstats", "Network (wlan0, since boot)")
+        tile(1, 1, "eero", "Eero")
+        tile(2, 0, "cloudlab", "Cloud lab (gvm/soc-lab-cloud)")
+        tile(2, 1, "kismet", "Kismet (wireless recon)")
+
+        cockpit_poll()
+
+    def cockpit_poll():
+        def worker():
+            checks = {}
+
+            ok, out = run("arc vpn status", timeout=15)
+            m = re.search(r"Status:\s*(.+)", out)
+            checks["vpn"] = m.group(1).strip() if m else (out.strip()[:60] or "unavailable")
+
+            ok, out = run("arc dns check", timeout=15)
+            daemon = re.search(r"daemon:\s*(\S+)", out)
+            routing = re.search(r"routing:\s*(.+)", out)
+            query = re.search(r"query:\s*(\S+)", out)
+            if daemon and query:
+                checks["dns"] = f"daemon {daemon.group(1)}  ·  query {query.group(1)}\n{(routing.group(1).strip() if routing else '')[:60]}"
+            else:
+                checks["dns"] = "unavailable"
+
+            ok, out = run("arc net stats", timeout=8)
+            wlan = next((l for l in out.splitlines() if "wlan0" in l), "")
+            checks["netstats"] = wlan.strip() or "unavailable"
+
+            ok, out = run("arc eero-summary", timeout=15)
+            if "auth: ok" in out:
+                d = {}
+                for line in out.splitlines():
+                    if ":" in line:
+                        k, v = line.split(":", 1)
+                        d[k.strip()] = v.strip()
+                checks["eero"] = f"{d.get('internet', '?')}  ·  {d.get('clients', '?')} clients  ·  {d.get('nodes', '?')} node(s)\ndns {d.get('dns', '?')}  ·  {d.get('public_ip', '?')}"
+            elif "not signed in" in out:
+                checks["eero"] = "not signed in — arc eero"
+            else:
+                checks["eero"] = "unavailable"
+
+            checks["cloudlab"] = aws_lab_cache.get("text", "checking…")
+
+            ok, out = run("arc kismet status", timeout=8)
+            checks["kismet"] = strip_banner(out, cmd="arc kismet status") or "unavailable"
+
+            def apply():
+                for key, val in checks.items():
+                    if key in cockpit_tiles:
+                        color = FG
+                        if key == "vpn":
+                            color = TEAL if "connected" in val.lower() and "disconnected" not in val.lower() else FG_MUTED
+                        if key == "dns" and "unavailable" in val:
+                            color = ROSE
+                        if key == "eero" and ("down" in val.lower() or "unavailable" in val.lower()):
+                            color = ROSE
+                        cockpit_tiles[key].configure(text=val, fg=color)
+            root.after(0, apply)
+
+        threading.Thread(target=worker, daemon=True).start()
+        root.after(60000, lambda: cockpit_poll() if current_cat.get() == "Cockpit" else None)
+
     # ── Category action view ───────────────────────────────────────────────
     def build_category_view(name):
         _clear_content()
@@ -962,6 +1058,8 @@ def main():
             b.configure(bg=OVERLAY if n == name else BG, fg=GOLD if n == name else FG_MUTED)
         if name == "Status":
             build_status_view()
+        elif name == "Cockpit":
+            build_cockpit_view()
         else:
             build_category_view(name)
 

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# arc-vpn-watch — fast VPN reconnect check, NOT the slow arc-heal 3h cadence.
+# Runs every 60s via arc-vpn-watch.timer.
+#
+# Built 2026-09-07 specifically because kill-switch is deliberately OFF
+# (user's explicit call: no interruptions from a hard block on drop/slow
+# connection). With no kill-switch, the real mitigation against a leak
+# window is reconnecting fast, not blocking traffic -- this is that fast
+# path. arc-heal's own check_vpn is the slower backstop in case this timer
+# itself somehow stops running (two-layer design, same shape as the AWS
+# lab's CloudWatch-alarm + arc-heal-backstop pattern).
+#
+# Desired-state-aware, same as check_vpn: only acts if `arc vpn connect`
+# recorded "connected" as the desired state -- never fights a deliberate
+# `arc vpn disconnect`.
+set -uo pipefail
+
+STATE_FILE="$HOME/.config/arc/vpn-desired-state"
+[[ -f "$STATE_FILE" ]] || exit 0
+[[ "$(cat "$STATE_FILE" 2>/dev/null)" == "connected" ]] || exit 0
+command -v protonvpn >/dev/null 2>&1 || exit 0
+
+out=$(protonvpn status 2>&1 | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T|^Traceback \(most recent|^  |^proton\.')
+echo "$out" | grep -q "^Status: Connected" && exit 0
+
+protonvpn connect >/dev/null 2>&1

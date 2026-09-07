@@ -1,0 +1,6 @@
+[Unit]
+Description=arc-vpn-watch — fast reconnect check (60s cadence, not arc-heal's 3h)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/arc-vpn-watch

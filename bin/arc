@@ -4929,10 +4929,32 @@ cmd_soclab() {
       echo -e "\n$HR"
       ;;
     cloud-open)
+      # True one-click open (2026-09-07, matching the local soc-lab/darkstat/
+      # evebox "Open dashboard" buttons) -- was previously just printed
+      # instructions. No direct public access is intended (SSH-only security
+      # group, by design), so this tunnels + launches the browser itself.
+      # The instance gets a fresh public IP on every start (no Elastic IP),
+      # so a tunnel opened against a stale IP must be killed and re-opened
+      # against the CURRENT one every single time this runs -- never assume
+      # a prior tunnel on this local port is still pointed at the right box.
       _aws_lab_conf || return 1
-      echo -e "  ${D}no direct browser access (SSH-only security group, by design)${N}"
-      echo -e "  ${D}tunnel:${N}  ssh -i ~/.ssh/aws-lab-key -L 18000:127.0.0.1:8000 ${AWS_LAB_SSH_USER}@$(_aws_lab_ip "$SOCLAB_INSTANCE_ID")"
-      echo -e "  ${D}then:${N}    http://127.0.0.1:18000"
+      local state; state=$(aws ec2 describe-instances --instance-ids "$SOCLAB_INSTANCE_ID" --region "$AWS_LAB_REGION" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
+      if [[ "$state" != "running" ]]; then
+        echo -e "  ${R}✗${N}  soclab-cloud isn't running — arc soc-lab cloud-start first"
+        return 1
+      fi
+      local ip; ip=$(_aws_lab_ip "$SOCLAB_INSTANCE_ID")
+      pkill -f "L 18000:127.0.0.1:8000 " 2>/dev/null
+      sleep 0.3
+      if ! ssh -i "$AWS_LAB_SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -f -N \
+          -L 18000:127.0.0.1:8000 "${AWS_LAB_SSH_USER}@${ip}"; then
+        echo -e "  ${R}✗${N}  tunnel failed to establish (ip: ${ip})"
+        return 1
+      fi
+      sleep 1
+      xdg-open "http://127.0.0.1:18000" >/dev/null 2>&1 &
+      echo -e "  ${G}✓${N}  tunnel live (→ ${ip}) — opening http://127.0.0.1:18000"
       ;;
     '')
       cmd_soclab status
@@ -5140,9 +5162,32 @@ cmd_gvm() {
       echo -e "\n$HR"
       ;;
     cloud-open)
-      echo -e "  ${D}no direct browser access (SSH-only security group, by design)${N}"
-      echo -e "  ${D}tunnel:${N}  ssh -i ~/.ssh/aws-lab-key -L 9392:127.0.0.1:443 ${AWS_LAB_SSH_USER}@$(_aws_lab_ip "$GVM_INSTANCE_ID")"
-      echo -e "  ${D}then:${N}    https://127.0.0.1:9392"
+      # True one-click open (2026-09-07) -- was previously just printed
+      # instructions, which turned out unclear enough in practice that a
+      # direct-browse attempt to the public IP hung with no connection (port
+      # 443 was never open to the internet -- SSH-only SG, by design). Same
+      # tunnel-then-launch pattern as soc-lab's cloud-open above, re-resolves
+      # the live public IP and kills any stale tunnel every single time --
+      # gvm-cloud gets a fresh IP on every start, a cached tunnel would
+      # silently point at the wrong (or a now-terminated) box.
+      _aws_lab_conf || return 1
+      local state; state=$(aws ec2 describe-instances --instance-ids "$GVM_INSTANCE_ID" --region "$AWS_LAB_REGION" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
+      if [[ "$state" != "running" ]]; then
+        echo -e "  ${R}✗${N}  gvm-cloud isn't running — arc gvm cloud-start first"
+        return 1
+      fi
+      local ip; ip=$(_aws_lab_ip "$GVM_INSTANCE_ID")
+      pkill -f "L 9392:127.0.0.1:443 " 2>/dev/null
+      sleep 0.3
+      if ! ssh -i "$AWS_LAB_SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -f -N \
+          -L 9392:127.0.0.1:443 "${AWS_LAB_SSH_USER}@${ip}"; then
+        echo -e "  ${R}✗${N}  tunnel failed to establish (ip: ${ip})"
+        return 1
+      fi
+      sleep 1
+      xdg-open "https://127.0.0.1:9392" >/dev/null 2>&1 &
+      echo -e "  ${G}✓${N}  tunnel live (→ ${ip}) — opening https://127.0.0.1:9392  ${D}(admin / see ~/.config/arc/gvm-cloud.conf)${N}"
       ;;
     '')
       cmd_gvm cloud-status

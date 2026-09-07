@@ -310,6 +310,11 @@ CATEGORIES = {
         Action("soc-lab: start",    "arc soc-lab start", confirm=True, timeout=120),
         Action("soc-lab: stop",     "arc soc-lab stop", confirm=True, timeout=30),
         Action("Open Splunk dashboard (browser)", "arc soc-lab open"),
+        # soc-lab CLOUD: `cloud-open` (2026-09-07) tunnels + launches the
+        # browser itself now, same one-click pattern as the local action
+        # above -- re-resolves the live public IP every click (no Elastic
+        # IP, changes on every start) and kills any stale tunnel first.
+        Action("Open Splunk dashboard (browser, cloud)", "arc soc-lab cloud-open", timeout=20),
         # darkstat: live traffic dashboard, loopback-only web UI. start/stop
         # need root (systemd unit) -- NOPASSWD sudoers rule added 2026-08-29
         # (arc-darkstat) specifically so this button doesn't hang waiting on
@@ -319,10 +324,15 @@ CATEGORIES = {
         Action("Darkstat: stop",    "arc darkstat stop", confirm=True, timeout=15),
         Action("Open darkstat dashboard (browser)", "arc darkstat open"),
         # GVM/OpenVAS: local native install fully purged 2026-08-31 (was the
-        # single biggest local RAM/CPU cost on this 7.7GB box) -- moving to
-        # on-demand AWS. `arc gvm` is a placeholder pointing at
-        # ~/khaos-lab/aws-infra/ until the cloud-* subcommands land; nothing
-        # to wire here yet, deliberately not adding a button for a stub.
+        # single biggest local RAM/CPU cost on this 7.7GB box) -- moved to
+        # on-demand AWS, cloud-* subcommands landed 2026-08-31. Buttons wired
+        # 2026-09-07 once `cloud-open` became a real one-click tunnel+launch
+        # (was print-only before) -- same live-IP-every-click pattern as
+        # soc-lab cloud above, gvm-cloud also has no Elastic IP.
+        Action("gvm-cloud: status",  "arc gvm cloud-status"),
+        Action("gvm-cloud: start",   "arc gvm cloud-start", confirm=True, timeout=180),
+        Action("gvm-cloud: stop",    "arc gvm cloud-stop", confirm=True, timeout=60),
+        Action("Open GVM dashboard (browser, cloud)", "arc gvm cloud-open", timeout=20),
         # ZAP's real day-to-day "interface" is its desktop GUI app, not a
         # browser tab -- daemon mode (arc zap start) is an API-only scan
         # backend for `arc zap spider/active <target>`, out of scope for a

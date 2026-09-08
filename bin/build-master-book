@@ -13,7 +13,16 @@ OUT="$HOME/khaos-lab/master-archive/master-book.md"
 REWRITE_IMAGES="$HOME/.local/bin/build-master-book-rewrite-images.py"
 
 EXCLUDE_DIRS=(-path "*/.git/*" -o -path "*/node_modules/*" -o -path "*/__pycache__/*" \
-  -o -path "*/.venv/*" -o -path "*/venv/*" -o -path "*/site-packages/*")
+  -o -path "*/.venv/*" -o -path "*/venv/*" -o -path "*/site-packages/*" \
+  -o -path "*/master-archive/*")
+# master-archive excluded because $OUT lives inside it, which lives inside
+# the khaos-lab tree being walked -- without this, the khaos-lab pass finds
+# its own in-progress output partway through (already containing the full
+# dev-notes dump from the tree before it) and cats it back into itself,
+# duplicating every dev-notes/ file plus every khaos-lab/ file that sorts
+# alphabetically before "master-archive/". Found live 2026-09-08: 108 unique
+# files on disk vs 171 tree-headers in the built book, all dupes traced to
+# exactly this self-inclusion.
 
 : > "$OUT"
 count=0

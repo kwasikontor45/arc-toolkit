@@ -47,7 +47,7 @@ note() { FINDINGS+=("$1"); }
 # Unix socket, not an X connection) -- only sound/voice inside
 # arc-pine-notify need DISPLAY indirectly via paplay, and XDG_RUNTIME_DIR
 # (already exported at the top of this file) is what those actually need.
-_notify() { /home/architect-of-chaos/.local/bin/arc-pine-notify "$1" arc-heal "$3" "" 2>/dev/null || true; }
+_notify() { /home/architect-of-chaos/.local/bin/arc-pine-notify "$1" arc-heal "$3" "${4:-}" 2>/dev/null || true; }
 
 # ── py-bite: now a fully-managed PythonAnywhere app, not our EC2 box ───────
 # AWS instance i-0555e364aad4b6296 terminated 2026-08-17 (migrated off AWS
@@ -548,10 +548,36 @@ OK=$(printf '%s\n' "${FINDINGS[@]}" | grep -c "^OK" || true)
 
 echo "$(date -Is) run=${RUN_ID} duration=${DURATION}s ok=${OK} healed=${HEALED} flagged=${FLAGGED}" >> "$HISTORY"
 
+# Real gap fixed 2026-09-08: the body was always "" before, so a notification
+# saying "1 thing(s) healed, see the log" told you nothing without a trip to
+# a terminal -- exactly the complaint that prompted this fix. Now the
+# notification itself names what happened. Capped at 3 lines so a rare burst
+# doesn't turn one popup into a wall of text -- the log still has everything.
+_heal_detail() {
+  # $1 = level (HEALED or FLAG). Splits on the literal "::" delimiter via
+  # bash parameter expansion, not a regex -- a naive `[^:]+` sed pattern
+  # breaks the moment a component name has its own single colon in it
+  # (e.g. "watcher:arc-clamav-watch"), caught live testing this before
+  # trusting it.
+  local level="$1" f rest comp msg lines=() n
+  for f in "${FINDINGS[@]}"; do
+    [[ "$f" == "${level}::"* ]] || continue
+    rest="${f#*::}"; comp="${rest%%::*}"; msg="${rest#*::}"
+    lines+=("${comp}: ${msg}")
+  done
+  n=${#lines[@]}
+  if (( n > 3 )); then
+    printf '%s\n' "${lines[@]:0:3}"
+    echo "…and $(( n - 3 )) more — see the Logs view in khaos-lab or ~/khaos-lab/arc-heal-log/latest-status.md"
+  else
+    printf '%s\n' "${lines[@]}"
+  fi
+}
+
 if [[ "$FLAGGED" -gt 0 ]]; then
-  _notify critical dialog-warning "${FLAGGED} thing(s) need attention — see ~/khaos-lab/arc-heal-log/latest-status.md"
+  _notify critical dialog-warning "${FLAGGED} thing(s) need attention" "$(_heal_detail FLAG)"
 elif [[ "$HEALED" -gt 0 ]]; then
-  _notify normal dialog-information "${HEALED} thing(s) self-healed automatically — see the log"
+  _notify normal dialog-information "${HEALED} thing(s) self-healed automatically" "$(_heal_detail HEALED)"
 fi
 
 cat "$LATEST"

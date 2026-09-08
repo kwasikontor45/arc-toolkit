@@ -1,0 +1,10 @@
+# arc-log-purge — added 2026-09-08, for khaos-lab panel's new Logs view
+# (click a log, review it, purge or keep). Viewing needs no sudo at all --
+# this user is in the `adm` group, which already has read access to every
+# root:adm log below. Only clearing (truncate -s 0) needs root. NOPASSWD
+# scoped to the exact four log paths the panel actually offers to purge,
+# nothing else -- same narrow, no-wildcard convention as
+# arc-darkstat/arc-nextdns-heal/arc-ufw-status. A plain truncate is safe
+# here specifically because none of these paths are anything a running
+# daemon's ExecStart/config reads from -- they're pure output logs.
+architect-of-chaos ALL=(root) NOPASSWD: /usr/bin/truncate -s 0 /var/log/auth.log, /usr/bin/truncate -s 0 /var/log/ufw.log, /usr/bin/truncate -s 0 /var/log/fail2ban.log, /usr/bin/truncate -s 0 /var/log/nextdns-heal.log

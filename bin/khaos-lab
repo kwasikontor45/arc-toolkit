@@ -36,6 +36,28 @@ CONTENT_BG_PATH  = Path.home() / ".local/share/khaos-lab/content-bg.png"
 TASKBAR_ICON_PATH = Path.home() / ".local/share/khaos-lab/taskbar-icon.png"
 HEAL_LOG_PATH    = Path.home() / "khaos-lab/arc-heal-log/latest-status.md"
 ORAGE_ICS_PATH   = Path.home() / ".local/share/orage/orage.ics"
+
+# Logs view (2026-09-08) -- a real, curated set, not "every log on the
+# machine." Picked for what's actually worth reviewing day to day: what
+# self-heal did, what got noticed/notified, and the three security logs
+# `arc logs` already treats as the "critical snapshot." Text logs are all
+# readable without sudo (this user is in the `adm` group, and
+# nextdns-heal.log is world-readable) -- only PURGE needs root, via the
+# narrow `arc-log-purge` sudoers rule (exact truncate commands only).
+LOG_SOURCES = [
+    {"key": "arc-heal", "name": "Self-heal (arc-heal)", "kind": "text",
+     "path": Path.home() / "khaos-lab/arc-heal-log/history.log", "sudo": False},
+    {"key": "notify", "name": "Notifications (arc-pine)", "kind": "sqlite",
+     "path": Path.home() / ".local/share/arc-pine/history.db", "sudo": False},
+    {"key": "nextdns-heal", "name": "DNS self-heal (nextdns-heal)", "kind": "text",
+     "path": Path("/var/log/nextdns-heal.log"), "sudo": True},
+    {"key": "auth", "name": "Auth (auth.log)", "kind": "text",
+     "path": Path("/var/log/auth.log"), "sudo": True},
+    {"key": "ufw", "name": "Firewall (ufw.log)", "kind": "text",
+     "path": Path("/var/log/ufw.log"), "sudo": True},
+    {"key": "fail2ban", "name": "fail2ban", "kind": "text",
+     "path": Path("/var/log/fail2ban.log"), "sudo": True},
+]
 # Taskbar-icon bug (2026-08-27, real root cause found 2026-08-29): the
 # window-list entry showed a generic icon instead of khaos-lab's own art.
 # className="khaos-lab" (below) was a real, separate correctness fix
@@ -227,6 +249,7 @@ class Action:
 CATEGORIES = {
     "Status": [],  # special-cased: live dashboard, not a button list
     "Cockpit": [],  # special-cased: network/pipeline/cloud/local live overview, added 2026-09-07
+    "Logs": [],  # special-cased: click a log, review/purge/keep, added 2026-09-08
     "Network": [
         # ProtonVPN reinstalled 2026-09-07 -- CLI-only this time
         # (proton-vpn-cli, WireGuard-based), no GTK app. `arc vpn connect`/
@@ -991,6 +1014,190 @@ def main():
         threading.Thread(target=worker, daemon=True).start()
         root.after(60000, lambda: cockpit_poll() if current_cat.get() == "Cockpit" else None)
 
+    # ── Logs view (2026-09-08) ───────────────────────────────────────────────
+    # Click a log, review real content, purge (clears the actual file on
+    # disk, not just the display) or keep (just close). Built after a real
+    # complaint: an arc-heal notification said "1 thing(s) healed... see the
+    # log" with zero detail, forcing a trip to a terminal to find out what.
+    # That got fixed at the source (arc-heal's own notification body, same
+    # commit as this) -- this view is the other half: a real place to check
+    # without a terminal at all, for this and every other log worth reviewing.
+    def _log_stat(path):
+        try:
+            st = path.stat()
+            size = st.st_size
+            for unit in ("B", "KB", "MB", "GB"):
+                if size < 1024 or unit == "GB":
+                    size_s = f"{size:.0f}{unit}" if unit == "B" else f"{size/1024:.1f}{unit}"
+                    break
+                size /= 1024
+            mtime = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+            return f"{size_s}  ·  {mtime}"
+        except FileNotFoundError:
+            return "not found"
+        except PermissionError:
+            return "permission denied"
+
+    def build_logs_view():
+        _clear_content()
+        wrap = tk.Frame(content, bg=SURFACE)
+        _embed_content(wrap)
+
+        for src in LOG_SOURCES:
+            row = tk.Frame(wrap, bg=OVERLAY)
+            row.pack(fill="x", padx=8, pady=5)
+
+            left = tk.Frame(row, bg=OVERLAY)
+            left.pack(side="left", fill="x", expand=True, padx=12, pady=10)
+            tk.Label(left, text=src["name"], font=label_font, bg=OVERLAY, fg=FG).pack(anchor="w")
+            stat_lbl = tk.Label(left, text=_log_stat(src["path"]), font=small_font, bg=OVERLAY, fg=FG_MUTED)
+            stat_lbl.pack(anchor="w")
+
+            btns = tk.Frame(row, bg=OVERLAY)
+            btns.pack(side="right", padx=12)
+
+            def make_view(s=src):
+                return lambda: _log_view_popup(s)
+
+            def make_purge(s=src, lbl=None):
+                return lambda: _log_purge_confirm(s, lambda: lbl.configure(text=_log_stat(s["path"])))
+
+            tk.Button(
+                btns, text="view", command=make_view(), font=small_font,
+                bg=SURFACE, fg=TEAL, activebackground=BG, activeforeground=TEAL,
+                relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
+            ).pack(side="left", padx=4)
+            purge_btn = tk.Button(
+                btns, text="purge", font=small_font,
+                bg=SURFACE, fg=ROSE, activebackground=BG, activeforeground=ROSE,
+                relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
+            )
+            purge_btn.configure(command=make_purge(src, stat_lbl))
+            purge_btn.pack(side="left", padx=4)
+
+    def _log_tail_text(path, n=200):
+        ok, out = run(f"tail -n {n} {path}", timeout=10)
+        return out if ok else f"(couldn't read {path} — {out})"
+
+    def _log_tail_sqlite(path, n=50):
+        ok, out = run(
+            f'sqlite3 -separator " | " {path} '
+            f'"SELECT timestamp, app_name, summary, body FROM notifications ORDER BY id DESC LIMIT {n};"',
+            timeout=10,
+        )
+        return out if ok else f"(couldn't read {path} — {out})"
+
+    def _log_view_popup(src):
+        popup = tk.Toplevel(root)
+        popup.title(src["name"])
+        popup.configure(bg=BG)
+        popup.geometry("900x600")
+        popup.attributes("-topmost", True)
+
+        tk.Label(
+            popup, text=f"{src['name']}  —  {src['path']}", font=small_font,
+            bg=BG, fg=FG_MUTED, anchor="w",
+        ).pack(fill="x", padx=14, pady=(12, 4))
+
+        text_frame = tk.Frame(popup, bg=BG)
+        text_frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        scroll = tk.Scrollbar(text_frame)
+        scroll.pack(side="right", fill="y")
+        box = tk.Text(
+            text_frame, bg=SURFACE, fg=FG, font=("JetBrains Mono", 10),
+            wrap="word", yscrollcommand=scroll.set, relief="flat",
+        )
+        box.pack(side="left", fill="both", expand=True)
+        scroll.configure(command=box.yview)
+        box.insert("1.0", "loading…")
+        box.configure(state="disabled")
+
+        def worker():
+            tail_fn = _log_tail_sqlite if src["kind"] == "sqlite" else _log_tail_text
+            text = tail_fn(src["path"])
+
+            def apply():
+                box.configure(state="normal")
+                box.delete("1.0", "end")
+                box.insert("1.0", text or "(empty)")
+                box.configure(state="disabled")
+                box.see("end")
+            root.after(0, apply)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        tk.Button(
+            popup, text="close", command=popup.destroy, font=small_font,
+            bg=SURFACE, fg=FG_MUTED, activebackground=OVERLAY, activeforeground=FG_MUTED,
+            relief="flat", bd=0, padx=14, pady=8,
+        ).pack(pady=(0, 12))
+
+    def _log_purge_failed(name, out):
+        popup = tk.Toplevel(root)
+        popup.title("purge failed")
+        popup.configure(bg=BG)
+        popup.resizable(False, False)
+        popup.attributes("-topmost", True)
+        popup.geometry(f"+{root.winfo_x()+120}+{root.winfo_y()+150}")
+        tk.Label(popup, text=f"couldn't clear {name}", font=label_font, bg=BG, fg=ROSE).pack(padx=20, pady=(16, 4))
+        tk.Label(
+            popup, text=(out or "")[:300] + ("\n\nlikely needs: arc sot install-sudoers" if "password" in (out or "") else ""),
+            font=small_font, bg=BG, fg=FG_MUTED, wraplength=380, justify="left",
+        ).pack(padx=20, pady=(0, 14))
+        tk.Button(
+            popup, text="ok", command=popup.destroy, font=small_font,
+            bg=SURFACE, fg=FG_MUTED, activebackground=OVERLAY, activeforeground=FG_MUTED,
+            relief="flat", bd=0, padx=14, pady=6,
+        ).pack(pady=(0, 16))
+
+    def _log_purge_confirm(src, on_done):
+        popup = tk.Toplevel(root)
+        popup.title("confirm")
+        popup.configure(bg=BG)
+        popup.resizable(False, False)
+        popup.attributes("-topmost", True)
+        popup.geometry(f"+{root.winfo_x()+120}+{root.winfo_y()+150}")
+
+        tk.Label(
+            popup, text=f"clear {src['name']}?", font=label_font, bg=BG, fg=FG,
+        ).pack(padx=20, pady=(16, 4))
+        tk.Label(
+            popup, text="This deletes the real file's content — cannot be undone.",
+            font=small_font, bg=BG, fg=ROSE,
+        ).pack(padx=20, pady=(0, 14))
+
+        row = tk.Frame(popup, bg=BG)
+        row.pack(pady=(0, 16))
+
+        def do_purge():
+            popup.destroy()
+            if src["kind"] == "sqlite":
+                cmd = f'sqlite3 {src["path"]} "DELETE FROM notifications; VACUUM;"'
+            elif src["sudo"]:
+                cmd = f"sudo -n truncate -s 0 {src['path']}"
+            else:
+                cmd = f"truncate -s 0 {src['path']}"
+
+            def worker():
+                ok, out = run(cmd, timeout=10)
+                def apply():
+                    on_done()
+                    if not ok:
+                        _log_purge_failed(src["name"], out)
+                root.after(0, apply)
+            threading.Thread(target=worker, daemon=True).start()
+
+        tk.Button(
+            row, text="yes, clear it", command=do_purge, font=small_font,
+            bg=SURFACE, fg=ROSE, activebackground=OVERLAY, activeforeground=ROSE,
+            relief="flat", bd=0, padx=12, pady=6,
+        ).pack(side="left", padx=6)
+        tk.Button(
+            row, text="cancel (keep)", command=popup.destroy, font=small_font,
+            bg=SURFACE, fg=FG_MUTED, activebackground=OVERLAY, activeforeground=FG_MUTED,
+            relief="flat", bd=0, padx=12, pady=6,
+        ).pack(side="left", padx=6)
+
     # ── Category action view ───────────────────────────────────────────────
     def build_category_view(name):
         _clear_content()
@@ -1060,6 +1267,8 @@ def main():
             build_status_view()
         elif name == "Cockpit":
             build_cockpit_view()
+        elif name == "Logs":
+            build_logs_view()
         else:
             build_category_view(name)
 

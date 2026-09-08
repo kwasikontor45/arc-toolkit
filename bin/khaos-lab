@@ -361,6 +361,16 @@ CATEGORIES = {
         Action("gvm-cloud: start",   "arc gvm cloud-start", confirm=True, timeout=180),
         Action("gvm-cloud: stop",    "arc gvm cloud-stop", confirm=True, timeout=60),
         Action("Open GVM dashboard (browser, cloud)", "arc gvm cloud-open", timeout=20),
+        # wazuh-cloud: added 2026-09-08, replacing the retired-OSSIM lab plan
+        # (see aws-infra's variables.tf for the full reasoning). Same
+        # tunnel+launch cloud-open pattern, same no-Elastic-IP live-lookup
+        # convention. Longer start timeout than gvm-cloud's -- a from-scratch
+        # rebuild's first boot runs the real 5-10min manager+indexer+
+        # dashboard install, not just a docker compose up.
+        Action("wazuh-cloud: status", "arc wazuh cloud-status"),
+        Action("wazuh-cloud: start",  "arc wazuh cloud-start", confirm=True, timeout=600),
+        Action("wazuh-cloud: stop",   "arc wazuh cloud-stop", confirm=True, timeout=60),
+        Action("Open Wazuh dashboard (browser, cloud)", "arc wazuh cloud-open", timeout=20),
         # ZAP's real day-to-day "interface" is its desktop GUI app, not a
         # browser tab -- daemon mode (arc zap start) is an API-only scan
         # backend for `arc zap spider/active <target>`, out of scope for a
@@ -886,8 +896,9 @@ def main():
             region = conf.get("AWS_LAB_REGION", "us-east-1")
             gvm_id = conf.get("GVM_INSTANCE_ID", "")
             soclab_id = conf.get("SOCLAB_INSTANCE_ID", "")
+            wazuh_id = conf.get("WAZUH_INSTANCE_ID", "")
             ok, out = run(
-                f"aws ec2 describe-instances --instance-ids {gvm_id} {soclab_id} "
+                f"aws ec2 describe-instances --instance-ids {gvm_id} {soclab_id} {wazuh_id} "
                 f"--region {region} --query 'Reservations[*].Instances[*].{{N:Tags[?Key==`Name`]|[0].Value,S:State.Name}}' "
                 f"--output text",
                 timeout=15,
@@ -903,6 +914,7 @@ def main():
                     states[parts[0]] = parts[1]
             gvm_s = states.get("gvm-cloud", "?")
             soclab_s = states.get("soclab-cloud", "?")
+            wazuh_s = states.get("wazuh-cloud", "?")
             ok2, out2 = run(
                 "aws budgets describe-budget --account-id 433985779144 "
                 "--budget-name aws-credits-100 --region us-east-1 "
@@ -915,9 +927,9 @@ def main():
             # mid-session, not a fault. any_running just drives a visible
             # color cue so it's never silently forgotten in the background.
             aws_lab_cache.update(
-                text=f"gvm {gvm_s}  ·  soc-lab {soclab_s}  ·  {spend}",
+                text=f"gvm {gvm_s}  ·  soc-lab {soclab_s}  ·  wazuh {wazuh_s}  ·  {spend}",
                 ok=True,
-                any_running=(gvm_s == "running" or soclab_s == "running"),
+                any_running=(gvm_s == "running" or soclab_s == "running" or wazuh_s == "running"),
             )
             root.after(0, apply_cache)
 

@@ -5452,12 +5452,71 @@ cmd_wazuh() {
       xdg-open "https://127.0.0.1:9393" >/dev/null 2>&1 &
       echo -e "  ${G}✓${N}  tunnel live (→ ${ip}) — opening https://127.0.0.1:9393  ${D}(admin / see ${WAZUH_CONF})${N}"
       ;;
+    otx-sync)
+      # Feeds OTX pulses into Wazuh's own STOCK malicious-ip/-domains/
+      # malware-hashes CDB lists (added 2026-09-08) -- deliberately does
+      # NOT build a parallel custom list/rule. Wazuh already ships
+      # 0999-malicious-ioc-rules.xml, 20 real rules (SSH, web, Windows,
+      # Suricata, Cloudflare WAF, FIM) all cross-referencing these exact
+      # three lists via `<list lookup="match_key">`. Appending OTX's IOCs
+      # into them activates every one of those rules against live
+      # threat-intel with zero new rule-writing -- this is the actual
+      # equivalent lesson to the original OSSIM/OTX exercise, just reusing
+      # a bigger, already-built detection surface instead of one narrow
+      # custom rule. Merges (append+dedupe), never overwrites -- Wazuh's
+      # own default IOC data in these lists stays intact.
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc wazuh otx-sync${N}  —  pull OTX pulses into wazuh-cloud's threat-intel lists"
+      echo -e "$HR\n"
+      [[ -f "$HOME/.config/arc/otx.conf" ]] || { echo -e "  ${R}✗${N}  ~/.config/arc/otx.conf not found — no OTX key configured"; echo -e "\n$HR"; return 1; }
+      local state; state=$(aws ec2 describe-instances --instance-ids "$WAZUH_INSTANCE_ID" --region "$AWS_LAB_REGION" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
+      if [[ "$state" != "running" ]]; then
+        echo -e "  ${R}✗${N}  wazuh-cloud isn't running — arc wazuh cloud-start first"
+        echo -e "\n$HR"; return 1
+      fi
+      local scratch; scratch=$(mktemp -d)
+      local LISTS_DIR="/var/ossec/etc/lists/malicious-ioc"
+
+      for pair in "ip:malicious-ip" "domain:malicious-domains" "hash:malware-hashes"; do
+        local kind="${pair%%:*}" fname="${pair#*:}"
+        echo -e "  ${D}fetching OTX ${kind} indicators...${N}"
+        python3 "$HOME/khaos-lab/arc-toolkit/bin/arc-otx-fetch.py" "$kind" > "$scratch/${fname}.new" 2>/dev/null
+        local n_new; n_new=$(wc -l < "$scratch/${fname}.new")
+
+        _aws_lab_ssh "$WAZUH_INSTANCE_ID" "sudo cat ${LISTS_DIR}/${fname}" > "$scratch/${fname}.current" 2>/dev/null
+        local n_before; n_before=$(wc -l < "$scratch/${fname}.current")
+
+        # Merge: existing entries win on conflict (keeps Wazuh's own
+        # curated family/label values), OTX adds anything new. Dedupe by
+        # key (everything before the first colon).
+        cat "$scratch/${fname}.current" "$scratch/${fname}.new" | \
+          awk -F: '!seen[$1]++' > "$scratch/${fname}.merged"
+        local n_after; n_after=$(wc -l < "$scratch/${fname}.merged")
+
+        scp -i "$AWS_LAB_SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+          "$scratch/${fname}.merged" "${AWS_LAB_SSH_USER}@$(_aws_lab_ip "$WAZUH_INSTANCE_ID"):/tmp/${fname}.merged" >/dev/null 2>&1
+        _aws_lab_ssh "$WAZUH_INSTANCE_ID" "sudo cp /tmp/${fname}.merged ${LISTS_DIR}/${fname} && sudo chown wazuh:wazuh ${LISTS_DIR}/${fname}" >/dev/null 2>&1
+        echo -e "  ${G}✓${N}  ${fname}: ${n_before} → ${n_after} entries (${n_new} pulled from OTX)"
+      done
+      rm -rf "$scratch"
+
+      echo -e "  ${D}restarting wazuh-manager (recompiles the .cdb lists)...${N}"
+      _aws_lab_ssh "$WAZUH_INSTANCE_ID" "sudo systemctl restart wazuh-manager" >/dev/null 2>&1
+      sleep 3
+      if _aws_lab_ssh "$WAZUH_INSTANCE_ID" "sudo systemctl is-active --quiet wazuh-manager"; then
+        echo -e "  ${G}✓${N}  wazuh-manager restarted, lists live"
+      else
+        echo -e "  ${R}✗${N}  wazuh-manager didn't come back cleanly — check arc wazuh cloud-status"
+      fi
+      echo -e "\n$HR"
+      ;;
     '')
       cmd_wazuh cloud-status
       ;;
     *)
       echo -e "${R}unknown:${N} arc wazuh $sub"
-      echo -e "${D}options: cloud-start · cloud-stop · cloud-status · cloud-open${N}"
+      echo -e "${D}options: cloud-start · cloud-stop · cloud-status · cloud-open · otx-sync${N}"
       ;;
   esac
 }

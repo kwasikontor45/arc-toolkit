@@ -5330,6 +5330,138 @@ cmd_gvm() {
   esac
 }
 
+cmd_wazuh() {
+  local sub="${1:-}"
+  _aws_lab_conf || { echo -e "$HR"; return 1; }
+  local RULES_FILE="$HOME/khaos-lab/aws-infra/wazuh/local_rules.xml"
+  local WAZUH_CONF="$HOME/.config/arc/wazuh-cloud.conf"
+  case "$sub" in
+    cloud-start)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc wazuh cloud-start${N}  —  bring up wazuh-cloud (m7i-flex.large, on-demand)"
+      echo -e "$HR\n"
+      aws ec2 start-instances --instance-ids "$WAZUH_INSTANCE_ID" --region "$AWS_LAB_REGION" >/dev/null 2>&1
+      echo -e "  ${D}waiting for instance + SSH...${N}"
+      aws ec2 wait instance-status-ok --instance-ids "$WAZUH_INSTANCE_ID" --region "$AWS_LAB_REGION" 2>/dev/null
+      local ip; ip=$(_aws_lab_ip "$WAZUH_INSTANCE_ID")
+
+      # Idempotent: the actual install (manager+indexer+dashboard, 5-10min)
+      # only needs to happen once ever -- a stop/start cycle preserves the
+      # installed packages + data on the EBS volume, same as gvm-cloud's
+      # docker volumes. Detect via the same file the old wazuh-soc-lab
+      # Ansible playbook used as its own "creates:" idempotency marker.
+      if _aws_lab_ssh "$WAZUH_INSTANCE_ID" "test -f /etc/wazuh-indexer/opensearch.yml" 2>/dev/null; then
+        echo -e "  ${D}already installed — ensuring services are up...${N}"
+        _aws_lab_ssh "$WAZUH_INSTANCE_ID" "sudo systemctl start wazuh-indexer wazuh-manager wazuh-dashboard" >/dev/null 2>&1
+      else
+        echo -e "  ${D}first boot — installing Wazuh manager+indexer+dashboard (5-10 min)...${N}"
+        scp -i "$AWS_LAB_SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+          "$RULES_FILE" "${AWS_LAB_SSH_USER}@${ip}:/tmp/local_rules.xml" >/dev/null 2>&1
+        _aws_lab_ssh "$WAZUH_INSTANCE_ID" "
+          set -e
+          curl -sO https://packages.wazuh.com/4.14/wazuh-install.sh
+          curl -sO https://packages.wazuh.com/4.14/config.yml
+          sudo bash wazuh-install.sh -a --ignore-check
+          sudo cp /tmp/local_rules.xml /var/ossec/etc/rules/local_rules.xml
+          sudo chown root:wazuh /var/ossec/etc/rules/local_rules.xml
+          sudo chmod 640 /var/ossec/etc/rules/local_rules.xml
+          sudo systemctl restart wazuh-manager
+          sudo systemctl enable wazuh-indexer wazuh-manager wazuh-dashboard
+        " > /tmp/wazuh-install.log 2>&1
+        # Real credentials, generated once at install time -- save them
+        # locally instead of letting them scroll by and vanish, same
+        # pattern as gvm-cloud.conf. Never echoed by arc itself elsewhere.
+        # Two separate pairs -- dashboard/indexer admin (port 443/9200) and
+        # the wazuh API user (port 55000, what OTX integration will use) --
+        # confirmed live 2026-09-08 these are genuinely different
+        # credentials, not the same pair reused. Patterns include the
+        # surrounding quotes specifically so 'admin' doesn't also match
+        # 'anomalyadmin', and 'wazuh' doesn't also match 'wazuh-wui'.
+        local dash_pass api_pass
+        dash_pass=$(_aws_lab_ssh "$WAZUH_INSTANCE_ID" "sudo tar -O -xf wazuh-install-files.tar wazuh-install-files/wazuh-passwords.txt 2>/dev/null | grep -A1 \"'admin'\" | tail -1 | awk -F\"'\" '{print \$2}'")
+        api_pass=$(_aws_lab_ssh "$WAZUH_INSTANCE_ID" "sudo tar -O -xf wazuh-install-files.tar wazuh-install-files/wazuh-passwords.txt 2>/dev/null | grep -A1 \"api_username: 'wazuh'\" | tail -1 | awk -F\"'\" '{print \$2}'")
+        {
+          echo "# Wazuh cloud instance credentials -- never echoed by arc itself."
+          echo "WAZUH_CLOUD_USER=admin"
+          echo "WAZUH_CLOUD_PASS=${dash_pass}"
+          echo "WAZUH_API_USER=wazuh"
+          echo "WAZUH_API_PASS=${api_pass}"
+        } > "$WAZUH_CONF"
+        chmod 600 "$WAZUH_CONF"
+        echo -e "  ${G}✓${N}  installed — credentials saved to ${WAZUH_CONF}"
+      fi
+
+      if _aws_lab_ssh "$WAZUH_INSTANCE_ID" "curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/" 2>/dev/null | grep -q "200\|302"; then
+        echo -e "  ${G}✓${N}  up — ${C}${ip}${N}"
+        echo -e "  ${D}tunnel:${N}  ssh -i ~/.ssh/aws-lab-key -L 9393:127.0.0.1:443 ${AWS_LAB_SSH_USER}@${ip}"
+        echo -e "  ${D}then:${N}    https://127.0.0.1:9393  ${D}(admin / see ${WAZUH_CONF})${N}"
+      else
+        echo -e "  ${R}✗${N}  dashboard not responding cleanly — check /tmp/wazuh-install.log or arc wazuh cloud-status"
+      fi
+      echo -e "\n$HR"
+      ;;
+    cloud-stop)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc wazuh cloud-stop${N}  —  stop wazuh-cloud"
+      echo -e "$HR\n"
+      # No data-sync step here, deliberately -- unlike gvm-cloud's pg_dump,
+      # this is a study/practice lab (alert history in OpenSearch indices,
+      # not anything irreplaceable), and EBS already preserves it across
+      # stop/start regardless. Add a real backup step if that changes.
+      _aws_lab_ssh "$WAZUH_INSTANCE_ID" "sudo systemctl stop wazuh-dashboard wazuh-manager wazuh-indexer" >/dev/null 2>&1
+      aws ec2 stop-instances --instance-ids "$WAZUH_INSTANCE_ID" --region "$AWS_LAB_REGION" >/dev/null 2>&1
+      aws ec2 wait instance-stopped --instance-ids "$WAZUH_INSTANCE_ID" --region "$AWS_LAB_REGION" 2>/dev/null
+      echo -e "  ${G}✓${N}  stopped"
+      echo -e "\n$HR"
+      ;;
+    cloud-status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc wazuh cloud-status${N}"
+      echo -e "$HR\n"
+      local state; state=$(aws ec2 describe-instances --instance-ids "$WAZUH_INSTANCE_ID" --region "$AWS_LAB_REGION" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
+      echo -e "  ${C}instance${N}  ${state}"
+      if [[ "$state" == "running" ]]; then
+        local ip; ip=$(_aws_lab_ip "$WAZUH_INSTANCE_ID")
+        echo -e "  ${C}ip${N}        ${ip}"
+        _aws_lab_ssh "$WAZUH_INSTANCE_ID" "sudo systemctl is-active wazuh-indexer wazuh-manager wazuh-dashboard 2>/dev/null | paste -sd ' '" 2>/dev/null
+      fi
+      echo -e "\n$HR"
+      ;;
+    cloud-open)
+      # Same tunnel-then-launch pattern as gvm/soclab -- see gvm's identical
+      # block for the full "why this replaced print-only instructions"
+      # rationale. Local port 9393, not gvm's 9392 -- lets both tunnels
+      # coexist if both instances are ever up at once.
+      _aws_lab_conf || return 1
+      local state; state=$(aws ec2 describe-instances --instance-ids "$WAZUH_INSTANCE_ID" --region "$AWS_LAB_REGION" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
+      if [[ "$state" != "running" ]]; then
+        echo -e "  ${R}✗${N}  wazuh-cloud isn't running — arc wazuh cloud-start first"
+        return 1
+      fi
+      local ip; ip=$(_aws_lab_ip "$WAZUH_INSTANCE_ID")
+      pkill -f "L 9393:127.0.0.1:443 " 2>/dev/null
+      sleep 0.3
+      if ! ssh -i "$AWS_LAB_SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -f -N \
+          -L 9393:127.0.0.1:443 "${AWS_LAB_SSH_USER}@${ip}"; then
+        echo -e "  ${R}✗${N}  tunnel failed to establish (ip: ${ip})"
+        return 1
+      fi
+      sleep 1
+      xdg-open "https://127.0.0.1:9393" >/dev/null 2>&1 &
+      echo -e "  ${G}✓${N}  tunnel live (→ ${ip}) — opening https://127.0.0.1:9393  ${D}(admin / see ${WAZUH_CONF})${N}"
+      ;;
+    '')
+      cmd_wazuh cloud-status
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc wazuh $sub"
+      echo -e "${D}options: cloud-start · cloud-stop · cloud-status · cloud-open${N}"
+      ;;
+  esac
+}
+
 cmd_desktop() {
   local sub="${1:-}"
   # GUI + SSH access to THIS machine from outside, over a Cloudflare Tunnel —
@@ -5601,6 +5733,7 @@ case "${1:-}" in
   soc-lab)        cmd_soclab "${@:2}" ;;
   aws-status)     cmd_aws_status ;;
   gvm)            cmd_gvm "${@:2}" ;;
+  wazuh)          cmd_wazuh "${@:2}" ;;
   zap)            cmd_zap "${@:2}" ;;
   darkstat)       cmd_darkstat "${@:2}" ;;
   desktop)        cmd_desktop "${@:2}" ;;

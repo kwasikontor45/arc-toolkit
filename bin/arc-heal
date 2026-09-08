@@ -531,6 +531,32 @@ HEALED=$(printf '%s\n' "${FINDINGS[@]}" | grep -c "^HEALED" || true)
 FLAGGED=$(printf '%s\n' "${FINDINGS[@]}" | grep -c "^FLAG" || true)
 OK=$(printf '%s\n' "${FINDINGS[@]}" | grep -c "^OK" || true)
 
+# Moved above both the LATEST and HISTORY writes (2026-09-08) so both can use
+# it -- the notification-body fix earlier this session only solved this for
+# the live popup. history.log itself still only ever recorded bare counts
+# ("healed=1"), so any past run was permanently opaque the moment a later run
+# overwrote latest-status.md -- the exact same "healed WHAT, from WHAT" gap,
+# just in a second place. Real complaint, caught live re-reading history.log.
+#
+# $2 (optional): cap the line count. Used capped for the notification popup
+# (a wall of text in a GUI bubble is its own kind of noise), left uncapped
+# for history.log -- that's the permanent record, it should hold everything.
+_heal_detail() {
+  local level="$1" cap="${2:-0}" f rest comp msg lines=() n
+  for f in "${FINDINGS[@]}"; do
+    [[ "$f" == "${level}::"* ]] || continue
+    rest="${f#*::}"; comp="${rest%%::*}"; msg="${rest#*::}"
+    lines+=("${comp}: ${msg}")
+  done
+  n=${#lines[@]}
+  if (( cap > 0 && n > cap )); then
+    printf '%s\n' "${lines[@]:0:cap}"
+    echo "…and $(( n - cap )) more — see the Logs view in khaos-lab or ~/khaos-lab/arc-heal-log/latest-status.md"
+  else
+    printf '%s\n' "${lines[@]}"
+  fi
+}
+
 {
   echo "# arc-heal — ${RUN_ID}"
   echo "Run took ${DURATION}s · ${OK} ok · ${HEALED} healed · ${FLAGGED} flagged"
@@ -546,38 +572,20 @@ OK=$(printf '%s\n' "${FINDINGS[@]}" | grep -c "^OK" || true)
   done
 } > "$LATEST"
 
-echo "$(date -Is) run=${RUN_ID} duration=${DURATION}s ok=${OK} healed=${HEALED} flagged=${FLAGGED}" >> "$HISTORY"
-
-# Real gap fixed 2026-09-08: the body was always "" before, so a notification
-# saying "1 thing(s) healed, see the log" told you nothing without a trip to
-# a terminal -- exactly the complaint that prompted this fix. Now the
-# notification itself names what happened. Capped at 3 lines so a rare burst
-# doesn't turn one popup into a wall of text -- the log still has everything.
-_heal_detail() {
-  # $1 = level (HEALED or FLAG). Splits on the literal "::" delimiter via
-  # bash parameter expansion, not a regex -- a naive `[^:]+` sed pattern
-  # breaks the moment a component name has its own single colon in it
-  # (e.g. "watcher:arc-clamav-watch"), caught live testing this before
-  # trusting it.
-  local level="$1" f rest comp msg lines=() n
-  for f in "${FINDINGS[@]}"; do
-    [[ "$f" == "${level}::"* ]] || continue
-    rest="${f#*::}"; comp="${rest%%::*}"; msg="${rest#*::}"
-    lines+=("${comp}: ${msg}")
-  done
-  n=${#lines[@]}
-  if (( n > 3 )); then
-    printf '%s\n' "${lines[@]:0:3}"
-    echo "…and $(( n - 3 )) more — see the Logs view in khaos-lab or ~/khaos-lab/arc-heal-log/latest-status.md"
-  else
-    printf '%s\n' "${lines[@]}"
+{
+  echo "$(date -Is) run=${RUN_ID} duration=${DURATION}s ok=${OK} healed=${HEALED} flagged=${FLAGGED}"
+  if [[ "$HEALED" -gt 0 ]]; then
+    _heal_detail HEALED | sed 's/^/    healed: /'
   fi
-}
+  if [[ "$FLAGGED" -gt 0 ]]; then
+    _heal_detail FLAG | sed 's/^/    flagged: /'
+  fi
+} >> "$HISTORY"
 
 if [[ "$FLAGGED" -gt 0 ]]; then
-  _notify critical dialog-warning "${FLAGGED} thing(s) need attention" "$(_heal_detail FLAG)"
+  _notify critical dialog-warning "${FLAGGED} thing(s) need attention" "$(_heal_detail FLAG 3)"
 elif [[ "$HEALED" -gt 0 ]]; then
-  _notify normal dialog-information "${HEALED} thing(s) self-healed automatically" "$(_heal_detail HEALED)"
+  _notify normal dialog-information "${HEALED} thing(s) self-healed automatically" "$(_heal_detail HEALED 3)"
 fi
 
 cat "$LATEST"

@@ -301,6 +301,32 @@ cmd_update() {
       -o Dpkg::Options::="--force-confdef" \
       -o Dpkg::Options::="--force-confold"
 
+  echo -e "\n${C}firefox developer edition...${N}"
+  local FF_UPDATE_SCRIPT="$HOME/dev-notes/surgery-tools/update-firefox-dev"
+  if [[ -x "$FF_UPDATE_SCRIPT" ]]; then
+    if "$FF_UPDATE_SCRIPT"; then
+      echo -e "  ${G}✓${N}  firefox-dev current"
+    else
+      echo -e "  ${R}✗${N}  firefox-dev update failed — /opt/firefox-dev left as-is"
+    fi
+  else
+    echo -e "  ${D}·${N}  update-firefox-dev not found — skipped"
+  fi
+
+  echo -e "\n${C}stale cleanup...${N}"
+  local stale_found=0
+  # Only /opt/firefox-dev is the real install — any duplicate extraction
+  # elsewhere (e.g. ~/firefox) is stray and will only grow stale/hog space.
+  if [[ -d "$HOME/firefox" ]]; then
+    local sz; sz=$(du -sh "$HOME/firefox" 2>/dev/null | cut -f1)
+    rm -rf "$HOME/firefox" && echo -e "  ${G}✓${N}  removed stray ~/firefox duplicate (${sz})" && stale_found=1
+  fi
+  # Leftover download from an interrupted firefox-dev update
+  if [[ -f /tmp/firefox-dev.tar.xz ]]; then
+    rm -f /tmp/firefox-dev.tar.xz && echo -e "  ${G}✓${N}  removed leftover /tmp/firefox-dev.tar.xz" && stale_found=1
+  fi
+  (( stale_found == 0 )) && echo -e "  ${D}·${N}  nothing stale"
+
   echo -e "\n${C}cleanup...${N}"
   sudo apt autoremove -y && sudo apt clean
 

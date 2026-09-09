@@ -5007,6 +5007,57 @@ cmd_phone() {
       adb shell pm list packages -3
       echo -e "\n$HR"
       ;;
+    info)
+      # Generic, device-agnostic profile -- works against any connected
+      # Android device, read-only (getprop/dumpsys only, no writes).
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc phone info${N}  —  device profile (read-only)"
+      echo -e "$HR\n"
+      _phone_device_check || { echo -e "$HR"; return 1; }
+      echo -e "  ${D}manufacturer${N}  $(adb shell getprop ro.product.manufacturer 2>/dev/null | tr -d '\r')"
+      echo -e "  ${D}model${N}         $(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r')"
+      echo -e "  ${D}android${N}       $(adb shell getprop ro.build.version.release 2>/dev/null | tr -d '\r')  (SDK $(adb shell getprop ro.build.version.sdk 2>/dev/null | tr -d '\r'))"
+      echo -e "  ${D}build id${N}      $(adb shell getprop ro.build.display.id 2>/dev/null | tr -d '\r')"
+      echo -e "  ${D}battery${N}       $(adb shell dumpsys battery 2>/dev/null | grep -m1 level | tr -d '\r' | grep -oE '[0-9]+')%"
+      local total disabled third
+      total=$(adb shell pm list packages 2>/dev/null | wc -l | tr -d '\r ')
+      disabled=$(adb shell pm list packages -d 2>/dev/null | wc -l | tr -d '\r ')
+      third=$(adb shell pm list packages -3 2>/dev/null | wc -l | tr -d '\r ')
+      echo -e "  ${D}packages${N}      ${M}${total}${N} total  ·  ${M}${third}${N} third-party  ·  ${M}${disabled}${N} disabled"
+      echo -e "\n$HR"
+      ;;
+    export)
+      # Generic snapshot for building a future vetted debloat brief for
+      # *this* device, the same starting point the Ovation 3's own
+      # 2026-06-22 session used -- purely a read (pm list + dumpsys), makes
+      # no changes. Deliberately doesn't judge what's safe to remove; that
+      # curation is real work done per-device (see phone-debloat-brief-
+      # ovation3.md) or handled generically by `arc phone uad`.
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc phone export${N}  —  full package/state snapshot (read-only)"
+      echo -e "$HR\n"
+      _phone_device_check || { echo -e "$HR"; return 1; }
+      local model out_dir out_file
+      model=$(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r' | tr ' /' '__')
+      out_dir="$HOME/dev-notes/hq-main/private-intel/session-log/phone-briefs"
+      mkdir -p "$out_dir"
+      out_file="$out_dir/${model}-$(date +%Y%m%d-%H%M%S).txt"
+      {
+        echo "# Package/state snapshot — $(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r')"
+        echo "# captured $(date -Is), read-only (pm list + dumpsys, no writes)"
+        echo
+        echo "## all packages"
+        adb shell pm list packages 2>/dev/null
+        echo
+        echo "## disabled packages"
+        adb shell pm list packages -d 2>/dev/null
+        echo
+        echo "## third-party packages"
+        adb shell pm list packages -3 2>/dev/null
+      } > "$out_file"
+      echo -e "  ${G}✓${N}  wrote $(wc -l < "$out_file") lines → ${M}${out_file}${N}"
+      echo -e "\n$HR"
+      ;;
     uad)
       echo -e "  ${C}Universal Android Debloater NG${N} — launching (v1.2.0, checksum-verified install, 2026-09-09)"
       if [[ -x "$HOME/.local/bin/uad-ng" ]]; then
@@ -5090,7 +5141,9 @@ cmd_phone() {
       echo -e "  ${C}${B}arc phone${N}  —  Android device management (ADB)"
       echo -e "$HR\n"
       echo -e "  ${D}status${N}                  connected device(s) + model"
+      echo -e "  ${D}info${N}                    full device profile (read-only, any device)"
       echo -e "  ${D}packages${N}                list installed third-party packages"
+      echo -e "  ${D}export${N}                  snapshot all/disabled/third-party packages to a file (read-only)"
       echo -e "  ${D}uad${N}                     launch Universal Android Debloater NG (GUI, any device)"
       echo -e "  ${D}ovation3-status${N}          summary of the vetted Ovation 3 lists"
       echo -e "  ${D}ovation3-never-remove${N}    show the will-brick list"

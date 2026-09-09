@@ -292,7 +292,10 @@ CATEGORIES = {
     # here too since this button triggers a real, if reversible, change.
     "Phone": [
         Action("Device: status",        "arc phone status"),
+        Action("Device: full info (read-only, any device)", "arc phone info", timeout=15),
         Action("Device: list packages", "arc phone packages", timeout=15),
+        Action("Device: export package snapshot (read-only, any device)",
+               "arc phone export", timeout=15),
         Action("UAD-ng: launch (any device, GUI)", "arc phone uad", detach=True),
         Action("Ovation 3: vetted-list summary", "arc phone ovation3-status"),
         Action("Ovation 3: never-remove list (will brick)", "arc phone ovation3-never-remove"),

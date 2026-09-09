@@ -4133,6 +4133,7 @@ cmd_help() {
   echo -e "  ${D}arc ${C}gvm${N}                   ${M}GVM/OpenVAS -- local removed 2026-08-31, moving to on-demand AWS${N}"
   echo -e "  ${D}arc ${C}zap${N}                   ${M}OWASP ZAP web app scanner (manual-start, lab-only targets by default)${N}"
   echo -e "  ${D}arc ${C}darkstat${N}              ${M}live traffic dashboard (manual-start, loopback only)${N}"
+  echo -e "  ${D}arc ${C}phone${N}                 ${M}Android device mgmt over ADB — status/info/packages/export/UAD-ng + Ovation 3 debloat${N}"
   echo -e "  ${D}arc ${C}desktop${N}               ${M}all outside access to THIS machine — tunnel (ssh+VNC) + desktop sharing, bundled${N}"
   echo -e "  ${D}arc ${C}desktop start${N}         ${M}enable it all (cloudflared + x11vnc + noVNC), survives reboot until stopped${N}"
   echo -e "  ${D}arc ${C}desktop stop${N}          ${M}disable it all — full teardown, survives reboot until started${N}"

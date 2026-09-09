@@ -4925,6 +4925,182 @@ for a in alerts[:15]:
   esac
 }
 
+cmd_phone() {
+  # Android device management over ADB. Built 2026-09-09 after finding no
+  # GUI existed for the manual `adb shell pm uninstall` work done on the
+  # Cricket Ovation 3 back in the 2026-06-22 debloat session -- that
+  # session's real, tested findings (which 62 packages are safe to remove,
+  # which 7 will brick the phone, which 25 to background-restrict instead
+  # of remove) are the actual source of truth here, not a generic list.
+  # `arc phone uad` covers *other* devices via the community-maintained
+  # Universal Android Debloater NG database; the ovation3-* subcommands are
+  # specifically this one already-vetted phone, reversible, confirm-gated.
+  local sub="${1:-}"
+  local BRIEF="$HOME/dev-notes/hq-main/private-intel/session-log/phone-debloat-brief-ovation3.md"
+
+  # Ovation 3's real, tested-safe-to-remove list (62 packages, verbatim
+  # from the 2026-06-22 session -- see $BRIEF for the full per-category
+  # breakdown and reasoning).
+  local -a OVATION3_SAFE=(
+    com.cricketwireless.minus com.cricketwireless.thescoop com.dti.cricket
+    com.att.iqi com.mizmowireless.acctmgt
+    com.facebook.appmanager com.facebook.katana com.facebook.system
+    com.amazon.appmanager com.amazon.mShop.android.shopping
+    com.google.android.apps.googleassistant com.google.android.apps.maps
+    com.google.android.apps.docs com.google.android.apps.tachyon
+    com.google.android.apps.nbu.paisa.user com.google.android.apps.photos
+    com.google.android.apps.restore com.google.android.apps.wallpaper
+    com.google.android.apps.wellbeing com.google.android.apps.chromecast.app
+    com.google.android.apps.youtube.music com.google.android.apps.messaging
+    com.google.android.videos com.google.android.tts com.google.android.feedback
+    com.google.android.configupdater com.google.android.onetimeinitializer
+    com.google.android.partnersetup com.google.android.printservice.recommendation
+    com.google.android.projection.gearhead com.google.android.syncadapters.contacts
+    com.google.android.tag com.google.mainline.telemetry com.google.android.youtube
+    com.google.android.calendar com.google.android.setupwizard
+    com.google.android.gms.location.history com.google.android.gmsintegration
+    com.google.android.gms com.google.android.gsf com.google.android.inputmethod.latin
+    com.android.chrome com.android.vending
+    com.ape.faceunlock com.ape.factory com.ape.mtbf com.ape.soundrecorder
+    com.ape.soundrecorderoverlay com.tinno.cktsetupwizard
+    com.android.egg com.android.traceur com.android.cts.ctsshim
+    com.android.cts.priv.ctsshim com.android.musicfx com.android.printspooler
+    com.android.bluetoothmidiservice com.android.dreams.basic
+    com.android.wallpaper.livepicker
+    com.mediatek.engineermode com.mediatek.mdmlsample
+    com.mediatek.batterywarning com.mediatek.lbs.em2.ui
+  )
+  # Will brick the phone -- never touch these, regardless of device.
+  local -a NEVER_REMOVE=(
+    com.google.android.permissioncontroller com.google.android.networkstack
+    com.google.android.providers.media.module com.google.android.ext.shared
+    com.android.dynsystem com.google.android.ims com.mediatek.ims
+  )
+
+  _phone_device_check() {
+    local n; n=$(adb devices | grep -c "device$" || true)
+    if [[ "$n" -eq 0 ]]; then
+      echo -e "  ${R}✗${N}  no device connected — plug in + enable USB debugging, then retry."
+      return 1
+    fi
+    return 0
+  }
+
+  case "$sub" in
+    status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc phone status${N}  —  connected Android device(s)"
+      echo -e "$HR\n"
+      adb devices -l
+      if _phone_device_check 2>/dev/null; then
+        echo
+        echo -e "  ${D}model${N}     $(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r')"
+        echo -e "  ${D}android${N}   $(adb shell getprop ro.build.version.release 2>/dev/null | tr -d '\r')"
+      fi
+      echo -e "\n$HR"
+      ;;
+    packages)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc phone packages${N}  —  installed packages (third-party)"
+      echo -e "$HR\n"
+      _phone_device_check || { echo -e "$HR"; return 1; }
+      adb shell pm list packages -3
+      echo -e "\n$HR"
+      ;;
+    uad)
+      echo -e "  ${C}Universal Android Debloater NG${N} — launching (v1.2.0, checksum-verified install, 2026-09-09)"
+      if [[ -x "$HOME/.local/bin/uad-ng" ]]; then
+        nohup "$HOME/.local/bin/uad-ng" >/dev/null 2>&1 &
+        disown
+        echo -e "  ${G}✓${N}  launched"
+      else
+        echo -e "  ${R}✗${N}  not installed — ~/.local/bin/uad-ng missing"
+        return 1
+      fi
+      ;;
+    ovation3-status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc phone ovation3-status${N}  —  vetted list summary"
+      echo -e "$HR\n"
+      echo -e "  ${D}safe-to-remove (tested 2026-06-22)${N}   ${M}${#OVATION3_SAFE[@]}${N} packages"
+      echo -e "  ${D}never remove (will brick)${N}            ${M}${#NEVER_REMOVE[@]}${N} packages"
+      echo -e "  ${D}full brief${N}  ${BRIEF}"
+      echo -e "\n$HR"
+      ;;
+    ovation3-never-remove)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc phone ovation3-never-remove${N}  —  will brick the phone, do not touch"
+      echo -e "$HR\n"
+      printf '  %s\n' "${NEVER_REMOVE[@]}"
+      echo -e "\n$HR"
+      ;;
+    ovation3-debloat)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc phone ovation3-debloat${N}  —  apply the tested-safe 62-package removal"
+      echo -e "$HR\n"
+      _phone_device_check || { echo -e "$HR"; return 1; }
+      local model; model=$(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r')
+      if [[ "$model" != "U668AC" ]]; then
+        echo -e "  ${R}✗${N}  connected device model is '${model}', not the Ovation 3 (U668AC)."
+        echo -e "  ${D}This package list was tested against that specific device — refusing to run it${N}"
+        echo -e "  ${D}against a different phone. Use 'arc phone uad' for other devices instead.${N}"
+        echo -e "$HR"
+        return 1
+      fi
+      echo -e "  ${Y}!${N}  about to run ${M}pm uninstall -k --user 0${N} on ${M}${#OVATION3_SAFE[@]}${N} packages."
+      echo -e "  ${D}Reversible per-package via: adb shell cmd package install-existing <pkg>${N}"
+      if [[ "${2:-}" == "--yes" ]]; then
+        echo -e "  ${D}--yes passed, skipping interactive prompt (caller already confirmed)${N}"
+      else
+        # No TTY (e.g. launched from khaos-lab's subprocess runner) means
+        # this read would hang silently until the caller's own timeout
+        # kills it -- fail loud instead of hanging.
+        if [[ ! -t 0 ]]; then
+          echo -e "  ${R}✗${N}  no TTY to prompt on — re-run with --yes if you've already confirmed."
+          echo -e "$HR"
+          return 1
+        fi
+        read -r -p "  proceed? [y/N] " ans
+        [[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "  aborted."; echo -e "$HR"; return 0; }
+      fi
+      local ok=0 fail=0
+      for pkg in "${OVATION3_SAFE[@]}"; do
+        if adb shell pm uninstall -k --user 0 "$pkg" >/dev/null 2>&1; then
+          echo -e "  ${G}✓${N} $pkg"
+          ok=$((ok+1))
+        else
+          echo -e "  ${R}✗${N} $pkg  ${D}(not present or already removed)${N}"
+          fail=$((fail+1))
+        fi
+      done
+      echo -e "\n  ${G}${ok} removed${N}  ·  ${D}${fail} skipped/already gone${N}"
+      echo -e "\n$HR"
+      ;;
+    ovation3-restore)
+      local pkg="${2:-}"
+      if [[ -z "$pkg" ]]; then
+        echo -e "  ${R}usage:${N} arc phone ovation3-restore <package.name>"
+        return 1
+      fi
+      _phone_device_check || return 1
+      adb shell cmd package install-existing "$pkg" && echo -e "  ${G}✓${N}  restored $pkg"
+      ;;
+    *)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc phone${N}  —  Android device management (ADB)"
+      echo -e "$HR\n"
+      echo -e "  ${D}status${N}                  connected device(s) + model"
+      echo -e "  ${D}packages${N}                list installed third-party packages"
+      echo -e "  ${D}uad${N}                     launch Universal Android Debloater NG (GUI, any device)"
+      echo -e "  ${D}ovation3-status${N}          summary of the vetted Ovation 3 lists"
+      echo -e "  ${D}ovation3-never-remove${N}    show the will-brick list"
+      echo -e "  ${D}ovation3-debloat [--yes]${N}  apply the tested-safe 62-package removal (confirm-gated, or --yes)"
+      echo -e "  ${D}ovation3-restore <pkg>${N}   reinstall one previously-removed package"
+      echo -e "\n$HR"
+      ;;
+  esac
+}
+
 cmd_soclab() {
   local sub="${1:-}"
   local dir="$HOME/khaos-lab/soc-lab"
@@ -5794,6 +5970,7 @@ case "${1:-}" in
   gvm)            cmd_gvm "${@:2}" ;;
   wazuh)          cmd_wazuh "${@:2}" ;;
   zap)            cmd_zap "${@:2}" ;;
+  phone)          cmd_phone "${@:2}" ;;
   darkstat)       cmd_darkstat "${@:2}" ;;
   desktop)        cmd_desktop "${@:2}" ;;
   cf-watch)       cmd_cf_watch "${@:2}" ;;

@@ -286,6 +286,19 @@ CATEGORIES = {
         Action("Site: build",           "arc site build", confirm=True, timeout=30),
         Action("Site: open (browser)",  "arc site open"),
     ],
+    # Android/ADB device management, added 2026-09-09. ovation3-debloat is
+    # confirm-gated in `arc phone` itself (real device-model check + a
+    # second interactive y/N before it touches anything) -- confirm=True
+    # here too since this button triggers a real, if reversible, change.
+    "Phone": [
+        Action("Device: status",        "arc phone status"),
+        Action("Device: list packages", "arc phone packages", timeout=15),
+        Action("UAD-ng: launch (any device, GUI)", "arc phone uad", detach=True),
+        Action("Ovation 3: vetted-list summary", "arc phone ovation3-status"),
+        Action("Ovation 3: never-remove list (will brick)", "arc phone ovation3-never-remove"),
+        Action("Ovation 3: apply tested-safe debloat (62 pkgs)",
+               "arc phone ovation3-debloat --yes", confirm=True, timeout=60),
+    ],
     "Security": [
         Action("SOP status",        "arc sop status"),
         Action("SOP violations",    "arc sop violations"),

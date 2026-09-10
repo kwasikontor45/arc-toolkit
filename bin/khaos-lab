@@ -336,6 +336,16 @@ CATEGORIES = {
         Action("Device: list packages", "arc phone packages", timeout=15),
         Action("Device: export package snapshot (read-only, any device)",
                "arc phone export", timeout=15),
+        # doctor/reboot added 2026-09-10 -- doctor turns the actual
+        # technique that found two real crash-looping disabled packages
+        # this session (dropbox crash log cross-checked against every
+        # disabled package, not just name-pattern guessing) into a
+        # one-shot read-only check. reboot is the same reboot+poll-for-
+        # boot_completed loop that turned out to be required (not
+        # optional) after two different live/OS-level fixes this session.
+        Action("Device: doctor (disabled pkgs vs. real crash evidence, read-only)",
+               "arc phone doctor", timeout=20),
+        Action("Device: reboot + wait for full boot", "arc phone reboot", confirm=True, timeout=90),
         Action("UAD-ng: launch (any device, GUI)", "arc phone uad", detach=True),
     ],
     "Security": [

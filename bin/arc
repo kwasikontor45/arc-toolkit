@@ -5077,6 +5077,67 @@ cmd_phone() {
         return 1
       fi
       ;;
+    doctor)
+      # The actual technique that found two real, live bugs on 2026-09-10
+      # (setupwizard + onetimeinitializer disabled, both crash-looping)
+      # turned into a reusable one-shot check: cross-reference every
+      # currently-disabled package against real crash evidence in the
+      # device's own crash log, instead of guessing from package names
+      # alone. Purely read-only (pm list + dumpsys dropbox).
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc phone doctor${N}  —  disabled packages vs. real crash evidence (read-only)"
+      echo -e "$HR\n"
+      _phone_device_check || { echo -e "$HR"; return 1; }
+      echo -e "  ${D}scanning dropbox crash log against every disabled package...${N}\n"
+      local dbx pkg hits found=0
+      dbx=$(adb shell dumpsys dropbox --print 2>/dev/null)
+      while IFS= read -r line; do
+        pkg="${line#package:}"
+        [[ -z "$pkg" ]] && continue
+        hits=$(grep -c "$pkg" <<< "$dbx" || true)
+        if [[ "$hits" -gt 0 ]]; then
+          echo -e "  ${R}✗${N}  ${M}${pkg}${N}  —  ${hits} crash-log mention(s), likely load-bearing despite being disabled"
+          found=1
+        fi
+      done < <(adb shell pm list packages -d 2>/dev/null)
+      (( found == 0 )) && echo -e "  ${G}✓${N}  no crash evidence found for any currently-disabled package"
+      echo
+      echo -e "  ${D}systemui health${N}"
+      local sui_pid; sui_pid=$(adb shell pidof com.android.systemui 2>/dev/null | tr -d '\r')
+      if [[ -n "$sui_pid" ]]; then
+        echo -e "  ${G}✓${N}  running, single stable pid (${sui_pid})"
+      else
+        echo -e "  ${R}✗${N}  not running — this is a real problem, not a debloat side-effect"
+      fi
+      echo -e "\n$HR"
+      ;;
+    reboot)
+      # Same reboot-then-poll-for-boot_completed loop done manually twice
+      # in the 2026-09-10 nav-button investigation (framework overlay and
+      # config_recentsComponentName changes both needed a real reboot to
+      # take effect -- a live re-enable/reinstall wasn't enough for
+      # either). Generic, safe for any connected device.
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc phone reboot${N}  —  reboot + wait for full boot"
+      echo -e "$HR\n"
+      _phone_device_check || { echo -e "$HR"; return 1; }
+      echo -e "  ${C}rebooting...${N}"
+      adb reboot
+      adb wait-for-device
+      echo -e "  ${D}device back on adb, waiting for boot_completed...${N}"
+      local i booted=""
+      for i in $(seq 1 60); do
+        booted=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+        [[ "$booted" == "1" ]] && break
+        sleep 3
+      done
+      if [[ "$booted" == "1" ]]; then
+        echo -e "  ${G}✓${N}  fully booted (~$((i * 3))s)"
+      else
+        echo -e "  ${R}✗${N}  still not reporting boot_completed after 180s — check the device"
+      fi
+      echo -e "\n$HR"
+      ;;
     *)
       echo -e "$HR"
       echo -e "  ${C}${B}arc phone${N}  —  Android device management (ADB)"
@@ -5085,6 +5146,8 @@ cmd_phone() {
       echo -e "  ${D}info${N}                    full device profile (read-only, any device)"
       echo -e "  ${D}packages${N}                list installed third-party packages"
       echo -e "  ${D}export${N}                  snapshot all/disabled/third-party packages to a file (read-only)"
+      echo -e "  ${D}doctor${N}                  cross-check disabled packages against real crash evidence (read-only)"
+      echo -e "  ${D}reboot${N}                  reboot device, wait for full boot"
       echo -e "  ${D}uad${N}                     launch Universal Android Debloater NG (GUI, any device)"
       echo -e "\n$HR"
       ;;

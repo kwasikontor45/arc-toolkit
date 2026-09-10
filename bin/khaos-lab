@@ -21,6 +21,7 @@ covered by a button.
 
 import calendar
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -265,6 +266,7 @@ CATEGORIES = {
     "Status": [],  # special-cased: live dashboard, not a button list
     "Cockpit": [],  # special-cased: network/pipeline/cloud/local live overview, added 2026-09-07
     "Logs": [],  # special-cased: click a log, review/purge/keep, added 2026-09-08
+    "Find": [],  # special-cased: search arc-lt-cmc/dev-notes/khaos-lab/vault-archive, added 2026-09-10
     "Network": [
         # ProtonVPN reinstalled 2026-09-07 -- CLI-only this time
         # (proton-vpn-cli, WireGuard-based), no GTK app. `arc vpn connect`/
@@ -545,6 +547,14 @@ CATEGORIES = {
         # - `arc logs ts`: Timeshift's own backup log, glob-picks the
         #   latest run -- doesn't fit LOG_SOURCES' fixed-path shape, wired
         #   as a plain action instead, reuses the CLI's own logic as-is.
+        # arc day (morning startup: USB check, backup status, repos) --
+        # verified sudo-free, safe one-click. arc sync (vault -> MEGA)
+        # deliberately NOT wired -- `sudo /usr/local/bin/vault-backup-mega`
+        # with no `-n`, same no-TTY trap as the clamav/chkrootkit/
+        # rkhunter scan-triggers above. arc mega (browse MEGA) also
+        # excluded -- needs a mode argument (ls/lsd/tree), same class as
+        # rename/wire/mirror being left terminal-only.
+        Action("Morning startup check (arc day)", "arc day", timeout=20),
         Action("Mount USB vault", "arc mount", timeout=15),
         Action("System snapshot (Timeshift, slow)", "arc snap", confirm=True, timeout=600),
         Action("Home sweep: status", "arc sweep status"),
@@ -671,9 +681,43 @@ def main():
 
     tk.Label(header, text="khaos", font=big_font, bg=BG, fg=GOLD).pack(side="left")
     tk.Label(header, text="☠️", font=big_font, bg=BG, fg=ROSE).pack(side="left")
-    tk.Label(header, text="lab", font=big_font, bg=BG, fg=GOLD).pack(side="left")
+    tk.Label(header, text="lab", font=big_font, bg=BG, fg=GOLD).pack(side="left", padx=(0, 16))
     clock_lbl = tk.Label(header, text="", font=small_font, bg=BG, fg=FG_MUTED)
     clock_lbl.pack(side="right")
+
+    # Global quick-search, added 2026-09-10 (v2 sweep). The Find view (own
+    # sidebar category) searches note CONTENT across the 4 tracked trees;
+    # this searches ACTION LABELS across every category -- the actual fix
+    # for "100+ buttons across 15 categories, can't find the one I want
+    # fast." Lives in the header (real free space between the title and
+    # the clock) rather than the 150px sidebar Canvas, which has no room
+    # for an Entry without reworking its manual Y-offset button layout.
+    # Pure in-memory string filtering, no subprocess -- cheap enough to
+    # re-render live on every keystroke rather than waiting for Enter.
+    search_var = tk.StringVar()
+    search_entry = tk.Entry(
+        header, textvariable=search_var, font=small_font,
+        bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat",
+    )
+    search_entry.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 16))
+    search_entry.insert(0, "quick-jump: type an action name…")
+    search_entry.configure(fg=FG_MUTED)
+    _search_placeholder = {"active": True}
+
+    def _search_focus_in(_e=None):
+        if _search_placeholder["active"]:
+            search_entry.delete(0, "end")
+            search_entry.configure(fg=FG)
+            _search_placeholder["active"] = False
+
+    def _search_focus_out(_e=None):
+        if not search_var.get().strip():
+            _search_placeholder["active"] = True
+            search_entry.insert(0, "quick-jump: type an action name…")
+            search_entry.configure(fg=FG_MUTED)
+
+    search_entry.bind("<FocusIn>", _search_focus_in)
+    search_entry.bind("<FocusOut>", _search_focus_out)
 
     tk.Frame(root, bg=OVERLAY, height=1).pack(fill="x", padx=14)
 
@@ -1366,7 +1410,140 @@ def main():
             relief="flat", bd=0, padx=12, pady=6,
         ).pack(side="left", padx=6)
 
+    # ── Find view (2026-09-10, v2 sweep) ────────────────────────────────────
+    # The literal answer to "surface dev-notes/hq-main/arc-lt-cmc" -- wires
+    # `arc find <query>` (cross-tree search: arc-lt-cmc + dev-notes +
+    # khaos-lab + vault/archive, already grouped/formatted, real content
+    # snippets with line numbers) directly into the panel. Same worker-
+    # thread + root.after(0, apply) marshal pattern as the Logs view's
+    # popup, just embedded in the main content pane instead of a Toplevel.
+    def build_find_view():
+        _clear_content()
+        wrap = tk.Frame(content, bg=SURFACE)
+        _embed_content(wrap, scrollable=True)
+
+        top = tk.Frame(wrap, bg=SURFACE)
+        top.pack(fill="x", padx=4, pady=(4, 10))
+        tk.Label(
+            top, text="search arc-lt-cmc + dev-notes + khaos-lab + vault/archive",
+            font=small_font, bg=SURFACE, fg=FG_MUTED, anchor="w",
+        ).pack(fill="x", pady=(0, 6))
+
+        entry_row = tk.Frame(top, bg=SURFACE)
+        entry_row.pack(fill="x")
+        query_var = tk.StringVar()
+        entry = tk.Entry(
+            entry_row, textvariable=query_var, font=label_font,
+            bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat",
+        )
+        entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 8))
+
+        text_frame = tk.Frame(wrap, bg=BG)
+        text_frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        scroll = tk.Scrollbar(text_frame)
+        scroll.pack(side="right", fill="y")
+        box = tk.Text(
+            text_frame, bg=SURFACE, fg=FG, font=("JetBrains Mono", 10),
+            wrap="word", yscrollcommand=scroll.set, relief="flat", height=24,
+        )
+        box.pack(side="left", fill="both", expand=True)
+        scroll.configure(command=box.yview)
+        box.insert("1.0", "type a query, press enter or click search")
+        box.configure(state="disabled")
+
+        def _show(text):
+            box.configure(state="normal")
+            box.delete("1.0", "end")
+            box.insert("1.0", text or "(no results)")
+            box.configure(state="disabled")
+            box.see("1.0")
+
+        def do_search(_evt=None):
+            q = query_var.get().strip()
+            if not q:
+                return
+            _show(f"searching for '{q}'…")
+
+            def worker():
+                ok, out = run(f"arc find {shlex.quote(q)}", timeout=20)
+                root.after(0, lambda: _show(out if ok else f"(search failed) {out}"))
+            threading.Thread(target=worker, daemon=True).start()
+
+        def do_ref():
+            _show("loading archived references…")
+
+            def worker():
+                ok, out = run("arc ref", timeout=15)
+                root.after(0, lambda: _show(out if ok else f"(failed) {out}"))
+            threading.Thread(target=worker, daemon=True).start()
+
+        entry.bind("<Return>", do_search)
+        tk.Button(
+            entry_row, text="search", command=do_search, font=small_font,
+            bg=OVERLAY, fg=TEAL, activebackground=BG, activeforeground=TEAL,
+            relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
+        ).pack(side="left", padx=(0, 6))
+        tk.Button(
+            entry_row, text="browse refs (arc ref)", command=do_ref, font=small_font,
+            bg=OVERLAY, fg=GOLD, activebackground=BG, activeforeground=GOLD,
+            relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
+        ).pack(side="left")
+
+        entry.focus_set()
+        _refresh_scrollregion(wrap)
+
     # ── Category action view ───────────────────────────────────────────────
+    def _render_action_row(wrap, action, prefix=""):
+        # Real usability gap found 2026-08-30 (user report): the label
+        # sits far-left, the button far-right, nothing visually ties
+        # them together -- easy to lose track of which button belongs
+        # to which row once a category has more than a handful of
+        # actions (SOC has 18+). Fix: the whole row highlights together
+        # on hover, so you get a clear "this is the one" confirmation
+        # before you click, regardless of the horizontal gap.
+        #
+        # Extracted 2026-09-10 (v2 sweep) from build_category_view's own
+        # loop body so the new global search-results view can render
+        # identical rows for matches pulled from *any* category, not just
+        # one -- `prefix` (e.g. "SOC — ") disambiguates which category a
+        # hit came from when browsing filtered results.
+        row = tk.Frame(wrap, bg=SURFACE)
+        row.pack(fill="x", pady=1)
+        label = tk.Label(
+            row, text=f"{prefix}{action.label}", font=label_font, bg=SURFACE, fg=FG,
+            anchor="w", padx=10, pady=6,
+        )
+        label.pack(side="left", fill="x", expand=True)
+
+        def make_cmd(a=action):
+            def go():
+                if a.detach:
+                    launch_detached_async(a.cmd)
+                elif a.confirm:
+                    confirm(a.label, a.cmd, a.timeout, on_yes_done=refresh_status)
+                else:
+                    run_async(a.cmd, timeout=a.timeout, on_done=refresh_status)
+            return go
+
+        btn = tk.Button(
+            row, text="run", command=make_cmd(), font=small_font,
+            bg=OVERLAY, fg=TEAL, activebackground=BG, activeforeground=TEAL,
+            relief="flat", bd=0, padx=14, pady=4, cursor="hand2",
+        )
+        btn.pack(side="right", padx=10, pady=6)
+
+        def _hover_on(_e, row=row, label=label):
+            row.configure(bg=OVERLAY)
+            label.configure(bg=OVERLAY)
+
+        def _hover_off(_e, row=row, label=label):
+            row.configure(bg=SURFACE)
+            label.configure(bg=SURFACE)
+
+        for w in (row, label, btn):
+            w.bind("<Enter>", _hover_on)
+            w.bind("<Leave>", _hover_off)
+
     def build_category_view(name):
         _clear_content()
 
@@ -1374,53 +1551,40 @@ def main():
         _embed_content(wrap, scrollable=True)
 
         for action in CATEGORIES[name]:
-            # Real usability gap found 2026-08-30 (user report): the label
-            # sits far-left, the button far-right, nothing visually ties
-            # them together -- easy to lose track of which button belongs
-            # to which row once a category has more than a handful of
-            # actions (SOC has 18). Fix: the whole row highlights together
-            # on hover, so you get a clear "this is the one" confirmation
-            # before you click, regardless of the horizontal gap.
-            row = tk.Frame(wrap, bg=SURFACE)
-            row.pack(fill="x", pady=1)
-            label = tk.Label(
-                row, text=action.label, font=label_font, bg=SURFACE, fg=FG,
-                anchor="w", padx=10, pady=6,
-            )
-            label.pack(side="left", fill="x", expand=True)
-
-            def make_cmd(a=action):
-                def go():
-                    if a.detach:
-                        launch_detached_async(a.cmd)
-                    elif a.confirm:
-                        confirm(a.label, a.cmd, a.timeout, on_yes_done=refresh_status)
-                    else:
-                        run_async(a.cmd, timeout=a.timeout, on_done=refresh_status)
-                return go
-
-            btn = tk.Button(
-                row, text="run", command=make_cmd(), font=small_font,
-                bg=OVERLAY, fg=TEAL, activebackground=BG, activeforeground=TEAL,
-                relief="flat", bd=0, padx=14, pady=4, cursor="hand2",
-            )
-            btn.pack(side="right", padx=10, pady=6)
-
-            def _hover_on(_e, row=row, label=label):
-                row.configure(bg=OVERLAY)
-                label.configure(bg=OVERLAY)
-
-            def _hover_off(_e, row=row, label=label):
-                row.configure(bg=SURFACE)
-                label.configure(bg=SURFACE)
-
-            for w in (row, label, btn):
-                w.bind("<Enter>", _hover_on)
-                w.bind("<Leave>", _hover_off)
+            _render_action_row(wrap, action)
 
         # Rows are all packed by now -- safe to measure the frame's real
         # required height and size the scrollbar to match. Doing this
         # inside the loop above would measure a partially-built frame.
+        _refresh_scrollregion(wrap)
+
+    def build_search_results_view(query):
+        # Global quick-jump (2026-09-10) -- flattens every category's
+        # Action list, filters by substring on the label (case-insensitive),
+        # renders with _render_action_row so results look/behave exactly
+        # like a normal category view, just sourced from everywhere at
+        # once. Special-view categories (Status/Cockpit/Logs/Find, empty
+        # lists in CATEGORIES) have nothing to match against -- expected,
+        # not a gap; they're each one click away in the sidebar regardless.
+        _clear_content()
+        wrap = tk.Frame(content, bg=SURFACE)
+        _embed_content(wrap, scrollable=True)
+
+        q = query.lower().strip()
+        hits = [
+            (cat, a) for cat, actions in CATEGORIES.items()
+            for a in actions if q in a.label.lower()
+        ]
+
+        if not hits:
+            tk.Label(
+                wrap, text=f"no actions match '{query}'", font=label_font,
+                bg=SURFACE, fg=FG_MUTED, anchor="w", padx=10, pady=10,
+            ).pack(fill="x")
+        else:
+            for cat, action in hits:
+                _render_action_row(wrap, action, prefix=f"{cat} — ")
+
         _refresh_scrollregion(wrap)
 
     # ── Sidebar nav ─────────────────────────────────────────────────────────
@@ -1437,6 +1601,8 @@ def main():
             build_cockpit_view()
         elif name == "Logs":
             build_logs_view()
+        elif name == "Find":
+            build_find_view()
         else:
             build_category_view(name)
 
@@ -1454,6 +1620,31 @@ def main():
         b.update_idletasks()
         _nav_y += b.winfo_reqheight() + 1
         nav_buttons[cat] = b
+
+    # Wire the global quick-search now that select()/build_search_results_view
+    # both exist. Live on every keystroke (cheap in-memory filter, no
+    # subprocess) -- typing shows results immediately; clearing the box
+    # (or Escape) reverts to whatever category was actually selected in
+    # the sidebar, rather than leaving the last search result stuck on
+    # screen with no obvious way back.
+    def _do_global_search(_evt=None):
+        if _search_placeholder["active"]:
+            return
+        q = search_var.get().strip()
+        if q:
+            for n, b in nav_buttons.items():
+                b.configure(bg=BG, fg=FG_MUTED)
+            build_search_results_view(q)
+        else:
+            select(current_cat.get())
+
+    def _clear_global_search(_evt=None):
+        search_var.set("")
+        select(current_cat.get())
+        root.focus_set()
+
+    search_entry.bind("<KeyRelease>", _do_global_search)
+    search_entry.bind("<Escape>", _clear_global_search)
 
     select("Status")
 

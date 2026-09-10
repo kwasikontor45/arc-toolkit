@@ -2018,6 +2018,22 @@ cmd_net() {
       fi
       sudo nethogs "$@"
       ;;
+    sniffnet)
+      # GUI, not a TUI like the three above -- launched detached, same
+      # pattern as arc phone uad. Binary already carries cap_net_admin/
+      # cap_net_raw (setcap, not setuid), so it captures live without sudo.
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc net sniffnet${N}  —  interactive traffic dashboard (GUI)"
+      echo -e "$HR\n"
+      if ! command -v sniffnet &>/dev/null; then
+        echo -e "  ${R}✗${N}  sniffnet not installed"
+        echo -e "$HR"; return 1
+      fi
+      nohup sniffnet "$@" >/dev/null 2>&1 &
+      disown
+      echo -e "  ${G}✓${N}  launched"
+      echo -e "\n$HR"
+      ;;
     stats)
       echo -e "$HR"
       echo -e "  ${C}${B}arc net stats${N}  —  interface rx/tx since boot"
@@ -2068,6 +2084,12 @@ cmd_net() {
       echo -e "  ${D}·  -t${N}                           tracemode (non-interactive)"
       echo -e "  ${D}·  -b${N}                           bytes mode (not bits)"
       echo -e "  ${D}  keys: q=quit  s=sort-sent  r=sort-recv  m=toggle units${N}"
+
+      echo ""
+      echo -e "  ${C}sniffnet${N}  ${D}—  interactive traffic dashboard (GUI, no sudo needed)${N}"
+      echo -e "  ${W}arc net sniffnet${N}               launch, pick an adapter in the app"
+      echo -e "  ${D}·  -a wlp1s0${N}                   preselect an adapter"
+      echo -e "  ${D}  tutorial: ~/dev-notes/hq-main/sniffnet-tutorial.md${N}"
 
       echo ""
       echo -e "  ${C}stats${N}  ${D}—  quick rx/tx snapshot per interface (no TUI, no sudo)${N}"

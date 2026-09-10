@@ -300,6 +300,11 @@ CATEGORIES = {
         Action("DNS: hot profile (boot-enabled, aggressive)", "arc-dns-hot", confirm=True),
         Action("DNS: cold profile (boot-disabled, system DNS)", "arc-dns-cold", confirm=True),
         Action("Network stats",     "arc net stats"),
+        # Sniffnet added 2026-09-10 -- interactive traffic-analysis GUI,
+        # complements Darkstat's always-on lightweight overview below.
+        # Binary already carries cap_net_admin/cap_net_raw, captures live
+        # with no sudo. Tutorial: ~/dev-notes/hq-main/sniffnet-tutorial.md
+        Action("Sniffnet: launch (GUI, no sudo needed)", "arc net sniffnet", detach=True),
         # bandwhich/iftop/nethogs deliberately not wired here -- all three
         # are full-screen TUIs that also need sudo, same shape as "Sudo
         # keepalive: start" above being left out on purpose: no real TTY

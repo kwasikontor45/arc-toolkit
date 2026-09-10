@@ -32,8 +32,9 @@ def main():
     cfg = pine.load_config()
 
     if not args:
+        speak_apps = sorted(a for a, r in cfg.get("app_rules", {}).items() if r.get("speak"))
         print(f"speak_enabled: {cfg.get('speak_enabled', True)}")
-        print(f"speak_apps: {cfg.get('speak_apps', [])}")
+        print(f"speak_apps: {speak_apps}")
         return
 
     arg = args[0]

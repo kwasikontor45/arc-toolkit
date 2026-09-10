@@ -27,6 +27,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+from datetime import datetime, time as dtime
 from pathlib import Path
 
 # Real bug found 2026-08-26: this process's own environment can come up
@@ -57,12 +58,14 @@ DEFAULT_CONFIG = {
     "sound_enabled": True,
     "sound_file": "/usr/share/sounds/freedesktop/stereo/bell.oga",
     "speak_enabled": True,
-    "speak_apps": ["arc-break"],
-    "ignored_apps": [],
+    "app_rules": {"arc-break": {"speak": True}},
     "bubble_theme": "rose-pine-moon",
     "bubble_max_visible": 4,
     "bubble_duration_ms": 12000,
     "bubble_width": 340,
+    "dnd_enabled": False,
+    "dnd_start": "23:00",
+    "dnd_end": "07:00",
 }
 
 # Notification playback volume, linear scale per paplay's --volume (65536 = 100%).
@@ -72,14 +75,40 @@ DEFAULT_CONFIG = {
 NOTIFY_VOLUME = "96000"
 
 
+def _migrate_app_rules(cfg, file_data):
+    """v1 configs stored two flat lists (ignored_apps, speak_apps) that had
+    to be kept in sync by hand across two separate widgets/edits. v2 uses
+    one per-app rules dict instead -- single source of truth for "what does
+    arc-pine do when app X notifies." Runs on every load; a no-op once the
+    config *file itself* already has app_rules (checked against file_data,
+    not the merged cfg -- cfg always has an app_rules key already, seeded
+    from DEFAULT_CONFIG, so checking cfg here would make this permanently
+    no-op and never actually migrate an old on-disk config). Old keys are
+    left in the file afterward (harmless, nothing reads them anymore)
+    rather than deleted, so a downgrade or manual inspection isn't
+    surprised by a missing key."""
+    if "app_rules" in file_data:
+        return
+    rules = {}
+    for app in file_data.get("ignored_apps", []) or []:
+        rules.setdefault(app, {})["mute"] = True
+    for app in file_data.get("speak_apps", []) or []:
+        rules.setdefault(app, {})["speak"] = True
+    if rules:
+        cfg["app_rules"] = rules
+
+
 def load_config():
     cfg = DEFAULT_CONFIG.copy()
+    file_data = {}
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH) as f:
-                cfg.update(json.load(f))
+                file_data = json.load(f)
         except Exception:
-            pass
+            file_data = {}
+    cfg.update(file_data)
+    _migrate_app_rules(cfg, file_data)
     return cfg
 
 
@@ -94,6 +123,52 @@ def save_config(cfg):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
+
+
+def app_rule(cfg, app_name):
+    return cfg.get("app_rules", {}).get(app_name, {})
+
+
+def is_muted(cfg, app_name):
+    return bool(app_rule(cfg, app_name).get("mute", False))
+
+
+def should_speak(cfg, app_name):
+    return bool(app_rule(cfg, app_name).get("speak", False))
+
+
+def set_app_rule(cfg, app_name, **flags):
+    """Update (not replace) the rule dict for one app, dropping keys set to
+    False/None so config.json doesn't accumulate `"mute": false` noise for
+    every app that was only ever toggled the other way. Returns cfg for
+    chaining; caller still owns calling save_config()."""
+    rules = cfg.setdefault("app_rules", {})
+    rule = rules.setdefault(app_name, {})
+    for k, v in flags.items():
+        if v:
+            rule[k] = v
+        else:
+            rule.pop(k, None)
+    if not rule:
+        rules.pop(app_name, None)
+    return cfg
+
+
+def in_dnd_window(cfg):
+    """True if we're currently inside the configured quiet-hours window.
+    Suppresses sound/speech only -- logging and the (silent) bubble still
+    happen, so DND never costs you the actual record of what fired."""
+    if not cfg.get("dnd_enabled", False):
+        return False
+    try:
+        start = dtime.fromisoformat(cfg.get("dnd_start", "23:00"))
+        end = dtime.fromisoformat(cfg.get("dnd_end", "07:00"))
+    except Exception:
+        return False
+    now = datetime.now().time()
+    if start <= end:
+        return start <= now < end
+    return now >= start or now < end  # window wraps past midnight
 
 
 def log_notification(app_name, summary, body, urgency_int):

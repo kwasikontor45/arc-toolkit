@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""
+arc-pine-selftest — end-to-end health check for the whole arc-pine pipeline.
+
+Fires one real notification through arc-pine-notify (same path every real
+watcher uses -- Suricata/Sagan/fail2ban/rkhunter/DNS/eero/lynis/chkrootkit/
+ClamAV/Orage), tagged with a unique nonce, then independently verifies each
+stage actually happened rather than trusting exit codes alone:
+
+  - logging   : the row landed in history.db with the right nonce
+  - bubbles   : arc-pine-bubbles' render socket is reachable
+  - speech    : Piper binary + voice model are present
+  - sound     : the configured sound file exists
+
+Exit 0 only if logging succeeded (the one stage with no legitimate reason
+to ever fail) -- the rest are reported but don't fail the run, since e.g.
+"bubble renderer not running" or "Piper not installed" are real, valid
+states arc-pine already tolerates by design (arc-pine-notify never lets a
+missing bubble socket block sound/speech, and vice versa).
+"""
+
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _arc_pine_common as pine
+
+SOCK_PATH = "/run/user/{}/arc-pine-bubbles.sock".format(os.getuid())
+NOTIFY_BIN = str(Path(__file__).resolve().parent / "arc-pine-notify")
+
+GREEN = "\033[0;32m"
+RED = "\033[0;31m"
+DIM = "\033[0;90m"
+RESET = "\033[0m"
+
+
+def check(label, ok, detail=""):
+    mark = f"{GREEN}✓{RESET}" if ok else f"{RED}✗{RESET}"
+    line = f"  {mark}  {label}"
+    if detail:
+        line += f"  {DIM}({detail}){RESET}"
+    print(line)
+    return ok
+
+
+def bubble_socket_reachable():
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(SOCK_PATH)
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
+def main():
+    print("arc-pine-selftest — firing a real notification through the full pipeline\n")
+
+    nonce = uuid.uuid4().hex[:12]
+    summary = "arc-pine self-test"
+    body = f"nonce:{nonce}"
+
+    rc = subprocess.run([NOTIFY_BIN, "normal", "arc-pine-selftest", summary, body]).returncode
+    check("arc-pine-notify exited cleanly", rc == 0, f"rc={rc}")
+
+    # Give the write a moment to land -- log_notification() is synchronous
+    # in arc-pine-notify's main thread, but poll briefly anyway rather than
+    # assume zero latency.
+    import sqlite3
+
+    logged = False
+    for _ in range(20):
+        try:
+            conn = sqlite3.connect(pine.DB_PATH)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM notifications WHERE body = ? ORDER BY id DESC LIMIT 1", (body,)
+            ).fetchone()
+            conn.close()
+        except Exception:
+            row = None
+        if row:
+            logged = True
+            break
+        time.sleep(0.1)
+    ok_log = check("logged to history.db", logged, f"nonce {nonce}")
+
+    bubble_up = bubble_socket_reachable()
+    check("bubble renderer reachable", bubble_up,
+          "arc-pine-bubbles.sock" if bubble_up else "not running -- arc-pine-bubbles down")
+
+    cfg = pine.load_config()
+    piper_ok = pine.PIPER_BIN.exists() and pine.PIPER_VOICE.exists()
+    check("Piper TTS available", piper_ok,
+          "binary+voice present" if piper_ok else "not installed -- speech silently no-ops")
+
+    sound_file = cfg.get("sound_file", "")
+    check("sound file exists", bool(sound_file) and Path(sound_file).exists(), sound_file)
+
+    dnd = pine.in_dnd_window(cfg)
+    print(f"\n  {DIM}quiet hours right now: {'yes -- sound/speech suppressed' if dnd else 'no'}{RESET}")
+
+    print()
+    if ok_log:
+        print(f"{GREEN}PASS{RESET} — core pipeline (log) confirmed working")
+        sys.exit(0)
+    else:
+        print(f"{RED}FAIL{RESET} — notification never reached history.db")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

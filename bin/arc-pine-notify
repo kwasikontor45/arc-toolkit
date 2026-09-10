@@ -56,14 +56,15 @@ def main():
     body = sys.argv[4] if len(sys.argv) > 4 else ""
 
     cfg = pine.load_config()
-    if app in cfg.get("ignored_apps", []):
+    if pine.is_muted(cfg, app):
         return
 
     pine.log_notification(app, summary, body, URGENCY_INT[urgency])
 
-    sound_file = cfg.get("sound_file") if cfg.get("sound_enabled", True) else None
+    dnd = pine.in_dnd_window(cfg)
+    sound_file = cfg.get("sound_file") if cfg.get("sound_enabled", True) and not dnd else None
     speak_text = None
-    if cfg.get("speak_enabled", True) and app in cfg.get("speak_apps", []):
+    if cfg.get("speak_enabled", True) and not dnd and pine.should_speak(cfg, app):
         speak_text = summary if not body else f"{summary}. {body}"
 
     audio_thread = pine.emit_audio_async(sound_file, speak_text)

@@ -82,52 +82,69 @@ def load_config():
     return cfg
 
 
-class Bubble(tk.Toplevel):
-    """One rounded-card notification, self-contained and self-dismissing."""
+URGENCY_RANK = {"low": 0, "normal": 1, "critical": 2}
 
-    def __init__(self, master, theme, width, urgency, app, summary, body, duration_ms, on_close):
+
+class Bubble(tk.Toplevel):
+    """One rounded-card notification, self-contained and self-dismissing.
+    Can absorb repeat notifications from the same app while it's still on
+    screen instead of spawning a sibling next to itself -- see bump()."""
+
+    def __init__(self, master, theme, width, urgency, app, summary, body, duration_ms, on_close, on_update):
         super().__init__(master)
         self.on_close = on_close
-        colors = THEMES.get(theme, THEMES["rose-pine-moon"])
-        accent = colors.get(urgency, colors["normal"])
+        self.on_update = on_update
+        self.colors = THEMES.get(theme, THEMES["rose-pine-moon"])
+        self.width = width
+        self.duration_ms = duration_ms
+        self.app = app
+        self.urgency = urgency
+        self.count = 1
 
         self.overrideredirect(True)
         self.attributes("-topmost", True)
-        self.configure(bg=colors["border"])
+        self.configure(bg=self.colors["border"])
 
         pad = 2  # border thickness, drawn as an outer frame in the border color
-        inner = tk.Frame(self, bg=colors["bg"])
-        inner.pack(padx=pad, pady=pad, fill="both", expand=True)
+        self.inner = tk.Frame(self, bg=self.colors["bg"])
+        self.inner.pack(padx=pad, pady=pad, fill="both", expand=True)
 
         # left accent strip signals urgency at a glance without needing to
         # read anything -- a thin colored bar, not a loud full-card color.
-        strip = tk.Frame(inner, bg=accent, width=4)
-        strip.pack(side="left", fill="y")
+        self.strip = tk.Frame(self.inner, bg=self.colors["normal"], width=4)
+        self.strip.pack(side="left", fill="y")
 
-        body_frame = tk.Frame(inner, bg=colors["bg"])
+        body_frame = tk.Frame(self.inner, bg=self.colors["bg"])
         body_frame.pack(side="left", fill="both", expand=True, padx=(10, 12), pady=10)
 
-        header = tk.Frame(body_frame, bg=colors["bg"])
+        header = tk.Frame(body_frame, bg=self.colors["bg"])
         header.pack(fill="x")
-        tk.Label(header, text=app, font=("DejaVu Sans", 9, "bold"),
-                 bg=colors["bg"], fg=accent).pack(side="left")
+        self.app_lbl = tk.Label(header, text=app, font=("DejaVu Sans", 9, "bold"),
+                                 bg=self.colors["bg"], fg=self.colors["normal"])
+        self.app_lbl.pack(side="left")
         close_btn = tk.Label(header, text="✕", font=("DejaVu Sans", 9),
-                              bg=colors["bg"], fg=colors["fg_muted"], cursor="hand2")
+                              bg=self.colors["bg"], fg=self.colors["fg_muted"], cursor="hand2")
         close_btn.pack(side="right")
         close_btn.bind("<Button-1>", lambda e: self._dismiss())
 
-        tk.Label(body_frame, text=summary, font=("DejaVu Sans", 10, "bold"),
-                 bg=colors["bg"], fg=colors["fg"], wraplength=width - 60,
-                 justify="left", anchor="w").pack(fill="x", pady=(4, 0))
+        self.summary_lbl = tk.Label(body_frame, text=summary, font=("DejaVu Sans", 10, "bold"),
+                                     bg=self.colors["bg"], fg=self.colors["fg"], wraplength=width - 60,
+                                     justify="left", anchor="w")
+        self.summary_lbl.pack(fill="x", pady=(4, 0))
 
+        self.body_lbl = None
         if body:
-            tk.Label(body_frame, text=body, font=("DejaVu Sans", 9),
-                      bg=colors["bg"], fg=colors["fg_muted"], wraplength=width - 60,
-                      justify="left", anchor="w").pack(fill="x", pady=(2, 0))
+            self.body_lbl = tk.Label(body_frame, text=body, font=("DejaVu Sans", 9),
+                                      bg=self.colors["bg"], fg=self.colors["fg_muted"], wraplength=width - 60,
+                                      justify="left", anchor="w")
+            self.body_lbl.pack(fill="x", pady=(2, 0))
+        self.body_frame = body_frame
 
         # click anywhere on the card to dismiss early, not just the x
-        for w in (inner, body_frame, header):
+        for w in (self.inner, body_frame, header):
             w.bind("<Button-1>", lambda e: self._dismiss())
+
+        self._apply_accent()
 
         # Real bug found live 2026-08-22: measuring winfo_reqheight() before
         # the window's own width was ever constrained let Tkinter compute
@@ -143,6 +160,42 @@ class Bubble(tk.Toplevel):
         self._height = max(self.winfo_reqheight(), 50)
         self._dismissed = False
         self._timer = self.after(duration_ms, self._dismiss)
+
+    def _apply_accent(self):
+        accent = self.colors.get(self.urgency, self.colors["normal"])
+        self.strip.configure(bg=accent)
+        self.app_lbl.configure(fg=accent)
+
+    def bump(self, urgency, summary, body):
+        """A new notification arrived for the same app while this bubble is
+        still showing -- absorb it instead of piling a sibling on the stack.
+        This is the actual fix for a burst (e.g. fail2ban firing 10x in a
+        second) covering the screen: it becomes one growing bubble, not 10."""
+        self.count += 1
+        if URGENCY_RANK.get(urgency, 1) > URGENCY_RANK.get(self.urgency, 1):
+            self.urgency = urgency  # escalate accent color, never downgrade it
+            self._apply_accent()
+        self.app_lbl.configure(text=f"{self.app}  ×{self.count}")
+        self.summary_lbl.configure(text=summary)
+        newest_body = body or f"+{self.count - 1} earlier notification(s)"
+        if self.body_lbl is None:
+            self.body_lbl = tk.Label(self.body_frame, text=newest_body, font=("DejaVu Sans", 9),
+                                      bg=self.colors["bg"], fg=self.colors["fg_muted"],
+                                      wraplength=self.width - 60, justify="left", anchor="w")
+            self.body_lbl.pack(fill="x", pady=(2, 0))
+        else:
+            self.body_lbl.configure(text=newest_body)
+
+        self.update_idletasks()
+        self._height = max(self.winfo_reqheight(), 50)
+
+        try:
+            self.after_cancel(self._timer)
+        except Exception:
+            pass
+        self._timer = self.after(self.duration_ms, self._dismiss)
+
+        self.on_update()
 
     def _dismiss(self):
         if self._dismissed:
@@ -169,12 +222,19 @@ class BubbleManager:
         self.root = root
         self.cfg = cfg
         self.active = []
+        self.active_by_app = {}
         self.pending = queue.deque()
 
     def screen_geom(self):
         return self.root.winfo_screenwidth(), self.root.winfo_screenheight()
 
     def push(self, urgency, app, summary, body):
+        # Same app already has a live bubble on screen -- absorb into it
+        # rather than spawning a sibling (the actual burst-flood fix).
+        existing = self.active_by_app.get(app)
+        if existing is not None:
+            existing.bump(urgency, summary, body)
+            return
         self.pending.append((urgency, app, summary, body))
         self._drain()
 
@@ -182,6 +242,13 @@ class BubbleManager:
         max_visible = self.cfg.get("bubble_max_visible", 4)
         while self.pending and len(self.active) < max_visible:
             urgency, app, summary, body = self.pending.popleft()
+            # A queued item can itself now target an app that gained an
+            # active bubble while it was waiting -- absorb it too instead
+            # of spawning late.
+            existing = self.active_by_app.get(app)
+            if existing is not None:
+                existing.bump(urgency, summary, body)
+                continue
             self._spawn(urgency, app, summary, body)
 
     def _spawn(self, urgency, app, summary, body):
@@ -189,13 +256,16 @@ class BubbleManager:
         width = self.cfg.get("bubble_width", 340)
         duration = self.cfg.get("bubble_duration_ms", 12000)
         b = Bubble(self.root, theme, width, urgency, app, summary, body,
-                   duration, on_close=self._on_close)
+                   duration, on_close=self._on_close, on_update=self._reflow)
         self.active.append(b)
+        self.active_by_app[app] = b
         self._reflow()
 
     def _on_close(self, bubble):
         if bubble in self.active:
             self.active.remove(bubble)
+        if self.active_by_app.get(bubble.app) is bubble:
+            del self.active_by_app[bubble.app]
         self._reflow()
         self._drain()
 

@@ -97,38 +97,54 @@ class ArcPine(tk.Tk):
                  bg=BG, fg=GOLD).pack(side="left")
 
         self.settings_btn = tk.Button(
-            top, text="⚙ settings", font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
+            top, text="⚙", font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
             activebackground=OVERLAY, activeforeground=TEAL, relief="flat", bd=0,
-            padx=8, pady=4, cursor="hand2", command=self.toggle_view,
+            padx=8, pady=4, cursor="hand2", command=lambda: self.set_view("settings"),
         )
-        self.settings_btn.pack(side="right", padx=(10, 0))
+        self.settings_btn.pack(side="right", padx=(4, 0))
+
+        self.insights_btn = tk.Button(
+            top, text="📊", font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
+            activebackground=OVERLAY, activeforeground=TEAL, relief="flat", bd=0,
+            padx=8, pady=4, cursor="hand2", command=lambda: self.set_view("insights"),
+        )
+        self.insights_btn.pack(side="right", padx=(4, 0))
 
         self.search_entry = tk.Entry(top, textvariable=self.search_var, font=("JetBrains Mono", 10),
                                       bg=SURFACE, fg=FG, insertbackground=FG, relief="flat")
         self.search_entry.pack(side="right", fill="x", expand=True)
         self.search_entry.focus()
 
-        # Body: history view and settings view share the same slot, only
+        # Body: history/insights/settings views share the same slot, only
         # one packed at a time -- simplest way to keep this single-window,
         # no extra Toplevel/dialog clutter.
         self.body = tk.Frame(self, bg=BG)
         self.body.pack(fill="both", expand=True)
 
         self._build_history_view()
+        self._build_insights_view()
         self._build_settings_view()
+        self._update_nav_buttons()
 
-    def toggle_view(self):
-        if self.view == "history":
-            self.view = "settings"
-            self.settings_btn.configure(text="✕ close")
-            self.history_view.pack_forget()
-            self.settings_view.pack(fill="both", expand=True)
+    def _view_frame(self, name):
+        return {"history": self.history_view, "insights": self.insights_view,
+                "settings": self.settings_view}[name]
+
+    def set_view(self, name):
+        if name == self.view:
+            name = "history"  # clicking the active view's icon returns home
+        self._view_frame(self.view).pack_forget()
+        self.view = name
+        self._view_frame(name).pack(fill="both", expand=True)
+        if name == "settings":
             self._load_settings_into_ui()
-        else:
-            self.view = "history"
-            self.settings_btn.configure(text="⚙ settings")
-            self.settings_view.pack_forget()
-            self.history_view.pack(fill="both", expand=True)
+        elif name == "insights":
+            self._refresh_insights()
+        self._update_nav_buttons()
+
+    def _update_nav_buttons(self):
+        self.settings_btn.configure(bg=OVERLAY if self.view == "settings" else SURFACE)
+        self.insights_btn.configure(bg=OVERLAY if self.view == "insights" else SURFACE)
 
     def _build_history_view(self):
         self.history_view = tk.Frame(self.body, bg=BG)
@@ -165,6 +181,58 @@ class ArcPine(tk.Tk):
 
         self.count_lbl = tk.Label(bottom, text="", font=("JetBrains Mono", 9), bg=BG, fg=FG_MUTED)
         self.count_lbl.pack(side="right")
+
+    def _build_insights_view(self):
+        self.insights_view = tk.Frame(self.body, bg=BG)
+        # not packed yet -- history view shows first
+
+        tk.Label(self.insights_view, text="last 7 days", font=("JetBrains Mono", 10, "bold"),
+                 bg=BG, fg=GOLD, anchor="w").pack(fill="x", padx=14, pady=(14, 4))
+
+        self.insights_total_lbl = tk.Label(self.insights_view, text="", font=("JetBrains Mono", 9),
+                                            bg=BG, fg=FG_MUTED, anchor="w")
+        self.insights_total_lbl.pack(fill="x", padx=14)
+
+        tk.Label(self.insights_view, text="noisiest apps", font=("JetBrains Mono", 10, "bold"),
+                 bg=BG, fg=GOLD, anchor="w").pack(fill="x", padx=14, pady=(16, 6))
+
+        self.insights_bars = tk.Frame(self.insights_view, bg=BG)
+        self.insights_bars.pack(fill="both", expand=True, padx=14)
+
+    def _refresh_insights(self):
+        for w in self.insights_bars.winfo_children():
+            w.destroy()
+
+        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+        total_row = db_query("SELECT COUNT(*) as c FROM notifications WHERE timestamp >= ?", (cutoff,))
+        total = total_row[0]["c"] if total_row else 0
+        self.insights_total_lbl.configure(text=f"{total} notifications")
+
+        rows = db_query(
+            "SELECT app_name, COUNT(*) as c FROM notifications WHERE timestamp >= ? "
+            "GROUP BY app_name ORDER BY c DESC LIMIT 8",
+            (cutoff,),
+        )
+
+        if not rows:
+            tk.Label(self.insights_bars, text="no notifications in the last 7 days",
+                     font=("JetBrains Mono", 9), bg=BG, fg=FG_MUTED).pack(pady=10)
+            return
+
+        max_c = max(r["c"] for r in rows)
+        for r in rows:
+            row = tk.Frame(self.insights_bars, bg=BG)
+            row.pack(fill="x", pady=3)
+            tk.Label(row, text=r["app_name"], font=("JetBrains Mono", 9), bg=BG, fg=FG,
+                     width=18, anchor="w").pack(side="left")
+            bar_track = tk.Frame(row, bg=SURFACE, height=14)
+            bar_track.pack(side="left", fill="x", expand=True, padx=(6, 6))
+            bar_track.pack_propagate(False)
+            frac = r["c"] / max_c if max_c else 0
+            tk.Frame(bar_track, bg=PINE, height=14, width=max(int(220 * frac), 3)
+                     ).place(x=0, y=0, relheight=1)
+            tk.Label(row, text=str(r["c"]), font=("JetBrains Mono", 9), bg=BG, fg=FG_MUTED,
+                     width=4, anchor="e").pack(side="left")
 
     def _build_settings_view(self):
         self.settings_view = tk.Frame(self.body, bg=BG)
@@ -230,31 +298,109 @@ class ArcPine(tk.Tk):
                        command=lambda: self._save_setting("speak_enabled", self.speak_var.get())
                        ).pack(side="left")
 
-        # -- App lists --
-        section("ignored apps  (comma-separated, never notify)")
+        # -- Quiet hours --
+        section("quiet hours  (mutes sound + speech only -- still logs, still shows a bubble)")
         r = row()
-        self.ignored_var = tk.StringVar()
-        ignored_entry = tk.Entry(r, textvariable=self.ignored_var, font=("JetBrains Mono", 9),
-                                  bg=SURFACE, fg=FG, insertbackground=FG, relief="flat")
-        ignored_entry.pack(side="left", fill="x", expand=True)
-        ignored_entry.bind("<FocusOut>", lambda e: self._save_setting(
-            "ignored_apps", [a.strip() for a in self.ignored_var.get().split(",") if a.strip()]))
-        ignored_entry.bind("<Return>", lambda e: self._save_setting(
-            "ignored_apps", [a.strip() for a in self.ignored_var.get().split(",") if a.strip()]))
+        self.dnd_var = tk.BooleanVar()
+        tk.Checkbutton(r, text="enabled", variable=self.dnd_var,
+                       font=("JetBrains Mono", 9), bg=BG, fg=FG, selectcolor=SURFACE,
+                       activebackground=BG, activeforeground=FG,
+                       command=lambda: self._save_setting("dnd_enabled", self.dnd_var.get())
+                       ).pack(side="left")
+        r = row()
+        tk.Label(r, text="from", font=("JetBrains Mono", 9), bg=BG, fg=FG_MUTED).pack(side="left")
+        self.dnd_start_var = tk.StringVar()
+        dnd_start_entry = tk.Entry(r, textvariable=self.dnd_start_var, font=("JetBrains Mono", 9),
+                                    bg=SURFACE, fg=FG, insertbackground=FG, relief="flat", width=6)
+        dnd_start_entry.pack(side="left", padx=(6, 12))
+        tk.Label(r, text="to", font=("JetBrains Mono", 9), bg=BG, fg=FG_MUTED).pack(side="left")
+        self.dnd_end_var = tk.StringVar()
+        dnd_end_entry = tk.Entry(r, textvariable=self.dnd_end_var, font=("JetBrains Mono", 9),
+                                  bg=SURFACE, fg=FG, insertbackground=FG, relief="flat", width=6)
+        dnd_end_entry.pack(side="left", padx=(6, 0))
+        tk.Label(r, text="HH:MM, 24h", font=("JetBrains Mono", 8), bg=BG, fg=FG_MUTED).pack(side="left", padx=(10, 0))
 
-        section("speak apps  (comma-separated, TTS-eligible)")
+        def _save_dnd_times(*_):
+            self._save_setting("dnd_start", self.dnd_start_var.get().strip())
+            self._save_setting("dnd_end", self.dnd_end_var.get().strip())
+        dnd_start_entry.bind("<FocusOut>", _save_dnd_times)
+        dnd_end_entry.bind("<FocusOut>", _save_dnd_times)
+
+        # -- Per-app rules --
+        section("per-app rules")
+        tk.Label(self.settings_view, text="apps seen in history, plus any you add below",
+                 font=("JetBrains Mono", 8), bg=BG, fg=FG_MUTED, anchor="w").pack(fill="x", padx=14)
+
+        rules_container = tk.Frame(self.settings_view, bg=BG)
+        rules_container.pack(fill="both", expand=True, padx=14, pady=(6, 0))
+        rules_canvas = tk.Canvas(rules_container, bg=BG, highlightthickness=0, height=160)
+        rules_scroll = ttk.Scrollbar(rules_container, orient="vertical", command=rules_canvas.yview)
+        self.rules_list = tk.Frame(rules_canvas, bg=BG)
+        self.rules_list.bind("<Configure>", lambda e: rules_canvas.configure(scrollregion=rules_canvas.bbox("all")))
+        rules_canvas.create_window((0, 0), window=self.rules_list, anchor="nw", width=400)
+        rules_canvas.configure(yscrollcommand=rules_scroll.set)
+        rules_canvas.pack(side="left", fill="both", expand=True)
+        rules_scroll.pack(side="right", fill="y")
+
         r = row()
-        self.speak_apps_var = tk.StringVar()
-        speak_entry = tk.Entry(r, textvariable=self.speak_apps_var, font=("JetBrains Mono", 9),
-                                bg=SURFACE, fg=FG, insertbackground=FG, relief="flat")
-        speak_entry.pack(side="left", fill="x", expand=True)
-        speak_entry.bind("<FocusOut>", lambda e: self._save_setting(
-            "speak_apps", [a.strip() for a in self.speak_apps_var.get().split(",") if a.strip()]))
-        speak_entry.bind("<Return>", lambda e: self._save_setting(
-            "speak_apps", [a.strip() for a in self.speak_apps_var.get().split(",") if a.strip()]))
+        tk.Label(r, text="add app:", font=("JetBrains Mono", 9), bg=BG, fg=FG_MUTED).pack(side="left")
+        self.add_app_var = tk.StringVar()
+        add_entry = tk.Entry(r, textvariable=self.add_app_var, font=("JetBrains Mono", 9),
+                              bg=SURFACE, fg=FG, insertbackground=FG, relief="flat")
+        add_entry.pack(side="left", fill="x", expand=True, padx=(6, 6))
+
+        def add_app():
+            name = self.add_app_var.get().strip()
+            if not name:
+                return
+            self.config.setdefault("app_rules", {}).setdefault(name, {})
+            pine.save_config(self.config)
+            self.add_app_var.set("")
+            self._rebuild_rules_list()
+        add_entry.bind("<Return>", lambda e: add_app())
+        tk.Button(r, text="+", command=add_app, font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
+                  activebackground=OVERLAY, activeforeground=TEAL, relief="flat", bd=0,
+                  padx=8, cursor="hand2").pack(side="left")
 
         tk.Label(self.settings_view, text="changes apply live -- no restart needed",
-                 font=("JetBrains Mono", 8), bg=BG, fg=FG_MUTED).pack(anchor="w", padx=14, pady=(16, 0))
+                 font=("JetBrains Mono", 8), bg=BG, fg=FG_MUTED).pack(anchor="w", padx=14, pady=(10, 10))
+
+    def _known_apps(self):
+        rows = db_query("SELECT DISTINCT app_name FROM notifications ORDER BY app_name")
+        seen = {r["app_name"] for r in rows}
+        seen |= set(self.config.get("app_rules", {}).keys())
+        return sorted(seen)
+
+    def _rebuild_rules_list(self):
+        for w in self.rules_list.winfo_children():
+            w.destroy()
+
+        apps = self._known_apps()
+        if not apps:
+            tk.Label(self.rules_list, text="no apps seen yet", font=("JetBrains Mono", 9),
+                     bg=BG, fg=FG_MUTED).pack(pady=10)
+            return
+
+        for app in apps:
+            rule = self.config.get("app_rules", {}).get(app, {})
+            r = tk.Frame(self.rules_list, bg=BG)
+            r.pack(fill="x", pady=1)
+            tk.Label(r, text=app, font=("JetBrains Mono", 9), bg=BG, fg=FG,
+                     width=22, anchor="w").pack(side="left")
+
+            mute_var = tk.BooleanVar(value=bool(rule.get("mute", False)))
+            speak_var = tk.BooleanVar(value=bool(rule.get("speak", False)))
+
+            def on_toggle(app=app, mute_var=mute_var, speak_var=speak_var):
+                pine.set_app_rule(self.config, app, mute=mute_var.get(), speak=speak_var.get())
+                pine.save_config(self.config)
+
+            tk.Checkbutton(r, text="mute", variable=mute_var, command=on_toggle,
+                           font=("JetBrains Mono", 9), bg=BG, fg=FG, selectcolor=SURFACE,
+                           activebackground=BG, activeforeground=FG).pack(side="left", padx=(0, 10))
+            tk.Checkbutton(r, text="speak", variable=speak_var, command=on_toggle,
+                           font=("JetBrains Mono", 9), bg=BG, fg=FG, selectcolor=SURFACE,
+                           activebackground=BG, activeforeground=FG).pack(side="left")
 
     def _load_settings_into_ui(self):
         self.config = pine.load_config()
@@ -263,8 +409,10 @@ class ArcPine(tk.Tk):
         self.duration_var.set(self.config.get("bubble_duration_ms", 12000) // 1000)
         self.sound_var.set(self.config.get("sound_enabled", True))
         self.speak_var.set(self.config.get("speak_enabled", True))
-        self.ignored_var.set(", ".join(self.config.get("ignored_apps", [])))
-        self.speak_apps_var.set(", ".join(self.config.get("speak_apps", ["arc-break"])))
+        self.dnd_var.set(self.config.get("dnd_enabled", False))
+        self.dnd_start_var.set(self.config.get("dnd_start", "23:00"))
+        self.dnd_end_var.set(self.config.get("dnd_end", "07:00"))
+        self._rebuild_rules_list()
 
     def _save_setting(self, key, value):
         self.config[key] = value

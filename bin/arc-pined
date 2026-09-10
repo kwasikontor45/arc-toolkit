@@ -51,14 +51,15 @@ def handle_notify(args):
     urgency  = int(hints.get("urgency", 1)) if hints else 1
 
     cfg = pine.load_config()
-    if app_name in cfg.get("ignored_apps", []):
+    if pine.is_muted(cfg, app_name):
         return
 
     pine.log_notification(app_name, summary, body, urgency)
 
-    sound_file = cfg.get("sound_file") if cfg.get("sound_enabled", True) else None
+    dnd = pine.in_dnd_window(cfg)
+    sound_file = cfg.get("sound_file") if cfg.get("sound_enabled", True) and not dnd else None
     speak_text = None
-    if cfg.get("speak_enabled", True) and app_name in cfg.get("speak_apps", []):
+    if cfg.get("speak_enabled", True) and not dnd and pine.should_speak(cfg, app_name):
         speak_text = summary if not body else f"{summary}. {body}"
 
     pine.emit_audio_async(sound_file, speak_text)

@@ -941,6 +941,27 @@ cmd_day() {
     echo -e "  ${Y}!${N}  no backup on record — run ${C}arc backup${N} before you start"
   fi
 
+  # Phone glance -- entirely skipped, zero delay, when nothing's plugged in
+  # (the common case). Deliberately cheap: two getprop calls, not the full
+  # `arc phone doctor` crash-log scan, so this never slows down a command
+  # meant to run every morning. Added 2026-09-10 after finding this phone
+  # had no screen lock set at all (Quality:0) -- that's exactly the kind
+  # of thing worth a loud, recurring nudge until it's actually fixed.
+  if adb devices 2>/dev/null | grep -q "device$"; then
+    echo ""
+    echo -e "  ${C}phone${N}"
+    local lock_q patch
+    lock_q=$(adb shell dumpsys lock_settings 2>/dev/null | grep -m1 "Quality:" | grep -oE "[0-9]+")
+    patch=$(adb shell getprop ro.build.version.security_patch 2>/dev/null | tr -d '\r')
+    if [[ "$lock_q" == "0" ]]; then
+      echo -e "  ${R}✗${N}  NO SCREEN LOCK SET — Settings → Security → Screen lock, do this first"
+    else
+      echo -e "  ${G}✓${N}  screen lock set"
+    fi
+    [[ -n "$patch" ]] && echo -e "  ${D}·${N}  security patch: ${patch}"
+    echo -e "  ${D}·${N}  ${C}arc phone doctor${N} for a full check"
+  fi
+
   echo ""
   echo -e "$HR"
   cmd_status

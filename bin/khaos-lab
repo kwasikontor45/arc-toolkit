@@ -57,6 +57,21 @@ LOG_SOURCES = [
      "path": Path("/var/log/ufw.log"), "sudo": True},
     {"key": "fail2ban", "name": "fail2ban", "kind": "text",
      "path": Path("/var/log/fail2ban.log"), "sudo": True},
+    # Added 2026-09-10, v2 sweep -- same read pattern (plain tail, no sudo
+    # needed to view; sudo=True here is about PURGE only, matching the
+    # sudoers-rule semantics above). rkhunter.log confirmed readable
+    # without sudo right now (root:adm 640, this user's in adm) but marked
+    # sudo=True anyway for purge consistency -- see arc-log-purge sudoers
+    # file, needs its own path list extended + `arc sot install-sudoers`
+    # re-run before purge works for these three specifically. clamav/
+    # chkrootkit logs don't exist yet (no scan run) -- view will correctly
+    # show "not found" until `arc sec clamav`/`arc sec chkrootkit` runs once.
+    {"key": "clamav", "name": "Antivirus (clamav)", "kind": "text",
+     "path": Path("/var/log/clamav-home-scan.log"), "sudo": True},
+    {"key": "chkrootkit", "name": "Rootkit scan (chkrootkit)", "kind": "text",
+     "path": Path("/var/log/chkrootkit.log"), "sudo": True},
+    {"key": "rkhunter", "name": "Rootkit scan (rkhunter)", "kind": "text",
+     "path": Path("/var/log/rkhunter.log"), "sudo": True},
 ]
 # Taskbar-icon bug (2026-08-27, real root cause found 2026-08-29): the
 # window-list entry showed a generic icon instead of khaos-lab's own art.
@@ -261,9 +276,27 @@ CATEGORIES = {
         Action("VPN: disconnect",   "arc vpn disconnect", confirm=True, timeout=15),
         Action("VPN: leak check",   "arc vpn leak-check", timeout=15),
         Action("VPN: autoconnect status", "arc vpn autoconnect"),
+        # killswitch toggle added 2026-09-10 (v2 sweep) -- confirm-gated,
+        # real security-relevant behavior change (blocks all internet if
+        # the VPN drops), matches the confirm pattern already used for
+        # connect/disconnect above.
+        Action("VPN: killswitch on",  "arc vpn killswitch on", confirm=True),
+        Action("VPN: killswitch off", "arc vpn killswitch off", confirm=True),
         Action("DNS status",        "arc dns status"),
         Action("DNS leak check",    "arc dns check", timeout=15),
         Action("Restart NextDNS",   "arc dns restart", confirm=True),
+        # on/off/blocklists added 2026-09-10 -- on/off toggle real system
+        # DNS resolution behavior (confirm-gated), blocklists is a
+        # read-only profile-config check.
+        Action("DNS: turn on",      "arc dns on", confirm=True),
+        Action("DNS: turn off",     "arc dns off", confirm=True),
+        Action("DNS: blocklists",   "arc dns blocklists"),
+        # arc-dns-hot/-cold are separate top-level binaries (not `arc dns`
+        # subcommands) -- hot = boot-enabled + aggressive filtering,
+        # cold = boot-disabled + fall back to system DNS. Both real,
+        # system-level config changes -- confirm-gated.
+        Action("DNS: hot profile (boot-enabled, aggressive)", "arc-dns-hot", confirm=True),
+        Action("DNS: cold profile (boot-disabled, system DNS)", "arc-dns-cold", confirm=True),
         Action("Network stats",     "arc net stats"),
         # bandwhich/iftop/nethogs deliberately not wired here -- all three
         # are full-screen TUIs that also need sudo, same shape as "Sudo
@@ -271,6 +304,10 @@ CATEGORIES = {
         # for the sudo prompt from this console, and a TUI can't be
         # captured as one-shot output anyway. Run `arc net bandwhich`,
         # `arc net iftop`, or `arc net nethogs` from a real terminal.
+        # one-shot status, added 2026-09-10 -- distinct from the background
+        # watch below, real data (internet/clients/nodes/dns/gateway),
+        # confirmed working live this session (2026-08-31 addendum).
+        Action("Eero: summary (one-shot)", "arc eero-summary", timeout=15),
         Action("Eero: start monitor", "arc eero-watch", confirm=True),
         # `arc eero-logs` itself pipes through glow/less then a `read`
         # prompt to clear/keep -- also not one-shot-capturable, so this
@@ -330,6 +367,35 @@ CATEGORIES = {
         # + claude-ops credentials already used by the AWS Lab tile, no
         # separate sudo/local access required.
         Action("CloudTrail: recent AWS events", "arc sec cloudtrail", timeout=15),
+        # v2 sweep, 2026-09-10 -- checked each of these live before wiring.
+        # clamav STATUS is sudo-free (just checks for a running scan / tails
+        # the log); the scan-START path (`arc sec clamav` bare) uses
+        # `nohup sudo bash -c ...` and hits the same no-TTY wall as
+        # `arc sec audit`/`arc sudo start` -- deliberately NOT wired, run
+        # `arc sec clamav` from a real terminal to kick off a scan.
+        # chkrootkit/rkhunter scan-triggers excluded for the identical
+        # reason (`sudo bash -c 'chkrootkit ...'`/`sudo rkhunter --check`).
+        # Their last-scan *results* are already covered read-only, no-sudo,
+        # via the Logs view (LOG_SOURCES gained clamav/chkrootkit/rkhunter
+        # entries this same pass).
+        Action("Clamav: scan status", "arc sec clamav status"),
+        # sec net: verified sudo-free (ss/nmcli/arp all run as this user).
+        Action("Network overview (ports/connections/dns/arp)", "arc sec net", timeout=15),
+        # arc sec f2b deliberately NOT wired at all -- every subcommand
+        # (banned/check/logs/ban/unban/restart) shells to
+        # `sudo fail2ban-client ...` with no matching NOPASSWD sudoers rule,
+        # same no-TTY trap. fail2ban activity is still visible read-only,
+        # no-sudo, via the Logs view's fail2ban entry (raw log tail).
+        #
+        # arc users: verified live which subcommands are actually sudo-free
+        # before wiring -- bare overview and `groups`/`passwd-age` are;
+        # `check` (needs `sudo passwd -S` per account) and `sessions` (needs
+        # `sudo lastb` for failed logins) are not, left terminal-only. Every
+        # mutating users subcommand (add/del/lock/unlock/chmod/chown/etc)
+        # stays terminal-only regardless -- never one-click from the GUI.
+        Action("Users: overview", "arc users"),
+        Action("Users: your groups", "arc users groups"),
+        Action("Users: password age", "arc users passwd-age"),
     ],
     # SOC -- every local Docker + monitor interface with a real UI, lab or
     # not (2026-08-29 -- widened from IDS/IPS-only per explicit request:
@@ -404,6 +470,53 @@ CATEGORIES = {
         Action("Kismet: stop (restores WiFi/VPN)", "arc kismet stop", confirm=True, timeout=20),
         Action("Open Kismet dashboard (browser)", "xdg-open http://127.0.0.1:2501"),
     ],
+    # Cloud -- new 2026-09-10, v2 sweep. The always-on py-bite EC2 box plus
+    # the two account-level cost/usage checks -- none of this had ANY
+    # panel presence before (the SOC category's "cloud" entries are the
+    # on-demand security labs, gvm/wazuh/soc-lab-cloud -- a different
+    # thing entirely from py-bite, which is the always-running personal
+    # server). `arc aws` needs ~/.ssh/py-bite.pem -- confirmed missing on
+    # this machine right now (checked live), so `status`/`logs`/`htop`
+    # will honestly report that until the key's restored from vault
+    # backup. Wired anyway -- an honest "key not found" is real, useful
+    # information, better than the box having zero panel presence at all.
+    "Cloud": [
+        Action("py-bite: status", "arc aws status", timeout=20),
+        Action("py-bite: recent auth.log", "arc aws logs", timeout=20),
+        Action("Combined AWS snapshot (both cloud instances + budget)", "arc aws-status", timeout=20),
+        Action("Cloudflare Workers usage (free-tier check)", "arc cf-watch", timeout=15),
+        Action("Cloudflare Workers usage: recent history", "arc cf-watch log"),
+    ],
+    # Dev -- new 2026-09-10. kali-workbench had zero panel presence;
+    # confirmed live it doesn't currently exist on this machine
+    # ("container not found") -- `start` should create it per `arc kali`'s
+    # own doc ("starts it if stopped"), wired anyway so that's a one-click
+    # provision rather than a remembered terminal command. `arc mirrors`
+    # (sync-mirrors cron status) is read-only, sudo-free.
+    "Dev": [
+        Action("Kali container: status", "arc kali status", timeout=15),
+        Action("Kali container: start",  "arc kali start", confirm=True, timeout=60),
+        Action("Kali container: stop",   "arc kali stop", confirm=True, timeout=20),
+        Action("Kali container: recent logs", "arc kali logs", timeout=15),
+        Action("Mirror sync: status (sync-mirrors cron)", "arc mirrors", timeout=15),
+    ],
+    # Remote Access -- new 2026-09-10. This controls actual inbound access
+    # to this machine (Cloudflare Tunnel + VNC bundle) and had zero panel
+    # presence -- deserves clear visibility given the security sensitivity,
+    # not just a command someone has to remember exists. Confirmed live:
+    # not installed on this machine right now, first-time setup needs
+    # `sudo bash ~/khaos-lab/setup-local-desktop-vnc.sh` run from a real
+    # terminal (one-time, needs a real sudo TTY) -- status is wired since
+    # it reports that honestly and instantly; start/stop wired too since
+    # once installed they're the actual real control surface for this,
+    # but if run before setup they'll just surface the same "not installed"
+    # message, not hang (verified `status` returns instantly, no sudo
+    # prompt, when uninstalled).
+    "Remote Access": [
+        Action("Status (Cloudflare Tunnel + VNC)", "arc desktop status", timeout=15),
+        Action("Enable (survives reboot until stopped)", "arc desktop start", confirm=True, timeout=30),
+        Action("Disable (full teardown)", "arc desktop stop", confirm=True, timeout=20),
+    ],
     "Maintenance": [
         Action("Disk overview",     "arc disk"),
         Action("System health",     "arc health"),
@@ -411,6 +524,36 @@ CATEGORIES = {
         Action("Deep clean (cache/apt/journal)", "arc clean", confirm=True, timeout=120),
         Action("Update system (apt)", "arc update", confirm=True, timeout=300),
         Action("Backup now",        "arc backup", confirm=True, timeout=60),
+        # v2 sweep additions, 2026-09-10:
+        # - `arc mount`: trivial, was missing, genuinely useful one-click.
+        # - `arc snap`: confirmed live this is a REAL Timeshift snapshot
+        #   (full rsync of the root filesystem via the same mechanism as
+        #   timeshift-check), not a quick MEGA sync as its one-line help
+        #   text implies -- genuinely slow (minutes), confirm-gated with a
+        #   long timeout matching the pattern already used for lynis/
+        #   wazuh-cloud-start.
+        # - `arc sweep status`/`dry`: read-only preview only, never `purge`
+        #   (that's a real delete, terminal-only on purpose).
+        # - `arc disk caches`/`clean`: caches is a sized report (safe),
+        #   clean actually reclaims space (confirm-gated, matches update/
+        #   backup's own pattern).
+        # - `arc keys`: public keys only, pure read -- does NOT re-add
+        #   `guard`/`guard-quiet` as a button, matches standing memory
+        #   (feedback_manual_start_tools.md) that this stays manual/opt-in.
+        # - `arc browser-clean`: closes Brave+Firefox as a side effect,
+        #   confirm-gated like the other disruptive fixes below.
+        # - `arc logs ts`: Timeshift's own backup log, glob-picks the
+        #   latest run -- doesn't fit LOG_SOURCES' fixed-path shape, wired
+        #   as a plain action instead, reuses the CLI's own logic as-is.
+        Action("Mount USB vault", "arc mount", timeout=15),
+        Action("System snapshot (Timeshift, slow)", "arc snap", confirm=True, timeout=600),
+        Action("Home sweep: status", "arc sweep status"),
+        Action("Home sweep: dry run (preview only)", "arc sweep dry", timeout=20),
+        Action("Disk: reclaimable caches (report only)", "arc disk caches", timeout=15),
+        Action("Disk: clean reclaimable caches", "arc disk clean", confirm=True, timeout=60),
+        Action("SSH public keys (both accounts)", "arc keys"),
+        Action("Browser cache clean (closes Brave+Firefox)", "arc browser-clean", confirm=True, timeout=30),
+        Action("Timeshift backup log", "arc logs ts", timeout=15),
         # arc-sot: the canonical SOT repo for every personal script (incl.
         # this app) -- status is a safe read-only drift check, snapshot
         # commits+pushes+mirrors to USB (confirm-gated, real network/git

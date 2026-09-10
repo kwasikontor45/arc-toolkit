@@ -301,6 +301,18 @@ cmd_update() {
       -o Dpkg::Options::="--force-confdef" \
       -o Dpkg::Options::="--force-confold"
 
+  echo -e "\n${C}cleanup...${N}"
+  sudo apt autoremove -y && sudo apt clean
+
+  # Firefox Dev Edition runs LAST, after the actual system update is fully
+  # done -- real incident, 2026-09-10: a user Ctrl+C during this step (a
+  # slow ~90MB download) killed the whole foreground process group,
+  # including this function, before apt autoremove/clean ever ran. Doesn't
+  # matter now that update-firefox-dev is itself crash-safe (atomic
+  # swap, never touches the live install until a full verified build is
+  # staged) -- but putting the fast, important, local work first means an
+  # impatient Ctrl+C during the slow network step can never cost you the
+  # apt cleanup too.
   echo -e "\n${C}firefox developer edition...${N}"
   local FF_UPDATE_SCRIPT="$HOME/dev-notes/surgery-tools/update-firefox-dev"
   if [[ -x "$FF_UPDATE_SCRIPT" ]]; then
@@ -321,14 +333,21 @@ cmd_update() {
     local sz; sz=$(du -sh "$HOME/firefox" 2>/dev/null | cut -f1)
     rm -rf "$HOME/firefox" && echo -e "  ${G}✓${N}  removed stray ~/firefox duplicate (${sz})" && stale_found=1
   fi
-  # Leftover download from an interrupted firefox-dev update
-  if [[ -f /tmp/firefox-dev.tar.xz ]]; then
-    rm -f /tmp/firefox-dev.tar.xz && echo -e "  ${G}✓${N}  removed leftover /tmp/firefox-dev.tar.xz" && stale_found=1
-  fi
+  # update-firefox-dev's own trap cleans these up on a normal interrupt --
+  # this is the defense-in-depth backstop for a SIGKILL or crash that
+  # bypasses the trap entirely (confirmed live, 2026-09-10: a `kill -9`
+  # mid-download left exactly .old/.new/.partial artifacts behind).
+  for f in /tmp/firefox-dev.tar.xz /tmp/firefox-dev.tar.xz.partial; do
+    if [[ -f "$f" ]]; then
+      rm -f "$f" && echo -e "  ${G}✓${N}  removed leftover $(basename "$f")" && stale_found=1
+    fi
+  done
+  for d in /opt/firefox-dev.new /opt/firefox-dev.old; do
+    if sudo test -d "$d" 2>/dev/null; then
+      sudo rm -rf "$d" && echo -e "  ${G}✓${N}  removed leftover $(basename "$d")" && stale_found=1
+    fi
+  done
   (( stale_found == 0 )) && echo -e "  ${D}·${N}  nothing stale"
-
-  echo -e "\n${C}cleanup...${N}"
-  sudo apt autoremove -y && sudo apt clean
 
   local end mb
   end=$(disk_kb)

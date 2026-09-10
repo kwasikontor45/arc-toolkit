@@ -942,21 +942,26 @@ cmd_day() {
   fi
 
   # Phone glance -- entirely skipped, zero delay, when nothing's plugged in
-  # (the common case). Deliberately cheap: two getprop calls, not the full
+  # (the common case). Deliberately cheap: two adb calls, not the full
   # `arc phone doctor` crash-log scan, so this never slows down a command
   # meant to run every morning. Added 2026-09-10 after finding this phone
-  # had no screen lock set at all (Quality:0) -- that's exactly the kind
-  # of thing worth a loud, recurring nudge until it's actually fixed.
+  # had no screen lock set at all -- real bug in the first version of this
+  # check, fixed same day: `dumpsys lock_settings`'s top-level "Quality:"
+  # field does NOT track the actual credential (it stayed 0 even after a
+  # real pattern lock was confirmed set via CredentialType, changed
+  # 2026-09-10 13:36:58) -- it's a DevicePolicyManager minimum-quality
+  # policy value, unrelated to whether a personal lock exists. CredentialType
+  # (NONE vs PATTERN/PIN/PASSWORD) is the field that's actually true.
   if adb devices 2>/dev/null | grep -q "device$"; then
     echo ""
     echo -e "  ${C}phone${N}"
-    local lock_q patch
-    lock_q=$(adb shell dumpsys lock_settings 2>/dev/null | grep -m1 "Quality:" | grep -oE "[0-9]+")
+    local cred_type patch
+    cred_type=$(adb shell dumpsys lock_settings 2>/dev/null | grep -m1 "CredentialType:" | awk '{print $2}' | tr -d '\r')
     patch=$(adb shell getprop ro.build.version.security_patch 2>/dev/null | tr -d '\r')
-    if [[ "$lock_q" == "0" ]]; then
+    if [[ "$cred_type" == "NONE" || -z "$cred_type" ]]; then
       echo -e "  ${R}✗${N}  NO SCREEN LOCK SET — Settings → Security → Screen lock, do this first"
     else
-      echo -e "  ${G}✓${N}  screen lock set"
+      echo -e "  ${G}✓${N}  screen lock set (${cred_type})"
     fi
     [[ -n "$patch" ]] && echo -e "  ${D}·${N}  security patch: ${patch}"
     echo -e "  ${D}·${N}  ${C}arc phone doctor${N} for a full check"

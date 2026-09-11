@@ -89,6 +89,45 @@ def _lerp_hex(c1, c2, t):
     return _rgb_to_hex((r1 + (r2 - r1) * t, g1 + (g2 - g1) * t, b1 + (b2 - b1) * t))
 
 
+ANIM_STEPS = 6
+ANIM_DELAY_MS = 14  # ~84ms total -- felt as smooth motion, not a visible slideshow
+
+
+def _animate(widget, anim_state, bg_from, bg_to, fg_from, fg_to):
+    """Steps a widget's bg+fg together from one pair of hex colors to
+    another over ANIM_STEPS*ANIM_DELAY_MS ms, instead of snapping
+    instantly -- the single biggest reason hover/selection felt "dead"
+    despite already having the right colors. `anim_state` is a shared
+    dict the caller owns (holds the in-flight `after` job id and the
+    color actually on screen right now) so a second call -- e.g. the
+    mouse re-entering before a leave-animation finishes -- can cancel
+    the old job and start smoothly from the *real current* color instead
+    of jumping back to whatever the old target was."""
+    old_job = anim_state.get("job")
+    if old_job is not None:
+        try:
+            widget.after_cancel(old_job)
+        except Exception:
+            pass
+
+    def step(i=0):
+        t = i / ANIM_STEPS
+        bg = _lerp_hex(bg_from, bg_to, t)
+        fg = _lerp_hex(fg_from, fg_to, t)
+        try:
+            widget.configure(bg=bg, fg=fg)
+        except tk.TclError:
+            return  # widget destroyed mid-animation
+        anim_state["bg"] = bg
+        anim_state["fg"] = fg
+        if i < ANIM_STEPS:
+            anim_state["job"] = widget.after(ANIM_DELAY_MS, lambda: step(i + 1))
+        else:
+            anim_state["job"] = None
+
+    step()
+
+
 def _surrounding_phases(hour):
     """Returns (name1, name2, t) -- the two anchor phases the given hour
     falls between, and how far through that window it is (0.0-1.0).
@@ -242,28 +281,40 @@ def button(parent, text, command=None, font=None, bg=SURFACE, fg=TEAL,
     this gates the click handler itself, not only the look."""
     hover_fg = hover_fg or fg
     state = {"enabled": True, "fg": fg, "bg": bg, "hover_bg": hover_bg, "hover_fg": hover_fg}
+    anim = {"job": None, "bg": bg, "fg": fg}
     lbl = tk.Label(parent, text=text, font=font, bg=bg, fg=fg,
                     padx=padx, pady=pady, cursor="hand2")
 
     def on_enter(_e):
         if state["enabled"]:
-            lbl.configure(bg=state["hover_bg"], fg=state["hover_fg"])
+            _animate(lbl, anim, anim["bg"], state["hover_bg"], anim["fg"], state["hover_fg"])
 
     def on_leave(_e):
         if state["enabled"]:
-            lbl.configure(bg=state["bg"], fg=state["fg"])
+            _animate(lbl, anim, anim["bg"], state["bg"], anim["fg"], state["fg"])
 
     def on_click(_e):
         if state["enabled"] and command:
             command()
 
+    def _snap(bg, fg):
+        """Cancel any in-flight hover animation and set the look
+        immediately -- used by the three deliberate-state-change methods
+        below, none of which should race or blend with a hover fade."""
+        job = anim.get("job")
+        if job is not None:
+            try:
+                lbl.after_cancel(job)
+            except Exception:
+                pass
+            anim["job"] = None
+        anim["bg"], anim["fg"] = bg, fg
+        lbl.configure(bg=bg, fg=fg)
+
     def set_enabled(enabled):
         state["enabled"] = enabled
-        lbl.configure(
-            cursor="hand2" if enabled else "arrow",
-            fg=state["fg"] if enabled else disabled_fg,
-            bg=state["bg"],
-        )
+        _snap(state["bg"], state["fg"] if enabled else disabled_fg)
+        lbl.configure(cursor="hand2" if enabled else "arrow")
 
     def set_look(bg=None, fg=None):
         """Persistent look override, distinct from hover -- e.g. a
@@ -275,7 +326,7 @@ def button(parent, text, command=None, font=None, bg=SURFACE, fg=TEAL,
         if fg is not None:
             state["fg"] = fg
         if state["enabled"]:
-            lbl.configure(bg=state["bg"], fg=state["fg"])
+            _snap(state["bg"], state["fg"])
 
     def retheme(bg=None, hover_bg=None):
         """Live re-color for the circadian engine -- only the ambient
@@ -285,7 +336,7 @@ def button(parent, text, command=None, font=None, bg=SURFACE, fg=TEAL,
             state["bg"] = bg
         if hover_bg is not None:
             state["hover_bg"] = hover_bg
-        lbl.configure(bg=state["bg"], fg=state["fg"] if state["enabled"] else disabled_fg)
+        _snap(state["bg"], state["fg"] if state["enabled"] else disabled_fg)
 
     lbl.bind("<Enter>", on_enter)
     lbl.bind("<Leave>", on_leave)

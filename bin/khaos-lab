@@ -23,11 +23,15 @@ import calendar
 import re
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _arc_ui as ui
 from tkinter import font as tkfont
 
 HEADER_ICON_PATH = Path.home() / ".local/share/khaos-lab/header-icon.png"
@@ -195,16 +199,25 @@ def strip_banner(text, cmd=None):
         lines.append(stripped)
     return "\n".join(lines)
 
-# ── Rose Pine Moon (exact values, matching arc-break/arc-pine) ─────────────
-BG       = "#232136"
-SURFACE  = "#2a273f"
-OVERLAY  = "#393552"
-FG       = "#e0def4"
-FG_MUTED = "#6e6a86"
-GOLD     = "#f6c177"
-ROSE     = "#eb6f92"
-PINE     = "#3e8fb0"
-TEAL     = "#9ccfd8"
+# ── Palette -- circadian, matching arc-break/arc-pine (_arc_ui.py) ─────────
+# A snapshot of the live circadian() palette taken once at launch, not a
+# fixed Rose Pine Moon default -- the panel looks different depending on
+# what time of day you actually open it (dawn/day/golden-hour/night),
+# same design language as Kataleya's own circadian engine. Deliberately
+# NOT live-redrawn while the window stays open (unlike arc-break's 60s
+# retheme loop) -- this is a much larger, more actively-clicked app and a
+# launch-time snapshot is the safer scope for a first pass; revisit if a
+# session is ever left open long enough to cross a phase boundary.
+_circadian = ui.circadian()
+BG       = _circadian["bg"]
+SURFACE  = _circadian["surface"]
+OVERLAY  = _circadian["overlay"]
+FG       = _circadian["fg"]
+FG_MUTED = _circadian["fg_muted"]
+GOLD     = ui.GOLD
+ROSE     = ui.ROSE
+PINE     = ui.PINE
+TEAL     = ui.TEAL
 
 def run(cmd, timeout=30):
     """Run a shell command, return (ok, output). Never raises."""
@@ -941,16 +954,12 @@ def main():
             popup.destroy()
             run_async(cmd, timeout=timeout, on_done=on_yes_done)
 
-        tk.Button(
-            row, text="yes, run it", command=do_yes, font=small_font,
-            bg=SURFACE, fg=ROSE, activebackground=OVERLAY, activeforeground=ROSE,
-            relief="flat", bd=0, padx=12, pady=6,
-        ).pack(side="left", padx=6)
-        tk.Button(
-            row, text="cancel", command=popup.destroy, font=small_font,
-            bg=SURFACE, fg=FG_MUTED, activebackground=OVERLAY, activeforeground=FG_MUTED,
-            relief="flat", bd=0, padx=12, pady=6,
-        ).pack(side="left", padx=6)
+        ui.button(row, "yes, run it", command=do_yes, font=small_font,
+                  bg=SURFACE, fg=ROSE, hover_bg=OVERLAY, padx=12, pady=6,
+                  ).pack(side="left", padx=6)
+        ui.button(row, "cancel", command=popup.destroy, font=small_font,
+                  bg=SURFACE, fg=FG_MUTED, hover_bg=OVERLAY, padx=12, pady=6,
+                  ).pack(side="left", padx=6)
 
     # ── Status dashboard (live tiles) ──────────────────────────────────────
     status_tiles = {}
@@ -969,6 +978,15 @@ def main():
         _embed_content(grid)
 
         def tile(row, col, key, title):
+            # Tried ui.rounded_frame() here first -- reverted. Its Canvas
+            # sizes itself to content, not to whatever grid's "nsew" sticky
+            # actually allocates, so a multi-column grid of these went
+            # visibly uneven (row heights no longer matched between
+            # columns). Confirmed live via screenshot before reverting, not
+            # assumed. Flat Frame is the correct tool for a responsive
+            # grid; rounded_frame is proven for arc-break's simple
+            # single-column vertical stack, a genuinely different layout
+            # shape. Still gets the circadian palette for free either way.
             f = tk.Frame(grid, bg=OVERLAY)
             f.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
             grid.columnconfigure(col, weight=1)
@@ -1289,17 +1307,17 @@ def main():
             def make_purge(s=src, lbl=None):
                 return lambda: _log_purge_confirm(s, lambda: lbl.configure(text=_log_stat(s["path"])))
 
-            tk.Button(
-                btns, text="view", command=make_view(), font=small_font,
-                bg=SURFACE, fg=TEAL, activebackground=BG, activeforeground=TEAL,
-                relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
-            ).pack(side="left", padx=4)
-            purge_btn = tk.Button(
-                btns, text="purge", font=small_font,
-                bg=SURFACE, fg=ROSE, activebackground=BG, activeforeground=ROSE,
-                relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
-            )
-            purge_btn.configure(command=make_purge(src, stat_lbl))
+            ui.button(btns, "view", command=make_view(), font=small_font,
+                      bg=SURFACE, fg=TEAL, hover_bg=BG, padx=10, pady=5,
+                      ).pack(side="left", padx=4)
+            # Real bug caught before shipping: ui.button() captures `command`
+            # in a closure at creation time (a plain tk.Label has no native
+            # -command option the way tk.Button does), so the old two-step
+            # "create, then .configure(command=...)" pattern silently can't
+            # work here -- pass it straight through at creation instead.
+            purge_btn = ui.button(btns, "purge", command=make_purge(src, stat_lbl),
+                                   font=small_font, bg=SURFACE, fg=ROSE,
+                                   hover_bg=BG, padx=10, pady=5)
             purge_btn.pack(side="left", padx=4)
 
     def _log_tail_text(path, n=200):
@@ -1353,11 +1371,9 @@ def main():
 
         threading.Thread(target=worker, daemon=True).start()
 
-        tk.Button(
-            popup, text="close", command=popup.destroy, font=small_font,
-            bg=SURFACE, fg=FG_MUTED, activebackground=OVERLAY, activeforeground=FG_MUTED,
-            relief="flat", bd=0, padx=14, pady=8,
-        ).pack(pady=(0, 12))
+        ui.button(popup, "close", command=popup.destroy, font=small_font,
+                  bg=SURFACE, fg=FG_MUTED, hover_bg=OVERLAY, padx=14, pady=8,
+                  ).pack(pady=(0, 12))
 
     def _log_purge_failed(name, out):
         popup = tk.Toplevel(root)
@@ -1371,11 +1387,9 @@ def main():
             popup, text=(out or "")[:300] + ("\n\nlikely needs: arc sot install-sudoers" if "password" in (out or "") else ""),
             font=small_font, bg=BG, fg=FG_MUTED, wraplength=380, justify="left",
         ).pack(padx=20, pady=(0, 14))
-        tk.Button(
-            popup, text="ok", command=popup.destroy, font=small_font,
-            bg=SURFACE, fg=FG_MUTED, activebackground=OVERLAY, activeforeground=FG_MUTED,
-            relief="flat", bd=0, padx=14, pady=6,
-        ).pack(pady=(0, 16))
+        ui.button(popup, "ok", command=popup.destroy, font=small_font,
+                  bg=SURFACE, fg=FG_MUTED, hover_bg=OVERLAY, padx=14, pady=6,
+                  ).pack(pady=(0, 16))
 
     def _log_purge_confirm(src, on_done):
         popup = tk.Toplevel(root)
@@ -1414,16 +1428,12 @@ def main():
                 root.after(0, apply)
             threading.Thread(target=worker, daemon=True).start()
 
-        tk.Button(
-            row, text="yes, clear it", command=do_purge, font=small_font,
-            bg=SURFACE, fg=ROSE, activebackground=OVERLAY, activeforeground=ROSE,
-            relief="flat", bd=0, padx=12, pady=6,
-        ).pack(side="left", padx=6)
-        tk.Button(
-            row, text="cancel (keep)", command=popup.destroy, font=small_font,
-            bg=SURFACE, fg=FG_MUTED, activebackground=OVERLAY, activeforeground=FG_MUTED,
-            relief="flat", bd=0, padx=12, pady=6,
-        ).pack(side="left", padx=6)
+        ui.button(row, "yes, clear it", command=do_purge, font=small_font,
+                  bg=SURFACE, fg=ROSE, hover_bg=OVERLAY, padx=12, pady=6,
+                  ).pack(side="left", padx=6)
+        ui.button(row, "cancel (keep)", command=popup.destroy, font=small_font,
+                  bg=SURFACE, fg=FG_MUTED, hover_bg=OVERLAY, padx=12, pady=6,
+                  ).pack(side="left", padx=6)
 
     # ── Find view (2026-09-10, v2 sweep) ────────────────────────────────────
     # The literal answer to "surface dev-notes/hq-main/arc-lt-cmc" -- wires
@@ -1493,16 +1503,12 @@ def main():
             threading.Thread(target=worker, daemon=True).start()
 
         entry.bind("<Return>", do_search)
-        tk.Button(
-            entry_row, text="search", command=do_search, font=small_font,
-            bg=OVERLAY, fg=TEAL, activebackground=BG, activeforeground=TEAL,
-            relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
-        ).pack(side="left", padx=(0, 6))
-        tk.Button(
-            entry_row, text="browse refs (arc ref)", command=do_ref, font=small_font,
-            bg=OVERLAY, fg=GOLD, activebackground=BG, activeforeground=GOLD,
-            relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
-        ).pack(side="left")
+        ui.button(entry_row, "search", command=do_search, font=small_font,
+                  bg=OVERLAY, fg=TEAL, hover_bg=BG, padx=14, pady=6,
+                  ).pack(side="left", padx=(0, 6))
+        ui.button(entry_row, "browse refs (arc ref)", command=do_ref, font=small_font,
+                  bg=OVERLAY, fg=GOLD, hover_bg=BG, padx=14, pady=6,
+                  ).pack(side="left")
 
         entry.focus_set()
         _refresh_scrollregion(wrap)
@@ -1609,7 +1615,7 @@ def main():
     def select(name):
         current_cat.set(name)
         for n, b in nav_buttons.items():
-            b.configure(bg=OVERLAY if n == name else BG, fg=GOLD if n == name else FG_MUTED)
+            b.set_look(bg=OVERLAY if n == name else BG, fg=GOLD if n == name else FG_MUTED)
         if name == "Status":
             build_status_view()
         elif name == "Cockpit":
@@ -1625,12 +1631,12 @@ def main():
     # children are positioned manually instead of auto-stacked.
     _nav_y = 0
     for cat in CATEGORIES:
-        b = tk.Button(
-            sidebar, text=cat, font=nav_font, bg=BG, fg=FG_MUTED,
-            activebackground=OVERLAY, activeforeground=GOLD,
-            relief="flat", bd=0, anchor="w", padx=12, pady=8, cursor="hand2",
-            command=lambda c=cat: select(c),
+        b = ui.button(
+            sidebar, cat, command=lambda c=cat: select(c),
+            font=nav_font, bg=BG, fg=FG_MUTED, hover_bg=OVERLAY, hover_fg=GOLD,
+            padx=12, pady=8,
         )
+        b.configure(anchor="w")
         sidebar.create_window(0, _nav_y, anchor="nw", window=b, width=150)
         b.update_idletasks()
         _nav_y += b.winfo_reqheight() + 1
@@ -1648,7 +1654,7 @@ def main():
         q = search_var.get().strip()
         if q:
             for n, b in nav_buttons.items():
-                b.configure(bg=BG, fg=FG_MUTED)
+                b.set_look(bg=BG, fg=FG_MUTED)
             build_search_results_view(q)
         else:
             select(current_cat.get())

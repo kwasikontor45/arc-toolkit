@@ -265,6 +265,18 @@ def button(parent, text, command=None, font=None, bg=SURFACE, fg=TEAL,
             bg=state["bg"],
         )
 
+    def set_look(bg=None, fg=None):
+        """Persistent look override, distinct from hover -- e.g. a
+        sidebar nav button's 'currently selected' state. Changes what
+        *resting* (non-hover) looks like; hover still layers hover_bg/
+        hover_fg on top of whatever this sets, same as normal."""
+        if bg is not None:
+            state["bg"] = bg
+        if fg is not None:
+            state["fg"] = fg
+        if state["enabled"]:
+            lbl.configure(bg=state["bg"], fg=state["fg"])
+
     def retheme(bg=None, hover_bg=None):
         """Live re-color for the circadian engine -- only the ambient
         bg/hover_bg drift with time, not the button's own semantic fg
@@ -279,6 +291,7 @@ def button(parent, text, command=None, font=None, bg=SURFACE, fg=TEAL,
     lbl.bind("<Leave>", on_leave)
     lbl.bind("<Button-1>", on_click)
     lbl.set_enabled = set_enabled
+    lbl.set_look = set_look
     lbl.retheme = retheme
     return lbl
 

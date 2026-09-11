@@ -771,14 +771,31 @@ def main():
     # sash is fully drag-resizable from here, this isn't a new fixed value.
     main_pane.add(body, minsize=240, height=460)
 
+    # Horizontal PanedWindow, not a plain pack -- real user feedback
+    # 2026-09-11: the sidebar/content split had no way to adjust at all
+    # (150px fixed), unlike the vertical body/output split below which
+    # was already a real drag-resizable PanedWindow. Same treatment here.
+    body_pane = tk.PanedWindow(
+        body, orient="horizontal", bg=OVERLAY, sashwidth=6, sashrelief="flat",
+        bd=0, showhandle=False, opaqueresize=True,
+    )
+    body_pane.pack(fill="both", expand=True)
+
     # Canvas, not Frame -- lets the watermark image sit behind the nav
     # buttons. Tk buttons are opaque (bg=BG is a solid fill, no real alpha),
     # so the image only actually shows through in the empty space below the
     # 5 nav buttons, not underneath them -- that's by design, not a bug: a
     # background image directly behind clickable buttons would just be
     # invisible anyway, covered edge-to-edge by each button's own fill.
-    sidebar = tk.Canvas(body, bg=BG, width=150, highlightthickness=0)
-    sidebar.pack(side="left", fill="y")
+    sidebar = tk.Canvas(body_pane, bg=BG, width=150, highlightthickness=0)
+    body_pane.add(sidebar, minsize=110, width=150)
+
+    # Second pane: a plain wrapper Frame holding content+its scrollbar
+    # exactly as before -- PanedWindow panes are added as single widgets,
+    # so the existing content/content_scroll pack() pairing stays inside
+    # this one extra container rather than needing to change at all.
+    content_wrap = tk.Frame(body_pane, bg=SURFACE)
+    body_pane.add(content_wrap, minsize=300)
 
     _sidebar_bg = load_image(SIDEBAR_BG_PATH)
     if _sidebar_bg:
@@ -791,7 +808,7 @@ def main():
     # and that helper keeps it stretched to the canvas's current size on
     # resize (a plain create_window() child doesn't auto-follow the canvas
     # growing/shrinking the way a packed fill="both" child would).
-    content = tk.Canvas(body, bg=SURFACE, highlightthickness=0)
+    content = tk.Canvas(content_wrap, bg=SURFACE, highlightthickness=0)
     # Real bug found+fixed 2026-08-29: the SOC category grew to 18 actions
     # while _embed_content forced the embedded frame to the canvas's exact
     # visible height (see below) -- with no scrollbar, anything past
@@ -801,7 +818,7 @@ def main():
     # wired to a canvas scrollregion that's kept honest by the embedded
     # widget's own actual required size, not an assumed/guessed number.
     content_scroll = tk.Scrollbar(
-        body, orient="vertical", command=content.yview,
+        content_wrap, orient="vertical", command=content.yview,
         bg=OVERLAY, troughcolor=BG, activebackground=TEAL,
         bd=0, highlightthickness=0, width=12,
     )

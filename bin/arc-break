@@ -177,29 +177,30 @@ def launch_gui():
 def run_gui():
     try:
         import tkinter as tk
-        from tkinter import font as tkfont
     except ImportError:
         print("tkinter not available — run: sudo apt install python3-tk", file=sys.stderr)
         sys.exit(1)
 
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _arc_ui as ui
+
     GUI_PID_PATH.parent.mkdir(parents=True, exist_ok=True)
     GUI_PID_PATH.write_text(str(os.getpid()))
 
-    # Rose Pine Moon
-    BG       = "#232136"
-    SURFACE  = "#2a273f"
-    FG_WORK  = "#f6c177"
-    FG_BREAK = "#eb6f92"
-    FG_MUTED = "#6e6a86"
-    FG_STOP  = "#393552"
-    FG_TEAL  = "#9ccfd8"
+    # Shared design system as of 2026-09-11 -- was its own copy-pasted Rose
+    # Pine Moon palette + flat tk.Button styling before, one of three
+    # near-identical copies across khaos-lab/arc-pine/arc-break that had
+    # already started drifting. See _arc_ui.py for the why.
+    BG, SURFACE = ui.BG, ui.SURFACE
+    FG_WORK, FG_BREAK = ui.COLOR_WORK, ui.COLOR_BREAK
+    FG_MUTED, FG_STOP, FG_TEAL = ui.FG_MUTED, ui.OVERLAY, ui.TEAL
 
     root = tk.Tk()
     root.title("arc · break")
     root.resizable(False, False)
     root.attributes("-topmost", True)
     root.configure(bg=BG)
-    root.geometry("260x226+20+20")
+    root.geometry("260x246+20+20")
 
     if ICON_PATH.exists():
         try:
@@ -208,27 +209,20 @@ def run_gui():
         except Exception:
             pass
 
-    try:
-        big_font    = tkfont.Font(family="JetBrains Mono", size=22, weight="bold")
-        small_font  = tkfont.Font(family="JetBrains Mono", size=9)
-        toggle_font = tkfont.Font(family="JetBrains Mono", size=10, underline=True)
-        btn_font    = tkfont.Font(family="JetBrains Mono", size=9)
-    except Exception:
-        big_font    = tkfont.Font(size=22, weight="bold")
-        small_font  = tkfont.Font(size=9)
-        toggle_font = tkfont.Font(size=10, underline=True)
-        btn_font    = tkfont.Font(size=9)
+    f = ui.fonts()
+    big_font, small_font, btn_font = f["big"], f["small"], f["small"]
 
-    # ── Status display ─────────────────────────────────────────────────────────
-    phase_lbl = tk.Label(root, text="WORK",   font=big_font,  bg=BG, fg=FG_WORK)
-    time_lbl  = tk.Label(root, text="--:--",  font=big_font,  bg=BG, fg=FG_WORK)
-    phase_lbl.pack(pady=(8, 0))
+    # ── Status display -- now a real rounded card, not a flat rectangle ─────────
+    status_outer, status_card = ui.rounded_frame(root, parent_bg=BG, bg=SURFACE, radius=12)
+    status_outer.pack(padx=ui.SPACE_MD, pady=(ui.SPACE_MD, ui.SPACE_SM))
+
+    phase_lbl = tk.Label(status_card, text="WORK",   font=big_font,  bg=SURFACE, fg=FG_WORK)
+    time_lbl  = tk.Label(status_card, text="--:--",  font=big_font,  bg=SURFACE, fg=FG_WORK)
+    phase_lbl.pack(pady=(ui.SPACE_MD, 0))
     time_lbl.pack()
 
-    status_lbl = tk.Label(root, text="loading…", font=small_font, bg=BG, fg=FG_MUTED)
-    status_lbl.pack(pady=(3, 0))
-
-    tk.Frame(root, bg=FG_STOP, height=1).pack(fill="x", padx=10, pady=(0, 6))
+    status_lbl = tk.Label(status_card, text="loading…", font=small_font, bg=SURFACE, fg=FG_MUTED)
+    status_lbl.pack(pady=(3, ui.SPACE_MD))
 
     # ── Daemon helpers ─────────────────────────────────────────────────────────
     def daemon_running():
@@ -311,18 +305,13 @@ def run_gui():
             except ValueError:
                 pass
 
-        tk.Button(
-            popup, text="apply  (restart to take effect)",
-            command=apply_cfg,
-            font=small_font, bg=SURFACE, fg=FG_TEAL,
-            activebackground=BG, activeforeground=FG_TEAL,
-            relief="flat", bd=0, padx=4, pady=6,
-        ).grid(row=2, column=0, columnspan=2, padx=10, pady=(6, 4), sticky="ew")
+        ui.button(popup, "apply  (restart to take effect)", command=apply_cfg,
+                  font=small_font, bg=SURFACE, fg=FG_TEAL, hover_bg=FG_STOP,
+                  ).grid(row=2, column=0, columnspan=2, padx=10, pady=(6, 4), sticky="ew")
 
-    # ── Button rows ────────────────────────────────────────────────────────────
-    BTN = dict(font=btn_font, bg=SURFACE, activebackground=BG,
-               relief="flat", bd=0, padx=4, pady=4,
-               cursor="hand2", disabledforeground=FG_STOP)
+    # ── Button rows -- ui.button() gives a real hover-state transition
+    # instead of the old flat tk.Button (static until an actual click) ──────────
+    BTN = dict(font=btn_font, bg=SURFACE, hover_bg=FG_STOP)
 
     # Row 1: start · stop · reset
     row1 = tk.Frame(root, bg=BG)
@@ -330,12 +319,9 @@ def run_gui():
     for c in range(3):
         row1.columnconfigure(c, weight=1)
 
-    btn_start = tk.Button(row1, text="▶ start", command=do_start,
-                          fg=FG_TEAL,  activeforeground=FG_TEAL,  **BTN)
-    btn_stop  = tk.Button(row1, text="■ stop",  command=do_stop,
-                          fg=FG_BREAK, activeforeground=FG_BREAK, **BTN)
-    btn_reset = tk.Button(row1, text="↺ reset", command=do_reset,
-                          fg=FG_MUTED, activeforeground=FG_MUTED, **BTN)
+    btn_start = ui.button(row1, "▶ start", command=do_start, fg=FG_TEAL,  **BTN)
+    btn_stop  = ui.button(row1, "■ stop",  command=do_stop,  fg=FG_BREAK, **BTN)
+    btn_reset = ui.button(row1, "↺ reset", command=do_reset, fg=FG_MUTED, **BTN)
     btn_start.grid(row=0, column=0, padx=2, pady=2, sticky="ew")
     btn_stop.grid( row=0, column=1, padx=2, pady=2, sticky="ew")
     btn_reset.grid(row=0, column=2, padx=2, pady=2, sticky="ew")
@@ -347,15 +333,13 @@ def run_gui():
     row2.columnconfigure(2, weight=1)
 
     snooze_var = tk.StringVar(value="5")
-    btn_skip   = tk.Button(row2, text="⏭ skip",   command=do_skip,
-                           fg=FG_WORK,  activeforeground=FG_WORK,  **BTN)
+    btn_skip   = ui.button(row2, "⏭ skip",   command=do_skip,   fg=FG_WORK,  **BTN)
     snooze_spin = tk.Spinbox(
         row2, from_=1, to=60, width=3, textvariable=snooze_var,
         font=btn_font, bg=SURFACE, fg=FG_MUTED, relief="flat",
         buttonbackground=SURFACE, insertbackground=FG_MUTED,
     )
-    btn_snooze = tk.Button(row2, text="💤 snooze", command=do_snooze,
-                           fg=FG_MUTED, activeforeground=FG_MUTED, **BTN)
+    btn_snooze = ui.button(row2, "💤 snooze", command=do_snooze, fg=FG_MUTED, **BTN)
     btn_skip.grid(   row=0, column=0, padx=2, pady=2, sticky="ew")
     snooze_spin.grid(row=0, column=1, padx=2, pady=2)
     btn_snooze.grid( row=0, column=2, padx=2, pady=2, sticky="ew")
@@ -365,19 +349,18 @@ def run_gui():
     row3.pack(fill="x", padx=6, pady=(2, 6))
     row3.columnconfigure(0, weight=1)
 
-    btn_config = tk.Button(row3, text="≡ config", command=do_config,
-                           fg=FG_MUTED, activeforeground=FG_MUTED, **BTN)
+    btn_config = ui.button(row3, "≡ config", command=do_config, fg=FG_MUTED, **BTN)
     btn_config.grid(row=0, column=0, padx=2, pady=2, sticky="ew")
 
     # ── Button state sync ─────────────────────────────────────────────────────
     def update_btn_states():
         running = daemon_running()
-        btn_start.configure( state="disabled" if running else "normal")
-        btn_stop.configure(  state="normal"   if running else "disabled")
-        btn_skip.configure(  state="normal"   if running else "disabled")
-        btn_snooze.configure(state="normal"   if running else "disabled")
-        snooze_spin.configure(state="normal"  if running else "disabled")
-        btn_reset.configure( state="normal")
+        btn_start.set_enabled(not running)
+        btn_stop.set_enabled(running)
+        btn_skip.set_enabled(running)
+        btn_snooze.set_enabled(running)
+        snooze_spin.configure(state="normal" if running else "disabled")
+        btn_reset.set_enabled(True)
 
     # ── Tick ───────────────────────────────────────────────────────────────────
     def tick():

@@ -2292,6 +2292,71 @@ cmd_vpn() {
   esac
 }
 
+# ── Remote access (Tailscale primary + Cloudflare Tunnel SSH-only backup) ──
+# Tailscale (tailscale up --ssh) is the PRIMARY channel, already always-on,
+# already covered by `arc hq`/`arc health` — no wrapper needed for it here.
+# This only wraps the BACKUP escape hatch built 2026-09-10: an on-demand
+# Cloudflare Tunnel forwarding to a loopback-only hardened sshd (see
+# /etc/ssh/sshd_config.d/10-remote-access-hardening.conf). Deliberately
+# manual-start (feedback_manual_start_tools.md) — the whole point of this
+# path is that it stays fully dormant (no running tunnel process) until you
+# deliberately need it. Public DNS route + Cloudflare Access policy are a
+# separate, deliberate user action (not wired here) — see
+# ~/.cloudflared/config.yml's own comment and GAMEPLAN.md 2026-09-11.
+#
+# Real gap found+fixed 2026-09-11: this command didn't exist at all despite
+# config.yml's own comment referencing "arc remote backup-start" by name —
+# the escape hatch was undocumented-in-practice, only usable via raw
+# `cloudflared tunnel run`. Was deferred earlier out of concurrent-session
+# caution on bin/arc; re-checked live (git log/pull, no conflict) before
+# adding this as a small, additive, non-overlapping case arm.
+cmd_remote() {
+  local sub="${1:-status}"
+  local unit="arc-remote-backup-tunnel.service"
+  case "$sub" in
+    status)
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc remote status${N}"
+      echo -e "$HR\n"
+      echo -e "  ${B}Primary — Tailscale${N}"
+      if command -v tailscale >/dev/null 2>&1; then
+        tailscale status 2>/dev/null | grep "100\.98\.103\.120" | sed 's/^/    /' || echo -e "    ${D}·${N}  status unavailable"
+      else
+        echo -e "    ${R}✗${N}  tailscale not installed"
+      fi
+      echo
+      echo -e "  ${B}Backup — Cloudflare Tunnel (SSH-only escape hatch)${N}"
+      if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+        echo -e "    ${G}●${N}  running — ssh-backup.kontor.studio → 127.0.0.1:22"
+      else
+        echo -e "    ${D}○${N}  down — dormant (expected default state, no public DNS route exists yet)"
+      fi
+      echo -e "    ${D}·${N}  sshd: $(systemctl is-active ssh 2>/dev/null || echo unknown)  ·  bound to $(sudo -n ss -tlnp 2>/dev/null | awk '$4 ~ /:22$/{print $4; exit}')"
+      echo -e "\n$HR"
+      ;;
+    backup-start)
+      echo -e "  ${C}starting backup tunnel...${N}"
+      systemctl --user start "$unit"
+      sleep 1
+      if systemctl --user is-active --quiet "$unit"; then
+        echo -e "  ${G}✓${N}  tunnel process up"
+        echo -e "  ${D}·${N}  needs a public DNS route + Access policy before it's reachable from outside — see GAMEPLAN.md"
+        echo -e "  ${D}·${N}  stop with: arc remote backup-stop"
+      else
+        echo -e "  ${R}✗${N}  failed to start — check: systemctl --user status $unit"
+      fi
+      ;;
+    backup-stop)
+      systemctl --user stop "$unit"
+      echo -e "  ${G}✓${N}  backup tunnel stopped"
+      ;;
+    *)
+      echo -e "  ${R}unknown:${N} remote $sub  —  try ${C}status${N} / ${C}backup-start${N} / ${C}backup-stop${N}"
+      return 1
+      ;;
+  esac
+}
+
 # ── Fix ────────────────────────────────────────────────────────────────────────
 cmd_fix() {
   local what="${1:-}"
@@ -4342,6 +4407,7 @@ cmd_help() {
   echo -e "  ${D}arc ${C}vpn autoconnect ${W}[on|off]${N}   ${M}connect automatically on every login${N}"
   echo -e "  ${D}arc ${C}vpn killswitch ${W}[on|off]${N}    ${M}block internet if the VPN drops${N}"
   echo -e "  ${D}arc ${C}vpn leak-check${N}          ${M}same ground-truth check arc-heal uses — confirms traffic actually routes through the tunnel${N}"
+  echo -e "  ${D}arc ${C}remote ${W}[status|backup-start|backup-stop]${N}   ${M}Cloudflare Tunnel SSH-only backup channel — Tailscale is primary, this is dormant by default${N}"
   echo -e "  ${D}arc ${C}kismet ${W}[start|stop|status]${N}   ${M}wireless recon (wlan0 → monitor mode, drops WiFi/VPN while running) — manual-start only${N}"
   echo -e "  ${D}arc ${C}lab${N}                    ${M}khaos-lab control panel — GUI dashboard/launcher over the arc toolkit — manual-start only${N}"
   echo -e "  ${D}arc ${C}sudo ${W}[start|stop|status]${N}   ${M}keep the sudo credential cache alive in the background — start needs a real TTY${N}"
@@ -6076,6 +6142,7 @@ case "${1:-}" in
   auth)           cmd_auth ;;
   dns)            cmd_dns "${2:-status}" "${3:-}" ;;
   vpn)            cmd_vpn "${@:2}" ;;
+  remote)         cmd_remote "${2:-status}" ;;
   fix)            cmd_fix "${2:-}" ;;
   sec)            cmd_sec "${2:-}" ;;
   users)          cmd_users "${2:-}" "${3:-}" "${4:-}" ;;

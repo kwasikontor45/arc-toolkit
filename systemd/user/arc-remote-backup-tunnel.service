@@ -1,0 +1,15 @@
+[Unit]
+Description=arc-remote-backup-tunnel — on-demand Cloudflare Tunnel, SSH-only backup/escape-hatch (Tailscale is the primary remote-access channel, not this)
+# Deliberately no [Install]/WantedBy — never auto-starts on boot or login,
+# matches feedback_manual_start_tools.md. Started only via
+# `arc remote backup-start`, stopped via `arc remote backup-stop`. Ingress
+# is defined in ~/.cloudflared/config.yml — ssh-backup.kontor.studio ->
+# 127.0.0.1:22 only, nothing else. sshd itself is hardened + loopback-only
+# (see /etc/ssh/sshd_config.d/10-remote-access-hardening.conf) — this
+# tunnel is the only thing that can ever reach it from outside.
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel run
+Restart=on-failure
+RestartSec=5

@@ -33,6 +33,8 @@
 664 _arc_pine_common.py
 755 arc-pined
 711 arc-pine-notify
+755 arc-pine-selftest
+755 arc-pine-snooze
 755 arc-pine-speak
 711 arc-quiet-clean
 711 arc-rkhunter-check

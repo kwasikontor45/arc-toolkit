@@ -105,7 +105,9 @@ def main():
     check("sound file exists", bool(sound_file) and Path(sound_file).exists(), sound_file)
 
     dnd = pine.in_dnd_window(cfg)
+    snoozed = pine.is_snoozed(cfg)
     print(f"\n  {DIM}quiet hours right now: {'yes -- sound/speech suppressed' if dnd else 'no'}{RESET}")
+    print(f"  {DIM}snoozed right now: {'yes -- sound/speech/bubble all suppressed' if snoozed else 'no'}{RESET}")
 
     print()
     if ok_log:

@@ -96,6 +96,14 @@ class ArcPine(tk.Tk):
         tk.Label(top, text="arc pine", font=("JetBrains Mono", 14, "bold"),
                  bg=BG, fg=GOLD).pack(side="left")
 
+        # Snooze is set from the CLI (arc-pine-snooze) with nothing in this
+        # GUI that visibly reflects it -- found during a 2026-09-10 bug
+        # sweep as a real "why did bubbles stop, is something broken"
+        # trap. Hidden by default (pack_forget), shown only while a
+        # snooze is actually active.
+        self.snooze_lbl = tk.Label(top, text="😴 snoozed", font=("JetBrains Mono", 9, "bold"),
+                                    bg=BG, fg=ROSE)
+
         self.settings_btn = tk.Button(
             top, text="⚙", font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
             activebackground=OVERLAY, activeforeground=TEAL, relief="flat", bd=0,
@@ -418,7 +426,14 @@ class ArcPine(tk.Tk):
         self.config[key] = value
         pine.save_config(self.config)
 
+    def _update_snooze_indicator(self):
+        if pine.is_snoozed(pine.load_config()):
+            self.snooze_lbl.pack(side="left", padx=(10, 0))
+        else:
+            self.snooze_lbl.pack_forget()
+
     def refresh(self):
+        self._update_snooze_indicator()
         for w in self.list_frame.winfo_children():
             w.destroy()
 

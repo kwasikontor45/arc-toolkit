@@ -39,12 +39,14 @@ from pathlib import Path
 SOCK_PATH = "/run/user/{}/arc-pine-bubbles.sock".format(os.getuid())
 CONFIG_PATH = Path.home() / ".config/arc-pine/config.json"
 
+# Only the render-relevant subset -- this process never makes a sound/
+# speak/mute decision (arc-pine-notify already decided that before it
+# ever calls push_bubble), so it has no business carrying those keys in
+# its own default. Found stale during a 2026-09-10 bug sweep: this dict
+# still had speak_apps/ignored_apps from before the v2 app_rules
+# migration, misleadingly implying this file cared about per-app rules
+# when nothing here ever read them.
 DEFAULT_CONFIG = {
-    "sound_enabled": True,
-    "sound_file": "/usr/share/sounds/freedesktop/stereo/bell.oga",
-    "speak_enabled": True,
-    "speak_apps": ["arc-break"],
-    "ignored_apps": [],
     "bubble_theme": "rose-pine-moon",
     "bubble_max_visible": 4,
     "bubble_duration_ms": 12000,

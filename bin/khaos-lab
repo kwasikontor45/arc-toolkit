@@ -1004,7 +1004,14 @@ def main():
             # grid; rounded_frame is proven for arc-break's simple
             # single-column vertical stack, a genuinely different layout
             # shape. Still gets the circadian palette for free either way.
-            f = tk.Frame(grid, bg=OVERLAY)
+            # highlightthickness/highlightbackground -- a real, native
+            # Tkinter border (not a focus ring; Frame never takes focus,
+            # so this just always shows) instead of the flat, borderless
+            # rectangle every tile used before. Doesn't have
+            # ui.rounded_frame()'s grid-sizing problem since it's not a
+            # Canvas -- same width/height behavior as a plain Frame,
+            # just with an edge now.
+            f = tk.Frame(grid, bg=OVERLAY, highlightthickness=1, highlightbackground=BG)
             f.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
             grid.columnconfigure(col, weight=1)
             tk.Label(f, text=title, font=small_font, bg=OVERLAY, fg=FG_MUTED).pack(
@@ -1203,7 +1210,14 @@ def main():
         _embed_content(grid)
 
         def tile(row, col, key, title):
-            f = tk.Frame(grid, bg=OVERLAY)
+            # highlightthickness/highlightbackground -- a real, native
+            # Tkinter border (not a focus ring; Frame never takes focus,
+            # so this just always shows) instead of the flat, borderless
+            # rectangle every tile used before. Doesn't have
+            # ui.rounded_frame()'s grid-sizing problem since it's not a
+            # Canvas -- same width/height behavior as a plain Frame,
+            # just with an edge now.
+            f = tk.Frame(grid, bg=OVERLAY, highlightthickness=1, highlightbackground=BG)
             f.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
             grid.columnconfigure(col, weight=1)
             tk.Label(f, text=title, font=small_font, bg=OVERLAY, fg=FG_MUTED).pack(
@@ -1545,7 +1559,11 @@ def main():
         # identical rows for matches pulled from *any* category, not just
         # one -- `prefix` (e.g. "SOC — ") disambiguates which category a
         # hit came from when browsing filtered results.
-        row = tk.Frame(wrap, bg=SURFACE)
+        # highlightthickness border, same technique as the Status tiles --
+        # doesn't touch the existing whole-row hover binding below at all
+        # (that only ever toggles bg/fg, never the border), just gives
+        # each row a real edge instead of a flat borderless rectangle.
+        row = tk.Frame(wrap, bg=SURFACE, highlightthickness=1, highlightbackground=BG)
         row.pack(fill="x", pady=1)
         label = tk.Label(
             row, text=f"{prefix}{action.label}", font=label_font, bg=SURFACE, fg=FG,

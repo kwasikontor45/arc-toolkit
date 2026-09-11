@@ -465,7 +465,10 @@ class ArcPine(tk.Tk):
         self.count_lbl.configure(text=f"{total[0]['c'] if total else 0} total")
 
     def _add_card(self, row):
-        card = tk.Frame(self.list_frame, bg=SURFACE)
+        # highlightthickness border -- a real edge without Canvas
+        # rounding's per-card performance cost at this scale (up to 200
+        # cards), same technique used in khaos-lab's tiles/action rows.
+        card = tk.Frame(self.list_frame, bg=SURFACE, highlightthickness=1, highlightbackground=BG)
         card.pack(fill="x", pady=3)
 
         color = URGENCY_COLOR.get(row["urgency"], TEAL)

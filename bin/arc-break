@@ -362,6 +362,30 @@ def run_gui():
         snooze_spin.configure(state="normal" if running else "disabled")
         btn_reset.set_enabled(True)
 
+    # ── Circadian retheme ─────────────────────────────────────────────────────
+    # The user's own signature design language, ported from Kataleya's
+    # circadian phase engine (choice/still-pine/desire/nyx) -- ambient
+    # colors drift continuously against the real clock rather than being
+    # fixed at launch. Only the *ambient* bg/surface/overlay move; each
+    # widget's own semantic fg (gold=work, rose=break, muted=stopped)
+    # stays exactly as tick() already drives it -- circadian for mood,
+    # not for meaning, matching Kataleya's own "useful over pretty" rule.
+    def retheme():
+        c = ui.circadian()
+        root.configure(bg=c["bg"])
+        for row in (row1, row2, row3):
+            row.configure(bg=c["bg"])
+        status_outer.retheme(new_bg=c["surface"], new_parent_bg=c["bg"])
+        phase_lbl.configure(bg=c["surface"])
+        time_lbl.configure(bg=c["surface"])
+        status_lbl.configure(bg=c["surface"], fg=c["fg_muted"])
+        for b in (btn_start, btn_stop, btn_reset, btn_skip, btn_snooze, btn_config):
+            b.retheme(bg=c["surface"], hover_bg=c["overlay"])
+        snooze_spin.configure(bg=c["surface"], fg=c["fg_muted"])
+        root.after(60_000, retheme)
+
+    retheme()
+
     # ── Tick ───────────────────────────────────────────────────────────────────
     def tick():
         update_btn_states()

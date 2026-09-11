@@ -30,11 +30,15 @@ clicked away) -- this is the actual fix for "covers the whole screen."
 import json
 import os
 import socket
+import sys
 import threading
 import queue
 import time
 import tkinter as tk
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _arc_ui as ui
 
 SOCK_PATH = "/run/user/{}/arc-pine-bubbles.sock".format(os.getuid())
 CONFIG_PATH = Path.home() / ".config/arc-pine/config.json"
@@ -73,6 +77,23 @@ THEMES = {
 }
 
 
+def _resolve_theme(name):
+    """Bubbles are short-lived (seconds), so unlike the always-open apps
+    this doesn't need a periodic retheme loop -- each new bubble just
+    resolves "circadian" fresh at the moment it's actually spawned,
+    which is enough to genuinely reflect the time of day it appeared.
+    Urgency accents (critical/normal/low) stay the fixed semantic colors
+    used everywhere else in the toolkit, not phase-interpolated -- same
+    "useful over pretty" reasoning as _arc_ui.py itself."""
+    if name == "circadian":
+        c = ui.circadian()
+        return {
+            "bg": c["surface"], "border": c["overlay"], "fg": c["fg"], "fg_muted": c["fg_muted"],
+            "critical": ui.ROSE, "normal": ui.PINE, "low": ui.FG_MUTED,
+        }
+    return THEMES.get(name, THEMES["rose-pine-moon"])
+
+
 def load_config():
     cfg = DEFAULT_CONFIG.copy()
     if CONFIG_PATH.exists():
@@ -96,7 +117,7 @@ class Bubble(tk.Toplevel):
         super().__init__(master)
         self.on_close = on_close
         self.on_update = on_update
-        self.colors = THEMES.get(theme, THEMES["rose-pine-moon"])
+        self.colors = _resolve_theme(theme)
         self.width = width
         self.duration_ms = duration_ms
         self.app = app

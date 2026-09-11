@@ -32,6 +32,11 @@ THEMES = {
     "nord":           {"bg": "#3b4252", "accent": "#bf616a", "fg": "#eceff4"},
     "dracula":        {"bg": "#282a36", "accent": "#ff5555", "fg": "#f8f8f2"},
     "gruvbox":        {"bg": "#3c3836", "accent": "#fb4934", "fg": "#ebdbb2"},
+    # Not a fixed palette like the four above -- arc-pine-bubbles resolves
+    # this one live per-bubble via _resolve_theme(), so it always reflects
+    # the actual time of day a notification appears, not a snapshot. This
+    # entry only exists so the dropdown below has something to select.
+    "circadian":      {"bg": "#232136", "accent": "#c4a7e7", "fg": "#e0def4"},
 }
 
 # Circadian -- launch-time snapshot, matching arc-break/khaos-lab

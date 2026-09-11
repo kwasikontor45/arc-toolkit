@@ -1,0 +1,6 @@
+[Unit]
+Description=arc-yara-check — periodic YARA sweep of $HOME, notifies only on a real match
+
+[Service]
+Type=oneshot
+ExecStart=/home/architect-of-chaos/.local/bin/arc-yara-check

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# arc-yara-check — periodic YARA sweep of the "untrusted landing zone"
+# (~/.downloads, browser-download-style staging), notifies only on a real
+# match. Runs as a systemd --user timer (no root needed -- scanning your
+# own files needs no elevated privilege). Built 2026-09-11, picking up
+# exercise 3 from threat-intel-gameplan.md (2026-09-08).
+#
+# Real design correction, made live 2026-09-11: originally scanned the
+# WHOLE $HOME tree. A real test run found 263 "matches" -- every single one
+# a false positive on completely legitimate, vendor-trusted software
+# (numpy/onnxruntime/pip/Piper TTS/Firefox profile files). Root cause:
+# Yara-Rules/rules is built to flag SUSPICIOUS/UNTRUSTED files, not to be
+# run blind against a machine full of trusted, already-vetted developer
+# tooling -- generic pattern rules (crypto-constant tables, PE-structure
+# markers, "contains the string 'powershell'") fire constantly on ordinary
+# software. Shipping that as a daily "263 matches, CRITICAL" notification
+# would have been pure alert fatigue, not a working capability. Correct
+# fix: narrow the SCOPE to where untrusted files actually land
+# (~/.downloads), not narrow the ruleset -- the false-positive rate comes
+# from applying broad signatures to a broad trusted-file target, and this
+# is the smaller, higher-signal target the ruleset is actually meant for.
+# `arc sec yara <path>` still scans anything explicit on demand, full
+# ruleset, for when you deliberately want to check one specific file/dir.
+#
+# Ruleset: Yara-Rules/rules (public, cloned to ~/khaos-lab/soc-lab/yara-rules).
+# One upstream include (webshells/WShell_THOR_Webshells.yar) is skipped in
+# our local index.yar -- ClamAV's own on-access scanner quarantined that
+# file the moment it landed on disk, because the rule's body literally
+# contains a C99 webshell code sample as its detection pattern (expected,
+# benign self-detection collision between two different AV/detection
+# tools, not a real compromise).
+set -euo pipefail
+
+RULES="$HOME/khaos-lab/soc-lab/yara-rules/index.yar"
+TARGET="$HOME/.downloads"
+LOG="$HOME/khaos-lab/soc-lab/yara-scan.log"
+SOCK="/run/user/$(id -u)/arc-pine-bubbles.sock"
+
+notify() {
+  local urgency="$1" summary="$2" body="$3"
+  [[ -S "$SOCK" ]] && "$HOME/.local/bin/arc-pine-notify" "$urgency" arc-yara "$summary" "$body" 2>/dev/null || true
+}
+
+[[ -f "$RULES" ]] || { echo "ruleset not found: $RULES" >&2; exit 1; }
+[[ -d "$TARGET" ]] || { : > "$LOG"; exit 0; }
+
+yara -w -r "$RULES" "$TARGET" 2>/dev/null > "$LOG" || true
+
+matches=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+if [[ "$matches" -gt 0 ]]; then
+  detail=$(head -3 "$LOG")
+  notify critical "${matches} YARA match(es) in ~/.downloads" "${detail}
+run: arc sec yara status"
+fi

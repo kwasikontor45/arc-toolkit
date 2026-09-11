@@ -2712,6 +2712,54 @@ _sec_clamav() {
   esac
 }
 
+_sec_yara() {
+  local sub="${1:-}"
+  local rules="$HOME/khaos-lab/soc-lab/yara-rules/index.yar"
+  local log="$HOME/khaos-lab/soc-lab/yara-scan.log"
+  case "$sub" in
+    status)
+      _sec_hdr "yara  —  last scheduled sweep"
+      if [[ -f "$log" ]]; then
+        local matches
+        matches=$(wc -l < "$log" 2>/dev/null || echo 0)
+        if [[ "$matches" -gt 0 ]]; then
+          echo -e "  ${R}!${N}  ${matches} match(es):"
+          cat "$log"
+        else
+          echo -e "  ${G}✓${N}  clean — no matches in the last sweep"
+        fi
+        echo -e "  ${D}·${N}  last run: $(stat -c '%y' "$log" 2>/dev/null | cut -d. -f1)"
+      else
+        echo -e "  ${D}·${N}  no sweep has run yet — ${C}arc sec yara${N} to run one now"
+      fi
+      echo -e "\n$HR"
+      ;;
+    '')
+      _sec_hdr "yara  —  scan ~/.downloads now"
+      # Deliberately NOT a full-$HOME scan -- a real run found this public
+      # ruleset flags constant false positives against trusted, vendor-
+      # installed software (numpy/pip/Firefox profile/etc). Scoped to where
+      # untrusted files actually land, matching what this ruleset is
+      # actually built to catch. Pass an explicit path below to scan
+      # anything else on demand.
+      [[ -f "$rules" ]] || { echo -e "  ${R}✗${N}  ruleset not found — $rules"; echo -e "\n$HR"; return 1; }
+      echo -e "  ${C}→${N}  running scan..."
+      "$HOME/.local/bin/arc-yara-check"
+      _sec_yara status
+      ;;
+    *)
+      if [[ -e "$sub" ]]; then
+        _sec_hdr "yara  —  $sub"
+        yara -w -r "$rules" "$sub" 2>/dev/null
+        echo -e "\n$HR"
+      else
+        echo -e "${R}unknown:${N} arc sec yara $sub"
+        echo -e "${D}options: (none, scans ~/.downloads) · status · <path>${N}"
+      fi
+      ;;
+  esac
+}
+
 _sec_suricata() {
   _sec_hdr "suricata  —  network IDS status"
 
@@ -3467,6 +3515,7 @@ _sec_overview() {
   echo -e "  ${D}arc sec logs      — auth · sudo · ufw blocks · journal${N}"
   echo -e "  ${D}arc sec lynis     — full lynis hardening audit${N}"
   echo -e "  ${D}arc sec amass <domain> — attack-surface mapping, owned domains only unless -f${N}"
+  echo -e "  ${D}arc sec yara      — scan \$HOME now · status · <path> to scan one target${N}"
   echo -e "  ${D}arc sec docker-bench — CIS Docker Benchmark against every container currently running${N}"
   echo -e "  ${D}arc sec aide      — file integrity check (daily timer + arc-pine alert on drift)${N}"
   echo -e "  ${D}arc sec chkrootkit — rootkit scan${N}"
@@ -3493,6 +3542,7 @@ cmd_sec() {
     f2b)      _sec_f2b "${2:-}" "${@:3}" ;;
     lynis)    _sec_lynis ;;
     amass)    _sec_amass "${2:-}" "${3:-}" ;;
+    yara)     _sec_yara "${2:-}" ;;
     docker-bench) _sec_docker_bench ;;
     aide)     _sec_aide ;;
     chkrootkit) _sec_chkrootkit ;;
@@ -3503,7 +3553,7 @@ cmd_sec() {
     '')       _sec_overview ;;
     *)
       echo -e "${R}unknown:${N} arc sec $1"
-      echo -e "${D}options: audit · users · net · firewall · apps · logs · f2b · lynis · amass · docker-bench · aide · chkrootkit · rkhunter · clamav · suricata · cloudtrail${N}"
+      echo -e "${D}options: audit · users · net · firewall · apps · logs · f2b · lynis · amass · yara · docker-bench · aide · chkrootkit · rkhunter · clamav · suricata · cloudtrail${N}"
       return 1
       ;;
   esac
@@ -4419,6 +4469,7 @@ cmd_help() {
   echo -e "  ${D}arc ${C}sec f2b${N}               ${M}fail2ban · ban · unban · banned · logs · check · patch${N}"
   echo -e "  ${D}arc ${C}sec lynis${N}             ${M}full lynis hardening audit — pinned log/report paths, no \$HOME clutter${N}"
   echo -e "  ${D}arc ${C}sec amass ${W}<domain>${N}      ${M}attack-surface mapping — restricted to owned domains unless -f${N}"
+  echo -e "  ${D}arc ${C}sec yara ${W}[status|<path>]${N}   ${M}scan \$HOME (or one target) with the local YARA ruleset — daily sweep also runs via timer${N}"
   echo -e "  ${D}arc ${C}sec apps${N}              ${M}apt · snap · flatpak audit${N}"
   echo -e "  ${D}arc ${C}sec logs${N}              ${M}auth · sudo · ufw blocks · journal${N}"
   echo -e "\n  ${Y}logs${N}"

@@ -2514,6 +2514,42 @@ _sec_lynis() {
   echo -e "$HR"
 }
 
+_sec_amass() {
+  local domain="${1:-}"
+  if [[ -z "$domain" ]]; then
+    echo -e "  ${R}✗${N}  usage: arc sec amass <domain>"
+    return 1
+  fi
+  # Real recon (WHOIS/DNS/cert lookups) against real infrastructure --
+  # restrict to domains we actually own by default, matching the
+  # threat-intel-gameplan.md's explicit "never a domain we don't
+  # own/control" instruction. Anything else needs an explicit -f override,
+  # same shape as other guardrails in this file (e.g. _users_no_root).
+  case "$domain" in
+    kontor.studio|kwasikontor.dev|certifiedhacker.com) : ;;
+    *)
+      if [[ "${2:-}" != "-f" ]]; then
+        echo -e "  ${R}✗${N}  '$domain' isn't in the known-owned list (kontor.studio / kwasikontor.dev)"
+        echo -e "  ${D}·${N}  certifiedhacker.com is allowed too — the standing practice domain"
+        echo -e "  ${D}·${N}  pass -f to run against anything else anyway (your call, your responsibility)"
+        return 1
+      fi
+      ;;
+  esac
+  _sec_hdr "amass  —  attack-surface mapping — $domain"
+  local outdir="$HOME/khaos-lab/soc-lab/amass-runs/$(date +%F)/$domain"
+  mkdir -p "$outdir"
+  echo -e "  ${D}running passive + active (cert-grab) enum, 3min stall-timeout...${N}"
+  echo -e "  ${D}output: $outdir${N}\n"
+  timeout 200 amass enum -d "$domain" -dir "$outdir" -active -timeout 3 2>&1 | tail -5
+  echo
+  echo -e "  ${B}discovered names:${N}"
+  amass subs -d "$domain" -dir "$outdir" -names -ip 2>&1 | grep -v "^\s*[.:&+W8o#@]" | grep -v "^\s*$"
+  echo -e "\n$HR"
+  echo -e "  ${D}kept local-only, not committed to any repo — $outdir${N}"
+  echo -e "$HR"
+}
+
 _sec_docker_bench() {
   _sec_hdr "docker-bench-security  —  CIS Docker Benchmark"
 
@@ -3430,6 +3466,7 @@ _sec_overview() {
   echo -e "  ${D}arc sec apps      — apt · snap · flatpak${N}"
   echo -e "  ${D}arc sec logs      — auth · sudo · ufw blocks · journal${N}"
   echo -e "  ${D}arc sec lynis     — full lynis hardening audit${N}"
+  echo -e "  ${D}arc sec amass <domain> — attack-surface mapping, owned domains only unless -f${N}"
   echo -e "  ${D}arc sec docker-bench — CIS Docker Benchmark against every container currently running${N}"
   echo -e "  ${D}arc sec aide      — file integrity check (daily timer + arc-pine alert on drift)${N}"
   echo -e "  ${D}arc sec chkrootkit — rootkit scan${N}"
@@ -3455,6 +3492,7 @@ cmd_sec() {
     logs)     _sec_logs ;;
     f2b)      _sec_f2b "${2:-}" "${@:3}" ;;
     lynis)    _sec_lynis ;;
+    amass)    _sec_amass "${2:-}" "${3:-}" ;;
     docker-bench) _sec_docker_bench ;;
     aide)     _sec_aide ;;
     chkrootkit) _sec_chkrootkit ;;
@@ -3465,7 +3503,7 @@ cmd_sec() {
     '')       _sec_overview ;;
     *)
       echo -e "${R}unknown:${N} arc sec $1"
-      echo -e "${D}options: audit · users · net · firewall · apps · logs · f2b · lynis · docker-bench · aide · chkrootkit · rkhunter · clamav · suricata · cloudtrail${N}"
+      echo -e "${D}options: audit · users · net · firewall · apps · logs · f2b · lynis · amass · docker-bench · aide · chkrootkit · rkhunter · clamav · suricata · cloudtrail${N}"
       return 1
       ;;
   esac
@@ -4380,6 +4418,7 @@ cmd_help() {
   echo -e "  ${D}arc ${C}sec firewall${N}          ${M}ufw status · allow · deny · delete · logs · reset${N}"
   echo -e "  ${D}arc ${C}sec f2b${N}               ${M}fail2ban · ban · unban · banned · logs · check · patch${N}"
   echo -e "  ${D}arc ${C}sec lynis${N}             ${M}full lynis hardening audit — pinned log/report paths, no \$HOME clutter${N}"
+  echo -e "  ${D}arc ${C}sec amass ${W}<domain>${N}      ${M}attack-surface mapping — restricted to owned domains unless -f${N}"
   echo -e "  ${D}arc ${C}sec apps${N}              ${M}apt · snap · flatpak audit${N}"
   echo -e "  ${D}arc ${C}sec logs${N}              ${M}auth · sudo · ufw blocks · journal${N}"
   echo -e "\n  ${Y}logs${N}"
@@ -6144,7 +6183,7 @@ case "${1:-}" in
   vpn)            cmd_vpn "${@:2}" ;;
   remote)         cmd_remote "${2:-status}" ;;
   fix)            cmd_fix "${2:-}" ;;
-  sec)            cmd_sec "${2:-}" ;;
+  sec)            cmd_sec "${@:2}" ;;
   users)          cmd_users "${2:-}" "${3:-}" "${4:-}" ;;
   snap)           cmd_snap ;;
   logs)           cmd_logs "${2:-}" ;;

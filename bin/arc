@@ -1805,8 +1805,31 @@ cmd_site() {
         echo -e "  ${R}✗${N}  no site built yet — run: arc site build"
         return 1
       fi
-      xdg-open "$SITE/index.html" 2>/dev/null &
-      echo -e "  ${G}✓${N}  opened ${SITE}/index.html"
+      # Fixed 2026-09-11 -- this used to open the raw file:// path directly,
+      # which caused exactly the "stale content, broken links" reports:
+      # (1) browsers commonly reuse an already-open tab for the same
+      #     file:// URL instead of reloading it, so a rebuild never showed
+      #     up until a manual refresh; (2) the site lives on the removable
+      #     vault -- if it's ever unmounted after the tab was opened, every
+      #     link click into notes/*.html silently dead-ends with no useful
+      #     error, since file:// navigation to a now-missing path just
+      #     fails quietly. Serving over the existing local notes-site.service
+      #     (plain http.server, was already built but never actually wired
+      #     into this command) fixes both: every request is a fresh disk
+      #     read, and a missing/unmounted vault gives a real connection
+      #     error instead of a dead link.
+      if ! systemctl --user is-active --quiet notes-site; then
+        systemctl --user start notes-site 2>/dev/null
+        sleep 1
+      fi
+      if systemctl --user is-active --quiet notes-site; then
+        xdg-open "http://127.0.0.1:8642/index.html" 2>/dev/null &
+        echo -e "  ${G}✓${N}  opened http://127.0.0.1:8642/index.html"
+      else
+        echo -e "  ${Y}!${N}  local server didn't start — falling back to file://"
+        xdg-open "$SITE/index.html" 2>/dev/null &
+        echo -e "  ${G}✓${N}  opened ${SITE}/index.html"
+      fi
       ;;
     *)
       echo -e "$HR"

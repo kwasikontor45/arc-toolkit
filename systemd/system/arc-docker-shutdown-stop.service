@@ -1,0 +1,28 @@
+[Unit]
+Description=arc-docker-shutdown-stop — cleanly stop sagan/evebox before dockerd goes down
+# docker.service runs with live-restore=true (deliberate — survives dockerd crashes/upgrades
+# without disrupting the containers). The side effect: a full system shutdown/reboot never gets
+# a clean, logged container stop — docker.service reports done instantly while sagan/evebox keep
+# running as orphans, and it's left to systemd-shutdown's raw final catch-all (AFTER journald
+# itself is already dead) to individually SIGTERM and wait on them. That's the un-logged
+# "exit promiscuous mode" / "waiting evebox" text seen on screen during a slow reboot — found
+# 2026-09-11 by deliberately stopping docker.service live and confirming sagan/evebox (same
+# PIDs) kept running untouched.
+#
+# This unit's only job: stop those two containers explicitly, in the normal ordered/logged
+# shutdown sequence, before docker.service's own stop job runs (After=docker.service means it
+# is torn down BEFORE docker.service, per systemd's reverse-of-start stop ordering) — so by the
+# time docker.service actually stops, there's nothing left for the raw final sweep to catch.
+# Does NOT touch live-restore's real purpose (daemon crash/upgrade resilience) — a plain
+# `systemctl restart docker` or a dockerd crash still leaves them running untouched.
+After=docker.service
+Requisite=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/bin/docker stop -t 10 sagan evebox
+
+[Install]
+WantedBy=multi-user.target

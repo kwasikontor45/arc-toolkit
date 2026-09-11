@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _arc_pine_common as pine
+import _arc_ui as ui
 
 DB_PATH     = pine.DB_PATH
 ICON_PATH   = Path.home() / ".local/share/arc-pine/icon.png"
@@ -33,16 +34,20 @@ THEMES = {
     "gruvbox":        {"bg": "#3c3836", "accent": "#fb4934", "fg": "#ebdbb2"},
 }
 
-# Rose Pine Moon
-BG       = "#232136"
-SURFACE  = "#2a273f"
-OVERLAY  = "#393552"
-FG       = "#e0def4"
-FG_MUTED = "#6e6a86"
-GOLD     = "#f6c177"
-ROSE     = "#eb6f92"
-PINE     = "#3e8fb0"
-TEAL     = "#9ccfd8"
+# Circadian -- launch-time snapshot, matching arc-break/khaos-lab
+# (_arc_ui.py). This viewer's own chrome now drifts with real time of
+# day, same design language as Kataleya's circadian engine -- not a
+# fixed Rose Pine Moon default anymore.
+_circadian = ui.circadian()
+BG       = _circadian["bg"]
+SURFACE  = _circadian["surface"]
+OVERLAY  = _circadian["overlay"]
+FG       = _circadian["fg"]
+FG_MUTED = _circadian["fg_muted"]
+GOLD     = ui.GOLD
+ROSE     = ui.ROSE
+PINE     = ui.PINE
+TEAL     = ui.TEAL
 
 URGENCY_COLOR = {0: FG_MUTED, 1: TEAL, 2: ROSE}
 
@@ -104,17 +109,17 @@ class ArcPine(tk.Tk):
         self.snooze_lbl = tk.Label(top, text="😴 snoozed", font=("JetBrains Mono", 9, "bold"),
                                     bg=BG, fg=ROSE)
 
-        self.settings_btn = tk.Button(
-            top, text="⚙", font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
-            activebackground=OVERLAY, activeforeground=TEAL, relief="flat", bd=0,
-            padx=8, pady=4, cursor="hand2", command=lambda: self.set_view("settings"),
+        self.settings_btn = ui.button(
+            top, "⚙", command=lambda: self.set_view("settings"),
+            font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL, hover_bg=OVERLAY,
+            padx=8, pady=4,
         )
         self.settings_btn.pack(side="right", padx=(4, 0))
 
-        self.insights_btn = tk.Button(
-            top, text="📊", font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
-            activebackground=OVERLAY, activeforeground=TEAL, relief="flat", bd=0,
-            padx=8, pady=4, cursor="hand2", command=lambda: self.set_view("insights"),
+        self.insights_btn = ui.button(
+            top, "📊", command=lambda: self.set_view("insights"),
+            font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL, hover_bg=OVERLAY,
+            padx=8, pady=4,
         )
         self.insights_btn.pack(side="right", padx=(4, 0))
 
@@ -151,8 +156,8 @@ class ArcPine(tk.Tk):
         self._update_nav_buttons()
 
     def _update_nav_buttons(self):
-        self.settings_btn.configure(bg=OVERLAY if self.view == "settings" else SURFACE)
-        self.insights_btn.configure(bg=OVERLAY if self.view == "insights" else SURFACE)
+        self.settings_btn.set_look(bg=OVERLAY if self.view == "settings" else SURFACE)
+        self.insights_btn.set_look(bg=OVERLAY if self.view == "insights" else SURFACE)
 
     def _build_history_view(self):
         self.history_view = tk.Frame(self.body, bg=BG)
@@ -179,13 +184,11 @@ class ArcPine(tk.Tk):
         bottom = tk.Frame(self.history_view, bg=BG)
         bottom.pack(fill="x", padx=10, pady=10)
 
-        BTN = dict(font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
-                   activebackground=OVERLAY, activeforeground=TEAL,
-                   relief="flat", bd=0, padx=8, pady=4, cursor="hand2")
+        BTN = dict(font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL, hover_bg=OVERLAY, padx=8, pady=4)
 
-        tk.Button(bottom, text="purge >7d", command=lambda: self.purge_age(7), **BTN).pack(side="left", padx=2)
-        tk.Button(bottom, text="purge >30d", command=lambda: self.purge_age(30), **BTN).pack(side="left", padx=2)
-        tk.Button(bottom, text="clear all", command=self.purge_all, **{**BTN, "fg": ROSE}).pack(side="left", padx=2)
+        ui.button(bottom, "purge >7d", command=lambda: self.purge_age(7), **BTN).pack(side="left", padx=2)
+        ui.button(bottom, "purge >30d", command=lambda: self.purge_age(30), **BTN).pack(side="left", padx=2)
+        ui.button(bottom, "clear all", command=self.purge_all, **{**BTN, "fg": ROSE}).pack(side="left", padx=2)
 
         self.count_lbl = tk.Label(bottom, text="", font=("JetBrains Mono", 9), bg=BG, fg=FG_MUTED)
         self.count_lbl.pack(side="right")
@@ -366,9 +369,8 @@ class ArcPine(tk.Tk):
             self.add_app_var.set("")
             self._rebuild_rules_list()
         add_entry.bind("<Return>", lambda e: add_app())
-        tk.Button(r, text="+", command=add_app, font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
-                  activebackground=OVERLAY, activeforeground=TEAL, relief="flat", bd=0,
-                  padx=8, cursor="hand2").pack(side="left")
+        ui.button(r, "+", command=add_app, font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
+                  hover_bg=OVERLAY, padx=8, pady=0).pack(side="left")
 
         tk.Label(self.settings_view, text="changes apply live -- no restart needed",
                  font=("JetBrains Mono", 8), bg=BG, fg=FG_MUTED).pack(anchor="w", padx=14, pady=(10, 10))
@@ -490,12 +492,16 @@ class ArcPine(tk.Tk):
             db_exec("DELETE FROM notifications WHERE id = ?", (nid,))
             self.refresh()
 
-        tk.Button(actions, text="copy", command=do_copy, font=("JetBrains Mono", 8),
-                  bg=OVERLAY, fg=TEAL, relief="flat", bd=0, padx=6, cursor="hand2"
-                  ).pack(side="left")
-        tk.Button(actions, text="delete", command=do_delete, font=("JetBrains Mono", 8),
-                  bg=OVERLAY, fg=ROSE, relief="flat", bd=0, padx=6, cursor="hand2"
-                  ).pack(side="left", padx=(4, 0))
+        # Card itself deliberately stays a flat tk.Frame, not
+        # ui.rounded_frame() -- up to 200 of these render per view (LIMIT
+        # 200 above), and 200 live Canvas widgets each redrawing on their
+        # own <Configure> is real, untested performance risk for a
+        # cosmetic gain, same reasoning khaos-lab's per-action rows used.
+        # The buttons themselves are cheap either way.
+        ui.button(actions, "copy", command=do_copy, font=("JetBrains Mono", 8),
+                  bg=OVERLAY, fg=TEAL, hover_bg=BG, padx=6, pady=0).pack(side="left")
+        ui.button(actions, "delete", command=do_delete, font=("JetBrains Mono", 8),
+                  bg=OVERLAY, fg=ROSE, hover_bg=BG, padx=6, pady=0).pack(side="left", padx=(4, 0))
 
     def purge_age(self, days):
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")

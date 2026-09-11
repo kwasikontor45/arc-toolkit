@@ -47,6 +47,7 @@
 664 _arc_ui.py
 775 arc-vpn-watch
 664 _arc_watch_common.py
+775 arc-yara-check
 711 bakup-local
 755 bakup-usb
 775 build-master-book

@@ -4469,7 +4469,7 @@ cmd_help() {
   echo -e "  ${D}arc ${C}sec f2b${N}               ${M}fail2ban · ban · unban · banned · logs · check · patch${N}"
   echo -e "  ${D}arc ${C}sec lynis${N}             ${M}full lynis hardening audit — pinned log/report paths, no \$HOME clutter${N}"
   echo -e "  ${D}arc ${C}sec amass ${W}<domain>${N}      ${M}attack-surface mapping — restricted to owned domains unless -f${N}"
-  echo -e "  ${D}arc ${C}sec yara ${W}[status|<path>]${N}   ${M}scan \$HOME (or one target) with the local YARA ruleset — daily sweep also runs via timer${N}"
+  echo -e "  ${D}arc ${C}sec yara ${W}[status|<path>]${N}   ${M}scan ~/.downloads (or one target) with the local YARA ruleset — daily sweep also runs via timer${N}"
   echo -e "  ${D}arc ${C}sec apps${N}              ${M}apt · snap · flatpak audit${N}"
   echo -e "  ${D}arc ${C}sec logs${N}              ${M}auth · sudo · ufw blocks · journal${N}"
   echo -e "\n  ${Y}logs${N}"

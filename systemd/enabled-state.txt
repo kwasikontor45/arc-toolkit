@@ -5,6 +5,7 @@
 # format: <scope:system|user> <state> <unit>
 system static arc-chkrootkit-check.service
 system enabled arc-clamav-watch.service
+system enabled arc-docker-shutdown-stop.service
 system enabled arc-fail2ban-watch.service
 system indirect arc-log-bridge@.service
 system static arc-lynis-check.service
@@ -21,8 +22,11 @@ user static arc-break.service
 user enabled arc-dns-boot.service
 user enabled arc-pine-bubbles.service
 user static arc-quiet-clean.service
+user static arc-remote-backup-tunnel.service
 user enabled arc-vpn-autoconnect.service
 user static arc-vpn-watch.service
+user static arc-yara-check.service
 user enabled arc-aide-watch.timer
 user enabled arc-quiet-clean.timer
 user enabled arc-vpn-watch.timer
+user enabled arc-yara-check.timer

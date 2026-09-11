@@ -171,6 +171,21 @@ def in_dnd_window(cfg):
     return now >= start or now < end  # window wraps past midnight
 
 
+def is_snoozed(cfg):
+    """True if an on-demand snooze (set via arc-pine-snooze, distinct from
+    the scheduled DND window above) is currently active. Snooze is the
+    stronger of the two on purpose -- it's a deliberate, active "leave me
+    alone right now" rather than a passive schedule, so it suppresses the
+    bubble too, not just sound/speech. Logging still always happens
+    regardless -- the one thing this project has never let any quiet mode
+    cost you is the actual record of what fired."""
+    until = cfg.get("snooze_until", 0)
+    try:
+        return time.time() < float(until)
+    except (TypeError, ValueError):
+        return False
+
+
 def log_notification(app_name, summary, body, urgency_int):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)

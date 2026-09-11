@@ -56,10 +56,10 @@ def handle_notify(args):
 
     pine.log_notification(app_name, summary, body, urgency)
 
-    dnd = pine.in_dnd_window(cfg)
-    sound_file = cfg.get("sound_file") if cfg.get("sound_enabled", True) and not dnd else None
+    quiet = pine.in_dnd_window(cfg) or pine.is_snoozed(cfg)
+    sound_file = cfg.get("sound_file") if cfg.get("sound_enabled", True) and not quiet else None
     speak_text = None
-    if cfg.get("speak_enabled", True) and not dnd and pine.should_speak(cfg, app_name):
+    if cfg.get("speak_enabled", True) and not quiet and pine.should_speak(cfg, app_name):
         speak_text = summary if not body else f"{summary}. {body}"
 
     pine.emit_audio_async(sound_file, speak_text)

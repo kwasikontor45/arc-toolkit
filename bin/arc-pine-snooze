@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""
+arc-pine-snooze — on-demand "leave me alone" for arc-pine, distinct from
+the scheduled quiet-hours (DND) window in Settings.
+
+DND is a passive schedule (e.g. 23:00-07:00, every night). Snooze is an
+active, deliberate choice for right now -- "I'm in a meeting for the next
+30 minutes" -- and is the stronger of the two: it suppresses the bubble
+too, not just sound/speech (DND alone still shows a silent bubble).
+Logging always still happens either way -- no quiet mode in this project
+has ever cost you the actual record of what fired.
+
+Usage:
+  arc-pine-snooze <minutes>   — snooze for N minutes
+  arc-pine-snooze             — show current snooze state
+  arc-pine-snooze off         — cancel an active snooze early
+"""
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _arc_pine_common as pine
+
+
+def main():
+    args = sys.argv[1:]
+    cfg = pine.load_config()
+
+    if not args:
+        if pine.is_snoozed(cfg):
+            remaining = int(cfg["snooze_until"] - time.time())
+            mins, secs = divmod(max(remaining, 0), 60)
+            until = time.strftime("%H:%M", time.localtime(cfg["snooze_until"]))
+            print(f"snoozed for {mins}m {secs}s more (until {until})")
+        else:
+            print("not snoozed")
+        return
+
+    arg = args[0]
+    if arg == "off":
+        cfg.pop("snooze_until", None)
+        pine.save_config(cfg)
+        print("snooze cancelled")
+        return
+
+    try:
+        minutes = float(arg)
+        if minutes <= 0:
+            raise ValueError
+    except ValueError:
+        print(f"usage: {Path(__file__).name} <minutes> | off | (no args = show status)", file=sys.stderr)
+        sys.exit(1)
+
+    cfg["snooze_until"] = time.time() + minutes * 60
+    pine.save_config(cfg)
+    until = time.strftime("%H:%M", time.localtime(cfg["snooze_until"]))
+    print(f"snoozed for {minutes:g} minute(s), until {until} -- sound/speech/bubbles all off, still logging")
+
+
+if __name__ == "__main__":
+    main()

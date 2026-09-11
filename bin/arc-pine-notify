@@ -61,15 +61,21 @@ def main():
 
     pine.log_notification(app, summary, body, URGENCY_INT[urgency])
 
-    dnd = pine.in_dnd_window(cfg)
-    sound_file = cfg.get("sound_file") if cfg.get("sound_enabled", True) and not dnd else None
+    snoozed = pine.is_snoozed(cfg)
+    quiet = pine.in_dnd_window(cfg) or snoozed
+    sound_file = cfg.get("sound_file") if cfg.get("sound_enabled", True) and not quiet else None
     speak_text = None
-    if cfg.get("speak_enabled", True) and not dnd and pine.should_speak(cfg, app):
+    if cfg.get("speak_enabled", True) and not quiet and pine.should_speak(cfg, app):
         speak_text = summary if not body else f"{summary}. {body}"
 
     audio_thread = pine.emit_audio_async(sound_file, speak_text)
 
-    push_bubble(urgency, app, summary, body)
+    # Snooze is the stronger, deliberate "leave me alone right now" --
+    # suppresses the bubble too, not just sound/speech (DND alone still
+    # shows a silent bubble; see in_dnd_window's docstring). Logging above
+    # already happened either way.
+    if not snoozed:
+        push_bubble(urgency, app, summary, body)
 
     # This is a one-shot CLI script, not a persistent daemon -- if it exits
     # while emit_audio is still mid-duck, the mute-restore in its `finally`

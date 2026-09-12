@@ -24,6 +24,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -627,7 +628,27 @@ def main():
     signal.signal(signal.SIGINT, cleanup)
 
     write_pid()
-    BreakTimer().ensure_panel_config()
+
+    # Real, confirmed upstream behavior (not a one-off): this genmon plugin
+    # overwrites ITS OWN command/update-period/use-label properties back to
+    # a remembered stale value on every fresh widget creation -- not just at
+    # login, any panel restart or crash does it, live-confirmed by directly
+    # watching the on-disk xfconf XML flip back the instant the panel
+    # restarted, even seconds after this exact fix had already been written
+    # and flushed to disk. One-shot healing (startup only) can't win that
+    # race by construction -- the widget can reset again at any later,
+    # unpredictable moment. A background thread that just re-checks
+    # periodically is the honest fix: still this one process, no separate
+    # script/autostart entry, just bounding "how stale can it get" to one
+    # poll interval instead of "until the daemon happens to restart."
+    def _panel_heal_loop():
+        bt = BreakTimer()
+        while True:
+            bt.ensure_panel_config()
+            time.sleep(15)
+
+    threading.Thread(target=_panel_heal_loop, daemon=True).start()
+
     cfg = load_config()
     work_sec  = cfg["work_minutes"]  * 60
     break_sec = cfg["break_minutes"] * 60

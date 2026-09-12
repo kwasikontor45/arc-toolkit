@@ -11,6 +11,7 @@
 755 arc-break
 755 arc-break-panel
 755 arc-break-panel-fix
+775 arc-break-panel-menu
 755 arc-break-start
 711 arc-cf-watch
 711 arc-chkrootkit-check

@@ -12,12 +12,17 @@
 #                    property once already)
 STATE="$HOME/.local/share/arc-break/state.json"
 PID_F="$HOME/.local/share/arc-break/arc-break.pid"
-START="$HOME/.local/bin/arc-break-start"
+# Click now goes through arc-break-panel-menu, not straight to
+# arc-break-start -- the panel widget is the self-contained control surface
+# (start when dead, a small open/reset/stop menu when alive), not just a
+# passive display that always needs a separate launcher for anything beyond
+# "start." See arc-break-panel-menu's own header for the full reasoning.
+MENU="$HOME/.local/bin/arc-break-panel-menu"
 
 emit() {
     echo "<txt>$1</txt>"
-    echo "<click>$START</click>"
-    echo "<txtclick>$START</txtclick>"
+    echo "<click>$MENU</click>"
+    echo "<txtclick>$MENU</txtclick>"
 }
 
 if [[ ! -f "$PID_F" ]] || ! kill -0 "$(cat "$PID_F" 2>/dev/null)" 2>/dev/null; then

@@ -7,6 +7,13 @@
 #   1. This genmon plugin version resets its OWN properties to factory
 #      defaults every time its widget is freshly created (panel restart,
 #      reboot, logout/login) -- confirmed reproducible, not a one-off race.
+#      NOTE 2026-09-11: this self-heal was itself the cause of the "Period
+#      always resets to 5" complaint -- it correctly re-fought genmon's own
+#      reset bug, but re-asserted the WRONG value (5000ms, from whenever
+#      this script was first written) every login, silently overwriting
+#      whatever the user had actually set. Changed to 1000ms (1s, real-time)
+#      to match the actually-wanted value -- the self-heal logic itself was
+#      always correct, only the target value was wrong.
 #   2. xfconfd only flushes panel config to disk on a debounced delay after
 #      a change -- restarting the panel inside that window can lose it
 #      permanently even before #1 applies.
@@ -48,7 +55,7 @@ _set() {
       || xfconf-query -c xfce4-panel -p "$prop" -n -t "$type" -s "$val" 2>/dev/null
 }
 _set command string "$PANEL_SCRIPT"
-_set update-period uint 5000
+_set update-period uint 1000
 _set use-label bool false
 
 # Deliberately NOT calling arc-break-start here (removed 2026-08-18) -- doing

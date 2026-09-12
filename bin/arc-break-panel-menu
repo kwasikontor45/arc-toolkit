@@ -1,0 +1,34 @@
+#!/bin/bash
+# arc-break-panel-menu — click target for the genmon taskbar widget itself.
+# Built 2026-09-11 to close a real coupling gap: the panel widget could only
+# ever do one thing (start the daemon if it wasn't running) -- any other
+# control (stop/reset/open the full window) required going through the
+# separate "Arc Break" launcher icon instead. This makes the panel widget
+# self-sufficient: it IS the control surface, not just a passive display
+# pointing at a different app for anything real.
+#
+# Not running  -> single click starts it (unchanged, simplest case).
+# Running      -> a small rofi menu (already a toolkit dependency, used by
+#                 emoji-pick) with the actual controls, no separate window
+#                 needed for a quick stop/reset.
+PID_F="$HOME/.local/share/arc-break/arc-break.pid"
+GUI="$HOME/.local/bin/arc-break"
+
+running() {
+    [[ -f "$PID_F" ]] && kill -0 "$(cat "$PID_F" 2>/dev/null)" 2>/dev/null
+}
+
+if ! running; then
+    systemctl --user start arc-break.service
+    exit 0
+fi
+
+choice=$(printf '⚙ open\n↺ reset\n■ stop\n' | rofi -dmenu -p "arc break" -theme-str 'window {width: 180px;} listview {lines: 3;}' 2>/dev/null)
+
+case "$choice" in
+    *open*)  "$GUI" gui ;;
+    *reset*) systemctl --user stop arc-break.service
+              sleep 1
+              systemctl --user start arc-break.service ;;
+    *stop*)  systemctl --user stop arc-break.service ;;
+esac

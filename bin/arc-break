@@ -200,7 +200,7 @@ def run_gui():
     root.resizable(False, False)
     root.attributes("-topmost", True)
     root.configure(bg=BG)
-    root.geometry("260x246+20+20")
+    root.geometry("260x330+20+20")
 
     if ICON_PATH.exists():
         try:
@@ -271,43 +271,45 @@ def run_gui():
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         SNOOZE_PATH.write_text(str(n))
 
-    def do_config():
-        popup = tk.Toplevel(root)
-        popup.title("config")
-        popup.configure(bg=BG)
-        popup.resizable(False, False)
-        popup.attributes("-topmost", True)
-        popup.geometry("250x120+20+290")
+    # Config used to be a separate tk.Toplevel popup stacked below the main
+    # window -- a second floating window just to change two numbers felt
+    # disconnected from the app it belonged to. Folded directly into the
+    # main window instead (2026-09-11): one window, one surface, no popup.
+    cfg_now = load_config()
 
-        cfg = load_config()
+    config_outer, config_card = ui.rounded_frame(root, parent_bg=BG, bg=SURFACE, radius=10)
+    config_card.columnconfigure(1, weight=1)
 
-        tk.Label(popup, text="work min",  font=small_font, bg=BG, fg=FG_MUTED).grid(
-            row=0, column=0, padx=12, pady=(14, 4), sticky="w")
-        work_var = tk.StringVar(value=str(cfg["work_minutes"]))
-        tk.Entry(popup, textvariable=work_var, width=4, font=btn_font,
-                 bg=SURFACE, fg=FG_WORK, insertbackground=FG_WORK, relief="flat"
-                 ).grid(row=0, column=1, padx=8, pady=(14, 4))
+    tk.Label(config_card, text="work",  font=small_font, bg=SURFACE, fg=FG_MUTED).grid(
+        row=0, column=0, padx=(10, 4), pady=(8, 4), sticky="w")
+    work_var = tk.StringVar(value=str(cfg_now["work_minutes"]))
+    tk.Entry(config_card, textvariable=work_var, width=4, font=btn_font,
+             bg=BG, fg=FG_WORK, insertbackground=FG_WORK, relief="flat", justify="center"
+             ).grid(row=0, column=1, padx=4, pady=(8, 4), sticky="w")
 
-        tk.Label(popup, text="break min", font=small_font, bg=BG, fg=FG_MUTED).grid(
-            row=1, column=0, padx=12, pady=4, sticky="w")
-        break_var = tk.StringVar(value=str(cfg["break_minutes"]))
-        tk.Entry(popup, textvariable=break_var, width=4, font=btn_font,
-                 bg=SURFACE, fg=FG_WORK, insertbackground=FG_WORK, relief="flat"
-                 ).grid(row=1, column=1, padx=8, pady=4)
+    tk.Label(config_card, text="break", font=small_font, bg=SURFACE, fg=FG_MUTED).grid(
+        row=1, column=0, padx=(10, 4), pady=(0, 8), sticky="w")
+    break_var = tk.StringVar(value=str(cfg_now["break_minutes"]))
+    tk.Entry(config_card, textvariable=break_var, width=4, font=btn_font,
+             bg=BG, fg=FG_WORK, insertbackground=FG_WORK, relief="flat", justify="center"
+             ).grid(row=1, column=1, padx=4, pady=(0, 8), sticky="w")
 
-        def apply_cfg():
-            try:
-                save_config({
-                    "work_minutes":  int(work_var.get()),
-                    "break_minutes": int(break_var.get()),
-                })
-                popup.destroy()
-            except ValueError:
-                pass
+    def do_config_apply():
+        try:
+            save_config({
+                "work_minutes":  int(work_var.get()),
+                "break_minutes": int(break_var.get()),
+            })
+            config_status.configure(text="saved — restart to take effect", fg=FG_TEAL)
+        except ValueError:
+            config_status.configure(text="work/break must be whole numbers", fg=FG_BREAK)
 
-        ui.button(popup, "apply  (restart to take effect)", command=apply_cfg,
-                  font=small_font, bg=SURFACE, fg=FG_TEAL, hover_bg=FG_STOP,
-                  ).grid(row=2, column=0, columnspan=2, padx=10, pady=(6, 4), sticky="ew")
+    btn_apply = ui.button(config_card, "apply", command=do_config_apply,
+                           font=small_font, bg=BG, fg=FG_TEAL, hover_bg=FG_STOP)
+    btn_apply.grid(row=0, column=2, rowspan=2, padx=(6, 10), pady=8, sticky="ns")
+
+    config_status = tk.Label(config_card, text="minutes", font=small_font, bg=SURFACE, fg=FG_MUTED)
+    config_status.grid(row=2, column=0, columnspan=3, padx=10, pady=(0, 8), sticky="w")
 
     # ── Button rows -- ui.button() gives a real hover-state transition
     # instead of the old flat tk.Button (static until an actual click) ──────────
@@ -344,13 +346,8 @@ def run_gui():
     snooze_spin.grid(row=0, column=1, padx=2, pady=2)
     btn_snooze.grid( row=0, column=2, padx=2, pady=2, sticky="ew")
 
-    # Row 3: config (full width)
-    row3 = tk.Frame(root, bg=BG)
-    row3.pack(fill="x", padx=6, pady=(2, 6))
-    row3.columnconfigure(0, weight=1)
-
-    btn_config = ui.button(row3, "≡ config", command=do_config, fg=FG_MUTED, **BTN)
-    btn_config.grid(row=0, column=0, padx=2, pady=2, sticky="ew")
+    # Row 3: config card, inline (was a separate popup window, see note above)
+    config_outer.pack(fill="x", padx=6, pady=(2, 6))
 
     # ── Button state sync ─────────────────────────────────────────────────────
     def update_btn_states():
@@ -373,15 +370,22 @@ def run_gui():
     def retheme():
         c = ui.circadian()
         root.configure(bg=c["bg"])
-        for row in (row1, row2, row3):
+        for row in (row1, row2):
             row.configure(bg=c["bg"])
         status_outer.retheme(new_bg=c["surface"], new_parent_bg=c["bg"])
+        config_outer.retheme(new_bg=c["surface"], new_parent_bg=c["bg"])
         phase_lbl.configure(bg=c["surface"])
         time_lbl.configure(bg=c["surface"])
         status_lbl.configure(bg=c["surface"], fg=c["fg_muted"])
-        for b in (btn_start, btn_stop, btn_reset, btn_skip, btn_snooze, btn_config):
+        for b in (btn_start, btn_stop, btn_reset, btn_skip, btn_snooze, btn_apply):
             b.retheme(bg=c["surface"], hover_bg=c["overlay"])
         snooze_spin.configure(bg=c["surface"], fg=c["fg_muted"])
+        config_card.configure(bg=c["surface"])
+        for w in config_card.winfo_children():
+            if isinstance(w, tk.Label):
+                w.configure(bg=c["surface"])
+            elif isinstance(w, tk.Entry):
+                w.configure(bg=c["bg"])
         root.after(60_000, retheme)
 
     retheme()

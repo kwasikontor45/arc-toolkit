@@ -15,6 +15,8 @@ Commands (via arc break):
   arc break skip           — skip current break, restart work timer
   arc break config         — show current config
   arc break gui            — open live timer window
+  arc break genmon         — panel display (called by genmon, not by hand)
+  arc break panel-click    — panel click target (called by genmon, not by hand)
 """
 
 import json
@@ -59,6 +61,98 @@ def save_config(updates: dict):
     cfg.update(updates)
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
+
+
+# ── BreakTimer ─────────────────────────────────────────────────────────────────
+class BreakTimer:
+    """Single source of truth for reading/controlling arc-break's running
+    state. Built 2026-09-11 to close a real coupling gap: the panel display
+    (arc-break-panel), its click handler (arc-break-panel-menu), and its
+    login-time property fix (arc-break-panel-fix) used to be three separate
+    shell scripts, each independently re-deriving "is it running" /
+    "start/stop/reset" via their own PID-file checks and systemctl calls --
+    coupled only by convention, not by any shared object. All three are gone
+    now; `genmon`/`panel-click`/`ensure-panel` below are subcommands of this
+    one file, and everything they need lives on this one class.
+    """
+
+    def is_running(self):
+        if not PID_PATH.exists():
+            return False
+        try:
+            os.kill(int(PID_PATH.read_text().strip()), 0)
+            return True
+        except Exception:
+            return False
+
+    def current(self):
+        """dict(phase, remaining, total, pid) if running and state is
+        readable, else None -- callers (genmon display, GUI tick) treat
+        None as the single "not running / unknown" case, not two."""
+        if not self.is_running():
+            return None
+        try:
+            state = json.loads(STATE_PATH.read_text())
+            remaining = max(0, int(state["phase_end"] - time.time()))
+            total = max(1, int(state["phase_end"] - state["phase_start"]))
+            return {
+                "phase": state["phase"],
+                "remaining": remaining,
+                "total": total,
+                "pid": PID_PATH.read_text().strip(),
+            }
+        except Exception:
+            return None
+
+    def start(self):
+        subprocess.run(["systemctl", "--user", "start", "arc-break.service"],
+                        capture_output=True)
+
+    def stop(self):
+        subprocess.run(["systemctl", "--user", "stop", "arc-break.service"],
+                        capture_output=True)
+
+    def reset(self):
+        self.stop()
+        time.sleep(1)
+        self.start()
+
+    def ensure_panel_config(self):
+        """Folds arc-break-panel-fix's whole job into this class -- genmon
+        resets its OWN xfconf properties to factory defaults every time its
+        widget is freshly created (panel restart/reboot/login), a confirmed
+        upstream quirk, not a one-off. Previously fought by a separate
+        autostart script 10s after login; now just the first thing the
+        daemon does on its own startup, no separate script/autostart entry
+        needed. Real bug this class's predecessor script had, fixed here
+        too: the re-asserted update-period was hardcoded to 5000ms from
+        whenever it was first written, silently overwriting the actually-
+        wanted 1000ms (real-time feel) every login."""
+        def xq(*args):
+            return subprocess.run(["xfconf-query", "-c", "xfce4-panel", *args],
+                                   capture_output=True, text=True)
+
+        listing = xq("-p", "/plugins", "-lv").stdout
+        plugin_id = None
+        for line in listing.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[1].strip() == "genmon":
+                path = parts[0]
+                if path.rsplit("/", 1)[-1].replace("plugin-", "").isdigit() \
+                   and path.count("/") == 2:
+                    plugin_id = path.rsplit("-", 1)[-1]
+                    break
+        if plugin_id is None:
+            return  # no genmon plugin on this panel -- nothing to fix
+
+        def _set(prop, type_, val):
+            r = xq("-p", f"/plugins/plugin-{plugin_id}/{prop}", "-s", val)
+            if r.returncode != 0:
+                xq("-p", f"/plugins/plugin-{plugin_id}/{prop}", "-n", "-t", type_, "-s", val)
+
+        _set("command", "string", f"{sys.executable} {os.path.abspath(__file__)} genmon")
+        _set("update-period", "uint", "1000")
+        _set("use-label", "bool", "false")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -457,12 +551,83 @@ def run_gui():
     GUI_PID_PATH.unlink(missing_ok=True)
 
 
+# ── Panel display + click (replaces arc-break-panel / arc-break-panel-menu) ─────
+_EMOJI_WORK  = ["🚀","🧠","💻","⌨️","📝","🎯","🔍","👀","⏰","⚡","😤","🔔"]
+_PCT_WORK    = [93, 83, 73, 63, 53, 43, 33, 23, 17, 10, 3]
+_EMOJI_BREAK = ["🌿","☕","🧘","💤","🔔"]
+_PCT_BREAK   = [80, 60, 40, 20]
+
+
+def _phase_emoji(phase, pct):
+    table, cuts = (_EMOJI_WORK, _PCT_WORK) if phase == "work" else (_EMOJI_BREAK, _PCT_BREAK)
+    for cut, emoji in zip(cuts, table):
+        if pct >= cut:
+            return emoji
+    return table[-1]
+
+
+def cmd_genmon():
+    """Emits genmon's XML. Replaces the old separate arc-break-panel
+    script -- same BreakTimer.current() a `status`/the GUI's tick() use,
+    not an independently-drifting third reading of state.json."""
+    self_path = f"{sys.executable} {os.path.abspath(__file__)}"
+    cur = BreakTimer().current()
+    if not cur:
+        print("<txt>💀 --:--</txt>")
+        print(f"<click>{self_path} panel-click</click>")
+        print(f"<txtclick>{self_path} panel-click</txtclick>")
+        return
+    mins, secs = divmod(cur["remaining"], 60)
+    pct = cur["remaining"] * 100 // cur["total"]
+    emoji = _phase_emoji(cur["phase"], pct)
+    print(f"<txt>{emoji} {mins:02d}:{secs:02d}</txt>")
+    print(f"<click>{self_path} panel-click</click>")
+    print(f"<txtclick>{self_path} panel-click</txtclick>")
+
+
+def cmd_panel_click():
+    """The genmon widget's click target -- replaces arc-break-panel-menu.
+    Not running: starts it (unchanged, simplest case). Running: a small
+    native Tkinter popup menu (open/reset/stop) -- no rofi, no separate
+    dispatcher script, just this class's own methods called directly."""
+    bt = BreakTimer()
+    if not bt.is_running():
+        bt.start()
+        return
+
+    import tkinter as tk
+    root = tk.Tk()
+    root.withdraw()
+
+    menu = tk.Menu(root, tearoff=0)
+    menu.add_command(label="⚙ open",  command=launch_gui)
+    menu.add_command(label="↺ reset", command=bt.reset)
+    menu.add_command(label="■ stop",  command=bt.stop)
+
+    state = {"was_open": False}
+
+    def _watch():
+        if menu.winfo_ismapped():
+            state["was_open"] = True
+        elif state["was_open"]:
+            root.quit()
+            return
+        root.after(100, _watch)
+
+    x, y = root.winfo_pointerx(), root.winfo_pointery()
+    menu.tk_popup(x, y)
+    root.after(100, _watch)
+    root.mainloop()
+    root.destroy()
+
+
 # ── Main loop ──────────────────────────────────────────────────────────────────
 def main():
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
 
     write_pid()
+    BreakTimer().ensure_panel_config()
     cfg = load_config()
     work_sec  = cfg["work_minutes"]  * 60
     break_sec = cfg["break_minutes"] * 60
@@ -535,6 +700,12 @@ if __name__ == "__main__":
 
         if cmd == "gui":
             run_gui()
+
+        elif cmd == "genmon":
+            cmd_genmon()
+
+        elif cmd == "panel-click":
+            cmd_panel_click()
 
         elif cmd == "status":
             if not PID_PATH.exists():

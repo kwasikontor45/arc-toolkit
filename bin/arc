@@ -2613,25 +2613,64 @@ _sec_docker_bench() {
 }
 
 _sec_aide() {
-  _sec_hdr "aide  —  file integrity check"
-
-  if ! sudo -v 2>/dev/null; then
-    echo -e "  ${R}✗${N}  sudo failed — no scan ran"
-    echo -e "\n$HR"
-    return 1
-  fi
-
-  # Watches system paths (Debian's stock aide.conf.d rules) plus this
-  # machine's own critical user-owned surface (~/.local/bin,
-  # ~/.config/systemd/user, etc. -- see /etc/aide/aide.conf.d/90_arc_home_critical)
-  # against the baseline built 2026-08-22. arc-aide-watch runs this same
-  # check daily via a user timer and only pages you (arc-pine-notify) on
-  # real drift -- this is the on-demand version, always shows full output.
-  sudo /usr/bin/aide --config /etc/aide/aide.conf --check 2>&1
-
-  echo -e "\n$HR"
+  # Real bug found+fixed 2026-09-14: this used to run a LIVE `aide --check`
+  # unconditionally on every invocation -- undocumented in `arc help` (real,
+  # separate gap, also fixed here) AND, on this machine, a full check can
+  # take up to ~80 minutes (measured live 2026-09-11/14). A plain `arc sec
+  # aide` -- or even just something innocently grepping/testing near it --
+  # could silently kick off an unwanted 80-minute background scan with zero
+  # warning. Default now: show the last scheduled run's result (instant,
+  # matches what arc-aide-watch's daily timer already produced). A real live
+  # check is still available, explicitly, via `arc sec aide live`.
+  local sub="${1:-}"
+  case "$sub" in
+    live)
+      _sec_hdr "aide  —  live file integrity check (can take a long time)"
+      echo -e "  ${Y}!${N}  full checks have measured up to ~80 min on this machine — this will block until done"
+      if ! sudo -v 2>/dev/null; then
+        echo -e "  ${R}✗${N}  sudo failed — no scan ran"
+        echo -e "\n$HR"
+        return 1
+      fi
+      sudo /usr/bin/aide --config /etc/aide/aide.conf --check 2>&1
+      echo -e "\n$HR"
+      ;;
+    '')
+      _sec_hdr "aide  —  last scheduled check"
+      local log="$HOME/.local/share/arc-aide/last-check.log"
+      if [[ ! -f "$log" ]]; then
+        echo -e "  ${D}·${N}  no run yet — ${C}arc sec aide live${N} to run one now"
+        echo -e "\n$HR"
+        return 0
+      fi
+      local matches
+      matches=$(wc -l < "$log" 2>/dev/null || echo 0)
+      if [[ "$matches" -gt 500 ]]; then
+        # Real bug hit live 2026-09-14: cat-ing an unbounded log here once
+        # dumped 375K lines straight to the terminal (and into whatever read
+        # it). A huge count itself IS the finding -- show that plus a small
+        # head, never the whole thing.
+        echo -e "  ${R}!!${N}  ${matches} lines — unusually large, likely a monitoring-scope"
+        echo -e "       problem (not this many real file changes) rather than real drift."
+        echo -e "       First few lines:\n"
+        head -15 "$log"
+        echo -e "\n  ${D}·${N}  full file: $log — do not cat/dump this whole file, it's huge"
+      elif [[ "$matches" -gt 0 ]]; then
+        echo -e "  ${R}!${N}  ${matches} line(s) of drift/output — review below\n"
+        cat "$log"
+      else
+        echo -e "  ${G}✓${N}  clean — no drift in the last scheduled run"
+      fi
+      echo -e "  ${D}·${N}  last run: $(stat -c '%y' "$log" 2>/dev/null | cut -d. -f1)"
+      echo -e "\n$HR"
+      ;;
+    *)
+      echo -e "${R}unknown:${N} arc sec aide $sub"
+      echo -e "${D}options: (none, last scheduled result) · live (real scan now, can take ~80min)${N}"
+      return 1
+      ;;
+  esac
   echo -e "  ${D}daily timer:${N}  systemctl --user status arc-aide-watch.timer"
-  echo -e "  ${D}last daily run:${N}  ~/.local/share/arc-aide/last-check.log"
   echo -e "  ${D}rebuild baseline after an intentional change:${N}  sudo aideinit -y -f"
   echo -e "$HR"
 }
@@ -3543,7 +3582,7 @@ _sec_overview() {
   echo -e "  ${D}arc sec amass <domain> — attack-surface mapping, owned domains only unless -f${N}"
   echo -e "  ${D}arc sec yara      — scan \$HOME now · status · <path> to scan one target${N}"
   echo -e "  ${D}arc sec docker-bench — CIS Docker Benchmark against every container currently running${N}"
-  echo -e "  ${D}arc sec aide      — file integrity check (daily timer + arc-pine alert on drift)${N}"
+  echo -e "  ${D}arc sec aide      — file integrity: last result (fast) · 'live' for a real scan now, ~80min${N}"
   echo -e "  ${D}arc sec chkrootkit — rootkit scan${N}"
   echo -e "  ${D}arc sec rkhunter  — rootkit hunter scan${N}"
   echo -e "  ${D}arc sec clamav    — antivirus scan of \$HOME (background)${N}"
@@ -3570,7 +3609,7 @@ cmd_sec() {
     amass)    _sec_amass "${2:-}" "${3:-}" ;;
     yara)     _sec_yara "${2:-}" ;;
     docker-bench) _sec_docker_bench ;;
-    aide)     _sec_aide ;;
+    aide)     _sec_aide "${2:-}" ;;
     chkrootkit) _sec_chkrootkit ;;
     rkhunter) _sec_rkhunter ;;
     clamav)   _sec_clamav "${2:-}" ;;
@@ -4496,6 +4535,7 @@ cmd_help() {
   echo -e "  ${D}arc ${C}sec lynis${N}             ${M}full lynis hardening audit — pinned log/report paths, no \$HOME clutter${N}"
   echo -e "  ${D}arc ${C}sec amass ${W}<domain>${N}      ${M}attack-surface mapping — restricted to owned domains unless -f${N}"
   echo -e "  ${D}arc ${C}sec yara ${W}[status|<path>]${N}   ${M}scan ~/.downloads (or one target) with the local YARA ruleset — daily sweep also runs via timer${N}"
+  echo -e "  ${D}arc ${C}sec aide ${W}[live]${N}         ${M}file integrity: last scheduled result (fast) — 'live' runs a real check now, can take ~80min${N}"
   echo -e "  ${D}arc ${C}sec apps${N}              ${M}apt · snap · flatpak audit${N}"
   echo -e "  ${D}arc ${C}sec logs${N}              ${M}auth · sudo · ufw blocks · journal${N}"
   echo -e "\n  ${Y}logs${N}"

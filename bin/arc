@@ -2190,6 +2190,32 @@ _vpn_run() {
 
 _vpn_state_file() { echo "$HOME/.config/arc/vpn-desired-state"; }
 
+# Real, live-confirmed failure mode (2026-09-14): ProtonVPN's free plan only
+# ever offers shared, often-loaded free-tier servers -- the CLI's own client-
+# side 10s "waiting for CONNECTED" timeout intermittently expires before the
+# server's local-agent handshake finishes, even though the exact same server
+# succeeds on a bare retry seconds later (confirmed: 2 timeouts then a clean
+# connect, same server, no config changed in between). Not a local network/
+# firewall/clock issue -- checked all three live, none were it. Self-heals
+# here instead of surfacing a scary "Connection failed" on the first transient
+# timeout, matching this project's standing self-heal-don't-just-flag rule.
+_vpn_connect_retry() {
+  local attempt out
+  for attempt in 1 2 3; do
+    out=$(_vpn_run connect "$@")
+    echo "$out"
+    if echo "$out" | grep -q "^Connected to"; then
+      return 0
+    fi
+    if [[ "$attempt" -lt 3 ]]; then
+      echo -e "  ${D}·${N}  attempt ${attempt}/3 didn't complete in time (free-tier server load) — retrying..."
+      sleep 2
+    fi
+  done
+  echo -e "  ${R}✗${N}  still failed after 3 attempts — this may be a real outage, not just server load"
+  return 1
+}
+
 # Real bug found live 2026-09-07: ProtonVPN's own client sets
 # NetworkManager's connection.autoconnect=yes on whatever WireGuard profile
 # it creates for the current server. That means `protonvpn disconnect`
@@ -2226,7 +2252,7 @@ cmd_vpn() {
       echo -e "$HR\n"
       mkdir -p "$(dirname "$(_vpn_state_file)")"
       echo "connected" > "$(_vpn_state_file)"
-      _vpn_run connect "$@"
+      _vpn_connect_retry "$@"
       _vpn_disable_nm_autoconnect
       echo -e "\n$HR"
       ;;

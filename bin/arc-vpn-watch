@@ -23,4 +23,19 @@ command -v protonvpn >/dev/null 2>&1 || exit 0
 out=$(protonvpn status 2>&1 | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T|^Traceback \(most recent|^  |^proton\.')
 echo "$out" | grep -q "^Status: Connected" && exit 0
 
-protonvpn connect >/dev/null 2>&1
+# Real, live-confirmed failure mode (2026-09-14): ProtonVPN's free plan only
+# ever offers shared, often-loaded free servers -- the CLI's own 10s
+# "waiting for CONNECTED" timeout intermittently expires before the
+# server's handshake finishes, even though a bare retry seconds later (same
+# server, nothing else changed) succeeds. Without this, a transient timeout
+# here just meant "wait up to 60s for the next timer tick" -- true
+# eventually, but a needlessly long exposure window given a 2s retry
+# usually fixes it immediately.
+for _attempt in 1 2 3; do
+  protonvpn connect >/dev/null 2>&1
+  protonvpn status 2>&1 | grep -q "^Status: Connected" && exit 0
+  sleep 2
+done
+# Still not connected after 3 quick attempts -- leave it here. The next
+# 60s timer tick will keep trying; this isn't a hang, just handing off to
+# the slower backstop cadence instead of looping indefinitely in one run.

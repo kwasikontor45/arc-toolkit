@@ -4405,7 +4405,7 @@ cmd_help() {
   echo -e "  ${D}arc ${C}wire${N}                  ${M}wire dual-push for current repo (primary + k6)${N}"
   echo -e "  ${D}arc ${C}mirror${N}                ${M}push current repo → k6 contingency account${N}"
   echo -e "  ${D}arc ${C}mirrors${N}               ${M}status/run/log of the automated sync-mirrors job (all repos, k45→k6)${N}"
-  echo -e "  ${D}arc ${C}deploy${N} ${W}[athena|kataleya]${N}      ${M}build + push to Cloudflare Pages — currently broken, dead CF token, see CLAUDE.md${N}"
+  echo -e "  ${D}arc ${C}deploy${N} ${W}[athena|kontor-studio]${N}      ${M}build + push to Cloudflare Pages — token fixed 2026-09-14, kontor-studio needs Pages permission added to it first${N}"
   echo -e "  ${D}arc ${C}audit${N}                 ${M}full git audit: fetch, status, ahead/behind${N}"
   echo -e "  ${D}arc ${C}rename${N}                ${M}bulk rename: kebab/camel/snake/numbers-to-words${N}"
   echo -e "  ${D}arc ${C}aws${N}                   ${M}SSH into py-bite EC2 — config: ~/.config/arc/aws.conf${N}"
@@ -6195,7 +6195,12 @@ cmd_mirrors() {
 cmd_deploy() {
   local target="${1:-athena}"
   local CF_TOKEN
-  CF_TOKEN=$(grep '^arc-deploy=' ~/dev-notes/surgery-tools/.cftk | cut -d= -f2)
+  # Real bug found+fixed 2026-09-14: this looked up a token named "arc-deploy",
+  # which was deleted from the Cloudflare account back on 2026-07-30 (confirmed
+  # dead in SOT.md's own token audit) -- the account's real, live token has
+  # been sitting right there under "arc-deploy-workers" the whole time, this
+  # script just never got updated to look for the current name.
+  CF_TOKEN=$(grep '^arc-deploy-workers=' ~/dev-notes/surgery-tools/.cftk | cut -d= -f2)
   export NVM_DIR="$HOME/.nvm"
   [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
 
@@ -6210,18 +6215,21 @@ cmd_deploy() {
         && echo -e "  ${G}✓${N}  athena deployed" \
         || echo -e "  ${R}✗${N}  deploy failed"
       ;;
-    kataleya)
-      cd ~/khaos-lab/kataleya || { echo -e "  ${R}✗${N}  kataleya repo not found"; return 1; }
-      echo -e "  ${C}building kataleya${N} …"
-      node node_modules/vite/bin/vite.js build 2>&1 | tail -5 || { echo -e "  ${R}✗${N}  build failed"; return 1; }
+    kontor-studio)
+      # Static site, no build step. Real gap closed 2026-09-14 -- this target
+      # never existed here before, despite PLAY-STORE-SHIPPING.md referring to
+      # "arc deploy" fixing kontor-studio's pipeline. Repo wasn't even cloned
+      # locally until today (see reference.md's 2026-08-22 note); cloned fresh
+      # to ~/khaos-lab/kontor-studio.
+      cd ~/khaos-lab/kontor-studio || { echo -e "  ${R}✗${N}  kontor-studio not cloned — git clone git@github.com:kwasikontor45/kontor-studio.git ~/khaos-lab/kontor-studio"; return 1; }
       echo -e "  ${C}deploying to CF Pages${N} …"
-      CLOUDFLARE_API_TOKEN="$CF_TOKEN" npx wrangler pages deploy dist \
-        --project-name kataleya-web --branch main --commit-dirty=true \
-        && echo -e "  ${G}✓${N}  kataleya deployed → kataleya.kontor.studio" \
+      CLOUDFLARE_API_TOKEN="$CF_TOKEN" npx wrangler pages deploy . \
+        --project-name kontor-studio --branch main --commit-dirty=true \
+        && echo -e "  ${G}✓${N}  kontor-studio deployed → kontor.studio" \
         || echo -e "  ${R}✗${N}  deploy failed"
       ;;
     *)
-      echo -e "  ${R}unknown target:${N} $target  —  try ${C}arc deploy athena${N} or ${C}arc deploy kataleya${N}"
+      echo -e "  ${R}unknown target:${N} $target  —  try ${C}arc deploy athena${N} or ${C}arc deploy kontor-studio${N}"
       ;;
   esac
 }

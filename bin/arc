@@ -1784,18 +1784,14 @@ cmd_book() {
 # ── Site (dashboard + browsable notes, lives in the vault) ──────────────────────
 cmd_site() {
   local sub="${1:-}"
-  local SITE="/mnt/storage/notes-site"
+  local SITE="$HOME/khaos-lab/notes-site"
+  local SRV="$HOME/.local/bin/arc-site-server"
 
   case "$sub" in
     build)
       echo -e "$HR"
-      echo -e "  ${C}${B}arc site build${N}  —  rebuilding dashboard + browse site"
+      echo -e "  ${C}${B}arc site build${N}  —  rebuilding dashboard + browse site (local disk)"
       echo -e "$HR\n"
-      if ! storage_ok; then
-        echo -e "  ${R}✗${N}  vault not mounted — arc mount first"
-        echo -e "$HR"
-        return 1
-      fi
       if [[ -x "$HOME/.local/bin/build-notes-site" ]]; then
         "$HOME/.local/bin/build-notes-site"
       else
@@ -1806,74 +1802,57 @@ cmd_site() {
       echo -e "\n$HR"
       ;;
     open)
-      if [[ ! -f "$SITE/index.html" ]]; then
-        echo -e "  ${R}✗${N}  no site built yet — run: arc site build"
-        return 1
-      fi
-      # Fixed 2026-09-11 -- this used to open the raw file:// path directly,
-      # which caused exactly the "stale content, broken links" reports:
-      # (1) browsers commonly reuse an already-open tab for the same
-      #     file:// URL instead of reloading it, so a rebuild never showed
-      #     up until a manual refresh; (2) the site lives on the removable
-      #     vault -- if it's ever unmounted after the tab was opened, every
-      #     link click into notes/*.html silently dead-ends with no useful
-      #     error, since file:// navigation to a now-missing path just
-      #     fails quietly. Serving over the existing local notes-site.service
-      #     (plain http.server, was already built but never actually wired
-      #     into this command) fixes both: every request is a fresh disk
-      #     read, and a missing/unmounted vault gives a real connection
-      #     error instead of a dead link.
-      if ! systemctl --user is-active --quiet notes-site; then
-        systemctl --user start notes-site 2>/dev/null
-        sleep 1
-      fi
-      if systemctl --user is-active --quiet notes-site; then
-        xdg-open "http://127.0.0.1:8642/index.html" 2>/dev/null &
-        echo -e "  ${G}✓${N}  opened http://127.0.0.1:8642/index.html"
-      else
-        echo -e "  ${Y}!${N}  local server didn't start — falling back to file://"
-        xdg-open "$SITE/index.html" 2>/dev/null &
-        echo -e "  ${G}✓${N}  opened ${SITE}/index.html"
-      fi
+      [[ -f "$SITE/index.html" ]] || { echo -e "  ${R}✗${N}  no site built yet — run: arc site build"; return 1; }
+      systemctl --user is-active --quiet notes-site || { systemctl --user start notes-site 2>/dev/null; sleep 1; }
+      "$SRV" open
+      ;;
+    url|init|rotate|audit)
+      "$SRV" "$sub"
+      ;;
+    expose)
+      # tailnet-only (never Funnel): HTTP over WireGuard -> loopback server. Hostname-matched,
+      # so no public certificate is ever issued for it.
+      systemctl --user is-active --quiet notes-site || { systemctl --user start notes-site; sleep 1; }
+      (tailscale serve --bg --yes --http 80 http://127.0.0.1:8642 2>&1 || sudo -n tailscale serve --bg --yes --http 80 http://127.0.0.1:8642 2>&1) | tail -3
+      echo -e "\n  ${G}✓${N}  exposed to your tailnet only — run ${C}arc site audit${N} to verify every layer, ${C}arc site url${N} for the address"
+      ;;
+    unexpose)
+      tailscale serve --http=80 off 2>&1 || sudo -n tailscale serve --http=80 off 2>&1
+      echo -e "  ${G}✓${N}  no longer reachable from the tailnet (local server still up on loopback)"
       ;;
     *)
       echo -e "$HR"
-      echo -e "  ${C}${B}arc site${N}  —  dashboard + browsable notes (lives in the vault)"
+      echo -e "  ${C}${B}arc site${N}  —  private notes dashboard (local disk, tailnet-only, guarded)"
       echo -e "$HR\n"
       if [[ -f "$SITE/index.html" ]]; then
-        local size built
-        size=$(du -sh "$SITE" 2>/dev/null | cut -f1)
-        built=$(date -r "$SITE/index.html" "+%Y-%m-%d %H:%M")
-        echo -e "  ${D}path${N}     ${M}${SITE}${N}"
-        echo -e "  ${D}size${N}     ${M}${size}${N}"
-        echo -e "  ${D}built${N}    ${M}${built}${N}"
+        echo -e "  ${D}path${N}     ${M}${SITE}${N}   ${D}(off the USB)${N}"
+        echo -e "  ${D}size${N}     ${M}$(du -sh "$SITE" 2>/dev/null | cut -f1)${N}"
+        echo -e "  ${D}built${N}    ${M}$(date -r "$SITE/index.html" "+%Y-%m-%d %H:%M")${N}"
       else
         echo -e "  ${R}not built yet${N}  ${D}— run: arc site build${N}"
       fi
-
       echo ""
       if systemctl --user is-active --quiet notes-site.service 2>/dev/null; then
-        echo -e "  ${D}local server${N}  ${G}running${N}  ${D}(127.0.0.1:8642)${N}"
+        echo -e "  ${D}server${N}     ${G}running${N}  ${D}(127.0.0.1:8642 only, sandboxed unit)${N}"
       else
-        echo -e "  ${D}local server${N}  ${R}not running${N}  ${D}— systemctl --user start notes-site${N}"
+        echo -e "  ${D}server${N}     ${R}not running${N}  ${D}— systemctl --user start notes-site${N}"
       fi
-
-      if systemctl is-active --quiet cloudflared 2>/dev/null; then
-        local code
-        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 https://notes.kontor.studio 2>/dev/null)
-        if [[ "$code" =~ ^(200|301|302|303)$ ]]; then
-          echo -e "  ${D}tunnel route${N}  ${G}live${N}  ${D}(notes.kontor.studio → ${code})${N}"
-        elif [[ -z "$code" ]]; then
-          echo -e "  ${D}tunnel route${N}  ${Y}unverified${N}  ${D}(no response — check internet or DNS/Access setup)${N}"
-        else
-          echo -e "  ${D}tunnel route${N}  ${R}unexpected response${N}  ${D}(notes.kontor.studio → ${code})${N}"
-        fi
+      if tailscale serve status 2>/dev/null | grep -q "127.0.0.1:8642"; then
+        echo -e "  ${D}tailnet${N}    ${G}exposed${N}  ${D}(tailnet-only, identity + secret path required)${N}"
       else
-        echo -e "  ${D}tunnel route${N}  ${R}cloudflared not running${N}  ${D}— desktop/ssh tunnels are also down${N}"
+        echo -e "  ${D}tailnet${N}    ${Y}not exposed${N}  ${D}— arc site expose${N}"
       fi
-
-      echo -e "\n  ${D}arc site build   — rebuild from current notes${N}"
-      echo -e "  ${D}arc site open    — open the dashboard in your browser${N}"
+      if tailscale funnel status 2>/dev/null | grep -qi "funnel on"; then
+        echo -e "  ${D}funnel${N}     ${R}PUBLIC INTERNET EXPOSURE ON — run: tailscale funnel reset${N}"
+      else
+        echo -e "  ${D}funnel${N}     ${G}off${N}  ${D}(never public)${N}"
+      fi
+      echo -e "\n  ${D}arc site build     — rebuild from current notes${N}"
+      echo -e "  ${D}arc site open      — open it here in your browser${N}"
+      echo -e "  ${D}arc site url       — your private address (run in your own terminal)${N}"
+      echo -e "  ${D}arc site expose    — make it reachable from your phone (tailnet only)${N}"
+      echo -e "  ${D}arc site audit     — probe every guard layer${N}"
+      echo -e "  ${D}arc site rotate    — new secret path; old URL dies instantly${N}"
       echo -e "$HR"
       ;;
   esac
@@ -4593,9 +4572,13 @@ cmd_help() {
   echo -e "  ${D}arc ${C}find ${W}<query>${N}          ${M}search across arc-lt-cmc + dev-notes + khaos-lab + vault/archive${N}"
   echo -e "  ${D}arc ${C}book${N}                  ${M}compiled reference archive (master-book.md) — stats${N}"
   echo -e "  ${D}arc ${C}book rebuild${N}          ${M}recompile it from current notes${N}"
-  echo -e "  ${D}arc ${C}site${N}                  ${M}dashboard + browsable/searchable notes (lives in the vault)${N}"
+  echo -e "  ${D}arc ${C}site${N}                  ${M}private notes dashboard — local disk, tailnet-only, guarded (status)${N}"
   echo -e "  ${D}arc ${C}site build${N}            ${M}rebuild it from current notes${N}"
-  echo -e "  ${D}arc ${C}site open${N}             ${M}open the dashboard in your browser${N}"
+  echo -e "  ${D}arc ${C}site open${N}             ${M}open it here in your browser${N}"
+  echo -e "  ${D}arc ${C}site url${N}              ${M}your private address (secret path) — run in your own terminal${N}"
+  echo -e "  ${D}arc ${C}site expose${N}           ${M}reachable from your phone over Tailscale only (${C}unexpose${M} to undo)${N}"
+  echo -e "  ${D}arc ${C}site audit${N}            ${M}probe every guard layer (identity, secret, loopback, no Funnel…)${N}"
+  echo -e "  ${D}arc ${C}site rotate${N}           ${M}new secret path — the old URL dies instantly${N}"
   echo -e "  ${D}arc ${C}emoji${N}                 ${M}open emoji picker${N}"
   echo -e "  ${D}arc ${C}emoji add ${W}<e> <words>${N} ${M}add emoji with search keywords${N}"
   echo -e "  ${D}arc ${C}emoji list${N}            ${M}show your emoji list${N}"
@@ -6304,7 +6287,7 @@ case "${1:-}" in
   ref)            cmd_ref "${2:-}" ;;
   find)           cmd_find "${2:-}" ;;
   book)           cmd_book "${2:-}" ;;
-  site)           cmd_site "${2:-}" ;;
+  site)           cmd_site "${@:2}" ;;
   emoji)          cmd_emoji "${2:-}" "${@:3}" ;;
   hq)             cmd_hq "${2:-}" ;;
   top)            cmd_top ;;

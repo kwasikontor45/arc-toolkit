@@ -219,6 +219,24 @@ check_watcher_daemons() {
   # User-scope, no sudo needed. arc-pined added 2026-09-19: it is the daemon
   # that actually SPEAKS notifications; its XDG autostart entry had been
   # silently flipped to Hidden=true, so arc-break showed bubbles but never spoke.
+  # Private notes site (arc site): keep the guarded server up, and treat a
+  # Tailscale Funnel (= public internet) as an emergency -- always safe to close.
+  if systemctl --user is-active --quiet notes-site; then
+    note "OK::watcher:notes-site::active"
+  else
+    systemctl --user restart notes-site 2>/dev/null; sleep 1
+    if systemctl --user is-active --quiet notes-site; then
+      note "HEALED::watcher:notes-site::was down, restarted"
+    else
+      note "FLAG::watcher:notes-site::down, restart failed — check: systemctl --user status notes-site"
+    fi
+  fi
+  if command -v tailscale >/dev/null 2>&1 && tailscale serve status --json 2>/dev/null | grep -q '"AllowFunnel"[^}]*true'; then
+    tailscale funnel reset >/dev/null 2>&1
+    note "HEALED::site-funnel::a Tailscale Funnel (public internet) was on -- closed it"
+  else
+    note "OK::site-funnel::not public"
+  fi
   local pu
   for pu in arc-pine-bubbles arc-pined; do
     if systemctl --user is-active --quiet "$pu"; then

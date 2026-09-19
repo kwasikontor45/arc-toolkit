@@ -36,6 +36,7 @@
 711 arc-quiet-clean
 711 arc-rkhunter-check
 711 arc-sagan-watch
+775 arc-site-server
 711 arc-sop
 711 arc-sop-gate-hook
 755 arc-sot

@@ -11,8 +11,10 @@ Visual language matches kontor.studio / kontor.studio/bootlog: JetBrains Mono
 (installed locally, no webfont fetch needed), phosphor/cyan on near-black,
 scanline+vignette overlay, system-bar with circadian phase color shift.
 
-Output lives inside the encrypted vault (/mnt/storage/notes-site) -- that's
-the "lock": it only exists while the vault is unlocked and mounted.
+Output lives on local disk (~/khaos-lab/notes-site) as of 2026-09-19 -- it no
+longer depends on the USB vault being mounted (vault/archive below is just an
+optional extra source, skipped if absent). The "lock" is now the arc-site-server
+layers (loopback-only + tailnet identity + secret path), not the vault mount.
 """
 import base64
 import hashlib
@@ -28,7 +30,7 @@ except ImportError:
     sys.exit(1)
 
 HOME = Path.home()
-OUT = Path("/mnt/storage/notes-site")
+OUT = HOME / "khaos-lab" / "notes-site"   # local disk since 2026-09-19 (was the USB vault)
 
 TREES = {
     "arc-lt-cmc": HOME / "arc-lt-cmc",

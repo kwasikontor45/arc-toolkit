@@ -1,21 +1,31 @@
 [Unit]
-Description=notes-site — local dashboard/browse server for the notes vault
-# Documentation= was "arc site" -- not a valid URL, systemd was silently
-# rejecting it every start ("Invalid URL, ignoring: arc" / "...: site").
-# Harmless on its own, but a real bug -- fixed 2026-09-11, removed rather
-# than guessing a fake man:/https: page that doesn't exist.
-# Requires /mnt/storage (the encrypted vault) to already be mounted -- deliberately
-# not enabled for auto-start (manual only, "arc site"/cmd_site's own hint), same
-# posture as the rest of this session's boot-time-hardening pass.
+Description=notes-site — private, tailnet-only notes dashboard (guarded static server)
 StartLimitIntervalSec=60
-StartLimitBurst=3
+StartLimitBurst=5
 
 [Service]
 Type=simple
-WorkingDirectory=/mnt/storage/notes-site
-ExecStart=/usr/bin/python3 -m http.server 8642 --bind 127.0.0.1
+ExecStart=%h/.local/bin/arc-site-server
 Restart=on-failure
-RestartSec=5
+RestartSec=3
+# Sandbox: it only ever needs to read the site dir + two private files and
+# listen on loopback.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+MemoryMax=128M
+TasksMax=64
 
 [Install]
 WantedBy=default.target

@@ -836,8 +836,13 @@ def cmd_root_copy():
         print(f"{R}✗{N}  failed to create {ROOT_COPY.parent}: {stderr}")
         return False
 
+    # root-owned, group-readable by the user (recover reads it unprivileged) but
+    # writable only by root. Plain -a under sudo preserves the source's user
+    # ownership, which left this "root copy" user-writable -- defeating its purpose.
+    owner = f"0:{os.getgid()}"
     rc, _, stderr = run(
-        ["sudo", "rsync", "-a", "--delete", f"{INTEL_OPS}/", f"{ROOT_COPY}/"]
+        ["sudo", "rsync", "-a", "--delete", f"--chown={owner}",
+         "--chmod=D750,F640", f"{INTEL_OPS}/", f"{ROOT_COPY}/"]
     )
     if rc != 0:
         print(f"{R}✗{N}  root copy failed: {stderr}")
@@ -845,12 +850,17 @@ def cmd_root_copy():
 
     # Also copy the SQLite enforcement DB so the baseline/history/acks survive
     # a home-directory wipe, not just the markdown SOP files.
-    db_rc, _, db_stderr = run(
-        ["sudo", "cp", "-a", str(DB_PATH), str(ROOT_COPY / "arc-sop.db")]
-    )
+    db_dest = str(ROOT_COPY / "arc-sop.db")
+    db_rc, _, db_stderr = run(["sudo", "cp", str(DB_PATH), db_dest])
+    if db_rc == 0:
+        db_rc, _, db_stderr = run(["sudo", "chown", owner, db_dest])
+    if db_rc == 0:
+        db_rc, _, db_stderr = run(["sudo", "chmod", "640", db_dest])
     if db_rc != 0:
         print(f"{R}✗{N}  DB root copy failed: {db_stderr}")
         return False
+    run(["sudo", "chown", owner, str(ROOT_COPY)])
+    run(["sudo", "chmod", "750", str(ROOT_COPY)])
 
     print(f"{G}✓{N}  Root copy updated: {ROOT_COPY}")
     print(f"{G}✓{N}  DB copied to:       {ROOT_COPY / 'arc-sop.db'}")

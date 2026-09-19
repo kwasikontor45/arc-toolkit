@@ -37,6 +37,7 @@ from tkinter import font as tkfont
 HEADER_ICON_PATH = Path.home() / ".local/share/khaos-lab/header-icon.png"
 HEADER_BG_PATH   = Path.home() / ".local/share/khaos-lab/header-bg.png"
 SIDEBAR_BG_PATH  = Path.home() / ".local/share/khaos-lab/sidebar-bg.png"
+SIDEBAR_ICON_PATH = Path.home() / ".local/share/khaos-lab/sidebar-icon.png"
 CONTENT_BG_PATH  = Path.home() / ".local/share/khaos-lab/content-bg.png"
 TASKBAR_ICON_PATH = Path.home() / ".local/share/khaos-lab/taskbar-icon.png"
 HEAL_LOG_PATH    = Path.home() / "khaos-lab/arc-heal-log/latest-status.md"
@@ -199,25 +200,32 @@ def strip_banner(text, cmd=None):
         lines.append(stripped)
     return "\n".join(lines)
 
-# ── Palette -- circadian, matching arc-break/arc-pine (_arc_ui.py) ─────────
-# A snapshot of the live circadian() palette taken once at launch, not a
-# fixed Rose Pine Moon default -- the panel looks different depending on
-# what time of day you actually open it (dawn/day/golden-hour/night),
-# same design language as Kataleya's own circadian engine. Deliberately
-# NOT live-redrawn while the window stays open (unlike arc-break's 60s
-# retheme loop) -- this is a much larger, more actively-clicked app and a
-# launch-time snapshot is the safer scope for a first pass; revisit if a
-# session is ever left open long enough to cross a phase boundary.
-_circadian = ui.circadian()
-BG       = _circadian["bg"]
-SURFACE  = _circadian["surface"]
-OVERLAY  = _circadian["overlay"]
-FG       = _circadian["fg"]
-FG_MUTED = _circadian["fg_muted"]
-GOLD     = ui.GOLD
-ROSE     = ui.ROSE
-PINE     = ui.PINE
-TEAL     = ui.TEAL
+# ── Palette -- "low-life-high-tech", khaos-lab's own fixed identity ────────
+# Was a circadian() snapshot (same drifting-with-time-of-day language as
+# arc-break/arc-pine) until 2026-09-19 -- user's explicit call: this is a
+# C&C panel, not a lifestyle companion, and wanted a fixed grimy-terminal/
+# neon-emblem look ("low-life-high-tech"), not a mood ring, plus a logo
+# that actually reads instead of fading into a soft pastel header. Kept
+# separate from _arc_ui's shared circadian palette rather than changed
+# there -- arc-break/arc-pine/arc-pine-bubbles keep the Kataleya look,
+# this app gets its own. Near-black ground + amber (matches the winged
+# mechanical-emblem art's own warm metal/gear tones, confirmed by actually
+# opening header-icon.png/content-bg.png rather than guessing) as primary
+# accent, hot magenta for danger/alerts, acid cyan for ok/info -- same
+# semantic roles (GOLD/ROSE/TEAL) the rest of the file already keys off
+# of, just re-cast. BORDER is new -- tile/row edges used highlightbackground
+# =BG before, which was BG-on-BG, i.e. invisible; a real (if subtle) hairline
+# is part of the same "everything reads as flat" complaint as the logo.
+BG       = "#0a0c10"
+SURFACE  = "#12151b"
+OVERLAY  = "#1c212a"
+BORDER   = "#2a323d"
+FG       = "#d9dee6"
+FG_MUTED = "#5c6472"
+GOLD     = "#ff9d2e"
+ROSE     = "#ff3864"
+PINE     = "#0f9b9b"
+TEAL     = "#00e5c7"
 
 def run(cmd, timeout=30):
     """Run a shell command, return (ok, output). Never raises."""
@@ -676,7 +684,12 @@ def main():
     # whole window on-screen (it already accounts for panel struts when
     # given the choice), which a hardcoded position can't -- verified live,
     # confirmed the command row is visible again with this change.
-    root.geometry("860x700")
+    # 700->730, 2026-09-19 -- the sidebar brand badge (see body_pane/sidebar
+    # block below) needed a little more real vertical room than trimming
+    # alone could recover; 730 is still comfortably inside the confirmed
+    # 766px _NET_WORKAREA from the regression above, and geometry_watchdog
+    # keeps repositioning this dynamically regardless of size anyway.
+    root.geometry("860x730")
     root.minsize(720, 480)
 
     _taskbar_icon = load_image(TASKBAR_ICON_PATH)
@@ -701,8 +714,25 @@ def main():
         big_font = label_font = small_font = mono_font = nav_font = tkfont.Font(size=10)
 
     # ── Header ──────────────────────────────────────────────────────────────
+    # "Low-life-high-tech" pass, 2026-09-19 -- user's own words: "cant see
+    # my logo anymore... doesnt have to be necessarily transparent to see
+    # either." Root cause, confirmed by actually looking at the source art
+    # (not assumed): header-bg/sidebar-bg/content-bg are real, good
+    # winged-mechanical/circuit/gear artwork -- just rendered at low
+    # brightness/contrast that nearly vanishes against a dark palette, and
+    # (for header-bg specifically) the quick-search box below used to
+    # `fill="x", expand=True` and ate almost the entire strip. Two real
+    # fixes, not a new invented look: the four PNGs under
+    # ~/.local/share/khaos-lab got a one-time brightness/contrast/color
+    # boost (originals kept in _orig-backup-2026-09-19/ alongside them),
+    # and header-icon.png got regenerated bigger (64->88px) from the same
+    # boosted source instead of just upscaled blocky in-app. The emoji
+    # skull next to the wordmark is gone -- the actual logo already reads
+    # as a mechanical/skull emblem now that it's visible, a second flat
+    # unicode skull glyph next to it was redundant, part of what read as
+    # "tacky."
     header = tk.Frame(root, bg=BG)
-    header.pack(fill="x", padx=14, pady=(12, 6))
+    header.pack(fill="x", padx=14, pady=(14, 8))
 
     # Background watermark first (place(), not pack()) so the icon/title/
     # clock -- all packed normally below -- stack visually on top of it and
@@ -713,13 +743,18 @@ def main():
     if _header_bg:
         tk.Label(header, image=_header_bg, bg=BG).place(relx=0, rely=0, relwidth=1, relheight=1)
 
+    # highlightthickness/highlightbackground -- same native-border technique
+    # as the Status tiles (see build_status_view), not a new mechanism --
+    # turns the icon into a real framed emblem instead of a bare thumbnail
+    # that used to blend straight into the header behind it.
     _header_icon = load_image(HEADER_ICON_PATH)
     if _header_icon:
-        tk.Label(header, image=_header_icon, bg=BG).pack(side="left", padx=(0, 8))
+        tk.Label(header, image=_header_icon, bg=BG,
+                 highlightthickness=2, highlightbackground=GOLD).pack(side="left", padx=(0, 10))
 
     tk.Label(header, text="khaos", font=big_font, bg=BG, fg=GOLD).pack(side="left")
-    tk.Label(header, text="☠️", font=big_font, bg=BG, fg=ROSE).pack(side="left")
-    tk.Label(header, text="lab", font=big_font, bg=BG, fg=GOLD).pack(side="left", padx=(0, 16))
+    tk.Label(header, text="/", font=big_font, bg=BG, fg=FG_MUTED).pack(side="left")
+    tk.Label(header, text="lab", font=big_font, bg=BG, fg=TEAL).pack(side="left", padx=(0, 16))
     clock_lbl = tk.Label(header, text="", font=small_font, bg=BG, fg=FG_MUTED)
     clock_lbl.pack(side="right")
 
@@ -732,12 +767,19 @@ def main():
     # for an Entry without reworking its manual Y-offset button layout.
     # Pure in-memory string filtering, no subprocess -- cheap enough to
     # re-render live on every keystroke rather than waiting for Enter.
+    # Fixed width, not fill="x" + expand=True -- that used to claim the
+    # entire remaining header strip, which was most of what was crushing
+    # header-bg.png's visibility (see the header block's comment above).
+    # 260px is still comfortably wide for typing an action name; the real
+    # space it gives back is what actually shows the art between the
+    # wordmark and the clock now.
     search_var = tk.StringVar()
     search_entry = tk.Entry(
-        header, textvariable=search_var, font=small_font,
+        header, textvariable=search_var, font=small_font, width=28,
         bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat",
+        highlightthickness=1, highlightbackground=OVERLAY, highlightcolor=GOLD,
     )
-    search_entry.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 16))
+    search_entry.pack(side="left", ipady=4, padx=(0, 16))
     search_entry.insert(0, "quick-jump: type an action name…")
     search_entry.configure(fg=FG_MUTED)
     _search_placeholder = {"active": True}
@@ -776,10 +818,17 @@ def main():
 
     # ── Body: sidebar + content ────────────────────────────────────────────
     body = tk.Frame(main_pane, bg=BG)
-    # height=460 is just the INITIAL split (roughly matching the old fixed
-    # proportions so the status tiles aren't clipped by default) -- the
-    # sash is fully drag-resizable from here, this isn't a new fixed value.
-    main_pane.add(body, minsize=240, height=460)
+    # height=400 (was 460 pre-2026-09-19) -- just the INITIAL split, the
+    # sash is fully drag-resizable from here either way. Trimmed because
+    # PanedWindow gives the first-added pane (this one) its full hint and
+    # only lets the second pane (console) have whatever's left, confirmed
+    # live -- at 460 the console was landing within a few px of its own
+    # 110 floor by default regardless of its own height=190 hint, which is
+    # the other half of the "give output more room" fix (see
+    # _ensure_console_room below for the other half: auto-grow once on
+    # first real command output). Still comfortably fits the Status view's
+    # 5 tile rows with room to spare, confirmed live via screenshot.
+    main_pane.add(body, minsize=240, height=400)
 
     # Horizontal PanedWindow, not a plain pack -- real user feedback
     # 2026-09-11: the sidebar/content split had no way to adjust at all
@@ -793,10 +842,14 @@ def main():
 
     # Canvas, not Frame -- lets the watermark image sit behind the nav
     # buttons. Tk buttons are opaque (bg=BG is a solid fill, no real alpha),
-    # so the image only actually shows through in the empty space below the
-    # 5 nav buttons, not underneath them -- that's by design, not a bug: a
-    # background image directly behind clickable buttons would just be
-    # invisible anyway, covered edge-to-edge by each button's own fill.
+    # so the image only actually shows through in the empty space the nav
+    # buttons don't cover -- that's by design, not a bug: a background
+    # image directly behind clickable buttons would just be invisible
+    # anyway, covered edge-to-edge by each button's own fill. With 14
+    # categories the button stack runs most of the Canvas's height, which
+    # is exactly why the dedicated badge band below exists -- real estate
+    # the art is GUARANTEED to keep, not competing with the nav list for
+    # the same pixels.
     sidebar = tk.Canvas(body_pane, bg=BG, width=150, highlightthickness=0)
     body_pane.add(sidebar, minsize=110, width=150)
 
@@ -810,6 +863,28 @@ def main():
     _sidebar_bg = load_image(SIDEBAR_BG_PATH)
     if _sidebar_bg:
         sidebar.create_image(0, 0, anchor="nw", image=_sidebar_bg)
+
+    # Brand badge, 2026-09-19 -- a fixed strip at the TOP of the sidebar
+    # Canvas, drawn before the nav buttons and never covered by them (they
+    # start below it, see SIDEBAR_TOP below). Same emblem as the header
+    # icon, smaller. This is the direct fix for "can't see my logo" in the
+    # sidebar specifically: sidebar-bg.png's own baked-in wordmark is real
+    # but sits low in a 520px image that a 14-item button stack covers
+    # almost end to end, so it was structurally unviewable, not just dim.
+    #
+    # Kept deliberately compact (30px, small_font not nav_font) -- a first
+    # pass at 48px/nav_font pushed Maintenance/Personal off the bottom of
+    # this unscrollable Canvas entirely (confirmed live via screenshot: the
+    # 14-category list was already landing right at the bottom edge of the
+    # sidebar's default height before this badge existed at all, zero
+    # margin to spare). 30px plus the small root.geometry bump below
+    # restores full reachability without giving up the badge.
+    _sidebar_icon = load_image(SIDEBAR_ICON_PATH)
+    if _sidebar_icon:
+        sidebar.create_image(8, 6, anchor="nw", image=_sidebar_icon)
+    sidebar.create_text(34, 16, anchor="w", text="khaos-lab", font=small_font, fill=GOLD)
+    sidebar.create_line(0, 30, 150, 30, fill=OVERLAY, width=1)
+    SIDEBAR_TOP = 30
 
     # Canvas, not Frame -- same reasoning as the sidebar: lets the watermark
     # show behind the actual view (status tiles / action rows), visible in
@@ -922,12 +997,35 @@ def main():
     main_pane.add(console_frame, minsize=110, height=190)
 
     tk.Label(console_frame, text="output", font=small_font, bg=BG, fg=FG_MUTED).pack(anchor="w")
+
+    # Canvas + padded create_window, not a bare Text.pack(), 2026-09-19 --
+    # user's own follow-up mid-redesign: "background image needs to be
+    # visible either in both ctrl and output panes." Same technique as the
+    # content pane's _embed_content() above (Text is opaque, so the image
+    # only actually shows in the pad margin around it -- that's the same
+    # honest constraint documented there, not a new one), reusing
+    # content-bg.png rather than a 5th asset so the output pane reads as
+    # the same surface as the content pane, not a bolted-on extra.
+    console_canvas = tk.Canvas(console_frame, bg=SURFACE, highlightthickness=0)
+    console_canvas.pack(fill="both", expand=True)
+    _console_bg = load_image(CONTENT_BG_PATH)
+    if _console_bg:
+        console_canvas.create_image(0, 0, anchor="nw", image=_console_bg)
+
     console = tk.Text(
-        console_frame, bg=SURFACE, fg=FG, insertbackground=FG,
+        console_canvas, bg=SURFACE, fg=FG, insertbackground=FG,
         font=mono_font, relief="flat", padx=8, pady=6, wrap="word",
     )
-    console.pack(fill="both", expand=True)
     console.configure(state="disabled")
+    _console_pad = 5
+    _console_item = console_canvas.create_window(_console_pad, _console_pad, anchor="nw", window=console)
+
+    def _console_resize(event):
+        w = max(event.width - 2 * _console_pad, 1)
+        h = max(event.height - 2 * _console_pad, 1)
+        console_canvas.itemconfigure(_console_item, width=w, height=h)
+
+    console_canvas.bind("<Configure>", _console_resize)
 
     def log(text, color=FG):
         console.configure(state="normal")
@@ -937,7 +1035,37 @@ def main():
         console.see("end")
         console.configure(state="disabled")
 
+    # Auto-adjust, 2026-09-19 -- user's own follow-up: "more room for
+    # output panel/pane or make it intuitive to autodetect/autoadjust."
+    # Console started squeezed to near its 110px floor by default (the
+    # first-added pane's height hint gets fully honored by PanedWindow,
+    # the second just gets whatever's left -- confirmed live, not assumed;
+    # see the trimmed body height hint above, which is the other half of
+    # this same fix). This is the other half: the FIRST time any command
+    # actually runs, grow the sash once so real output has real room to
+    # show without the user having to already know to drag it -- then
+    # never touch the sash again, so a deliberate manual resize afterward
+    # is never fought or silently undone.
+    _console_auto_expanded = {"done": False}
+
+    def _ensure_console_room():
+        if _console_auto_expanded["done"]:
+            return
+        _console_auto_expanded["done"] = True
+        root.update_idletasks()
+        total_h = main_pane.winfo_height()
+        if total_h <= 1:
+            return
+        try:
+            _, sash_y = main_pane.sash_coord(0)
+        except tk.TclError:
+            return
+        new_sash_y = max(0, total_h - 260)
+        if new_sash_y < sash_y:
+            main_pane.sash_place(0, 0, new_sash_y)
+
     def run_async(cmd, timeout=30, on_done=None):
+        _ensure_console_room()
         log(f"$ {cmd}", TEAL)
 
         def worker():
@@ -953,6 +1081,7 @@ def main():
         threading.Thread(target=worker, daemon=True).start()
 
     def launch_detached_async(cmd):
+        _ensure_console_room()
         log(f"$ {cmd}  (opens its own window)", TEAL)
         ok, msg = launch_detached(cmd)
         log(f"[{'ok' if ok else 'failed'}] {msg}", PINE if ok else ROSE)
@@ -1021,7 +1150,7 @@ def main():
             # ui.rounded_frame()'s grid-sizing problem since it's not a
             # Canvas -- same width/height behavior as a plain Frame,
             # just with an edge now.
-            f = tk.Frame(grid, bg=OVERLAY, highlightthickness=1, highlightbackground=BG)
+            f = tk.Frame(grid, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
             f.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
             grid.columnconfigure(col, weight=1)
             tk.Label(f, text=title, font=small_font, bg=OVERLAY, fg=FG_MUTED).pack(
@@ -1227,7 +1356,7 @@ def main():
             # ui.rounded_frame()'s grid-sizing problem since it's not a
             # Canvas -- same width/height behavior as a plain Frame,
             # just with an edge now.
-            f = tk.Frame(grid, bg=OVERLAY, highlightthickness=1, highlightbackground=BG)
+            f = tk.Frame(grid, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
             f.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
             grid.columnconfigure(col, weight=1)
             tk.Label(f, text=title, font=small_font, bg=OVERLAY, fg=FG_MUTED).pack(
@@ -1573,7 +1702,7 @@ def main():
         # doesn't touch the existing whole-row hover binding below at all
         # (that only ever toggles bg/fg, never the border), just gives
         # each row a real edge instead of a flat borderless rectangle.
-        row = tk.Frame(wrap, bg=SURFACE, highlightthickness=1, highlightbackground=BG)
+        row = tk.Frame(wrap, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
         row.pack(fill="x", pady=1)
         label = tk.Label(
             row, text=f"{prefix}{action.label}", font=label_font, bg=SURFACE, fg=FG,
@@ -1655,12 +1784,24 @@ def main():
 
     # ── Sidebar nav ─────────────────────────────────────────────────────────
     nav_buttons = {}
+    nav_y_ranges = {}
     current_cat = tk.StringVar(value="Status")
+    # A real active-tab indicator, 2026-09-19 -- selection used to be only
+    # a bg-color swap on the button itself (still is, kept below), which
+    # read as flat/generic. This is the same "terminal cursor bar" cue
+    # real hacker-style dashboards use: a solid accent tick along the left
+    # edge of whichever row is active, repositioned (not recreated) on
+    # every select() call.
+    nav_accent = sidebar.create_rectangle(0, 0, 0, 0, fill=GOLD, width=0)
 
     def select(name):
         current_cat.set(name)
         for n, b in nav_buttons.items():
             b.set_look(bg=OVERLAY if n == name else BG, fg=GOLD if n == name else FG_MUTED)
+        if name in nav_y_ranges:
+            y, h = nav_y_ranges[name]
+            sidebar.coords(nav_accent, 0, y, 3, y + h)
+            sidebar.tag_raise(nav_accent)
         if name == "Status":
             build_status_view()
         elif name == "Cockpit":
@@ -1673,19 +1814,51 @@ def main():
             build_category_view(name)
 
     # create_window, not pack -- sidebar is a Canvas now (see above), so its
-    # children are positioned manually instead of auto-stacked.
-    _nav_y = 0
+    # children are positioned manually instead of auto-stacked. Starts at
+    # SIDEBAR_TOP, not 0, so the brand badge above keeps its own space.
+    # pady dropped 8->6, 2026-09-19: freed ~28px of the ~30px SIDEBAR_TOP
+    # cost across all 14 rows -- the badge (see above) otherwise pushed
+    # "Personal" off the bottom of this unscrollable Canvas even after the
+    # root.geometry bump below, which is already at its own real ceiling
+    # (confirmed live: this window sits 2px under the 766px _NET_WORKAREA
+    # limit from the 2026-08-29 regression, no safe room left to grow it
+    # further).
+    _nav_y = SIDEBAR_TOP
     for cat in CATEGORIES:
         b = ui.button(
             sidebar, cat, command=lambda c=cat: select(c),
             font=nav_font, bg=BG, fg=FG_MUTED, hover_bg=OVERLAY, hover_fg=GOLD,
-            padx=12, pady=8,
+            padx=14, pady=6,
         )
         b.configure(anchor="w")
-        sidebar.create_window(0, _nav_y, anchor="nw", window=b, width=150)
+        sidebar.create_window(4, _nav_y, anchor="nw", window=b, width=146)
         b.update_idletasks()
+        nav_y_ranges[cat] = (_nav_y, b.winfo_reqheight())
         _nav_y += b.winfo_reqheight() + 1
         nav_buttons[cat] = b
+        # Bound directly on the button, not bind_all -- `content`'s own
+        # scrollable views (see _embed_content) already use bind_all for
+        # their own wheel handling, and Enter/Leave-driven bind_all here
+        # would stomp that global binding every time the mouse crossed
+        # between sidebar and content. A plain widget-local bind avoids
+        # the conflict entirely: each button is a real child covering
+        # most of the canvas, so the wheel event needs to be caught here,
+        # not just on the (mostly-covered) canvas background below.
+        b.bind("<Button-4>", lambda _e: sidebar.yview_scroll(-1, "units"))
+        b.bind("<Button-5>", lambda _e: sidebar.yview_scroll(1, "units"))
+
+    # Scrollable, 2026-09-19 -- rather than keep hand-tuning fixed pixel
+    # budgets (badge height / row padding / window geometry) against
+    # whatever the body/console split happens to be, which is a real
+    # zero-sum fight (trimming body's height for more console room, right
+    # below, would otherwise reclip the bottom categories again the same
+    # way the badge did earlier this pass), give the sidebar Canvas a real
+    # scrollregion + local wheel binding. This makes every category
+    # reachable regardless of window height or how the sash gets dragged,
+    # instead of staying correct only at one specific size.
+    sidebar.configure(scrollregion=(0, 0, 150, _nav_y + 4))
+    sidebar.bind("<Button-4>", lambda _e: sidebar.yview_scroll(-1, "units"))
+    sidebar.bind("<Button-5>", lambda _e: sidebar.yview_scroll(1, "units"))
 
     # Wire the global quick-search now that select()/build_search_results_view
     # both exist. Live on every keystroke (cheap in-memory filter, no

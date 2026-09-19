@@ -422,7 +422,11 @@ class BubbleManager:
             if existing is not None and not existing.dismissed:
                 existing.bump(urgency, summary, body)
                 continue
-            b = Bubble(self.cfg, urgency, app, summary, body, self._on_close, self.reflow)
+            try:
+                b = Bubble(self.cfg, urgency, app, summary, body, self._on_close, self.reflow)
+            except RuntimeError as e:
+                sys.stderr.write(f"arc-pine-bubbles: cannot create windows ({e}); exiting for restart\n")
+                os._exit(1)
             self.active.append(b)
             self.by_app[app] = b
             self.reflow()
@@ -487,6 +491,13 @@ class SocketBridge:
 
 
 def main():
+    # Fail FAST if there's no display yet. This daemon is started at login, sometimes before
+    # X is ready; GTK then fails to init but the process would otherwise keep running with a
+    # dead toolkit, showing nothing forever (the 2026-09-19 "no bubbles after reboot" bug).
+    # Exiting non-zero lets systemd's Restart=on-failure retry until the display exists.
+    if Gdk.Display.get_default() is None:
+        sys.stderr.write("arc-pine-bubbles: no display yet, exiting so systemd retries\n")
+        sys.exit(1)
     cfg = load_config()
     mgr = BubbleManager(cfg)
     q = queue.Queue()

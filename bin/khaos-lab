@@ -74,8 +74,12 @@ LOG_SOURCES = [
     # show "not found" until `arc sec clamav`/`arc sec chkrootkit` runs once.
     {"key": "clamav", "name": "Antivirus (clamav)", "kind": "text",
      "path": Path("/var/log/clamav-home-scan.log"), "sudo": True},
+    # Path corrected 2026-09-19: /var/log/chkrootkit.log never existed on this machine, so this
+    # view always said "not found" while the nightly scan wrote /var/log/chkrootkit/log.today.
+    # World-readable (root:root 644); no sudo needed to view. Purge isn't offered for it (the
+    # scan regenerates it daily and arc-log-purge's sudoers list doesn't cover this path).
     {"key": "chkrootkit", "name": "Rootkit scan (chkrootkit)", "kind": "text",
-     "path": Path("/var/log/chkrootkit.log"), "sudo": True},
+     "path": Path("/var/log/chkrootkit/log.today"), "sudo": False},
     {"key": "rkhunter", "name": "Rootkit scan (rkhunter)", "kind": "text",
      "path": Path("/var/log/rkhunter.log"), "sudo": True},
 ]

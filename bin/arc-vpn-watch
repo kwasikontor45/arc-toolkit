@@ -14,13 +14,19 @@
 # recorded "connected" as the desired state -- never fights a deliberate
 # `arc vpn disconnect`.
 set -uo pipefail
+# Every protonvpn call below is wrapped in `timeout`. The CLI takes a GLOBAL file lock
+# (proton-sso.lock) around session lookup; if one call hangs -- e.g. a boot-time run that
+# reaches the keyring before the login keyring is unlocked, waiting on an invisible unlock
+# prompt -- it holds that lock forever and EVERY later protonvpn command (including the user's
+# own `protonvpn signin`) blocks silently behind it. 2026-09-19: exactly that, ~17 min of
+# "signin does nothing". A timeout kills the holder and releases the lock.
 
 STATE_FILE="$HOME/.config/arc/vpn-desired-state"
 [[ -f "$STATE_FILE" ]] || exit 0
 [[ "$(cat "$STATE_FILE" 2>/dev/null)" == "connected" ]] || exit 0
 command -v protonvpn >/dev/null 2>&1 || exit 0
 
-out=$(protonvpn status 2>&1 | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T|^Traceback \(most recent|^  |^proton\.')
+out=$(timeout 25 protonvpn status 2>&1 | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T|^Traceback \(most recent|^  |^proton\.')
 echo "$out" | grep -q "^Status: Connected" && exit 0
 
 # Real, live-confirmed failure mode (2026-09-14): ProtonVPN's free plan only
@@ -32,8 +38,8 @@ echo "$out" | grep -q "^Status: Connected" && exit 0
 # eventually, but a needlessly long exposure window given a 2s retry
 # usually fixes it immediately.
 for _attempt in 1 2 3; do
-  protonvpn connect >/dev/null 2>&1
-  protonvpn status 2>&1 | grep -q "^Status: Connected" && exit 0
+  timeout 60 protonvpn connect >/dev/null 2>&1
+  timeout 25 protonvpn status 2>&1 | grep -q "^Status: Connected" && exit 0
   sleep 2
 done
 # Still not connected after 3 quick attempts -- leave it here. The next

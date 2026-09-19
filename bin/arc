@@ -2169,7 +2169,11 @@ cmd_dns() {
 # script parsing this output -- matches the explicit "no jank/no noise"
 # requirement this was built under.
 _vpn_run() {
-  protonvpn "$@" 2>&1 | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T|^Traceback \(most recent|^  |^proton\.'
+  # signin/signout are interactive (password prompt) -- never time those out; everything else is bounded
+  # so a hung call can't hold Proton's global SSO lock and block the user's own sign-in.
+  local _t=(timeout 90)
+  [[ "${1:-}" == "signin" || "${1:-}" == "signout" ]] && _t=()
+  "${_t[@]}" protonvpn "$@" 2>&1 | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T|^Traceback \(most recent|^  |^proton\.'
 }
 
 _vpn_state_file() { echo "$HOME/.config/arc/vpn-desired-state"; }

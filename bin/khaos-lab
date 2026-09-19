@@ -874,11 +874,12 @@ def main():
     #
     # Kept deliberately compact (30px, small_font not nav_font) -- a first
     # pass at 48px/nav_font pushed Maintenance/Personal off the bottom of
-    # this unscrollable Canvas entirely (confirmed live via screenshot: the
-    # 14-category list was already landing right at the bottom edge of the
-    # sidebar's default height before this badge existed at all, zero
-    # margin to spare). 30px plus the small root.geometry bump below
-    # restores full reachability without giving up the badge.
+    # the sidebar Canvas (confirmed live via screenshot: the 14-category
+    # list was already landing right at the sidebar's bottom edge before
+    # this badge existed at all, zero margin to spare). The durable fix is
+    # the scrollregion + wheel binding added after the nav loop below --
+    # this smaller size plus the root.geometry bump just keeps things
+    # comfortable without relying on scrolling for the common case.
     _sidebar_icon = load_image(SIDEBAR_ICON_PATH)
     if _sidebar_icon:
         sidebar.create_image(8, 6, anchor="nw", image=_sidebar_icon)
@@ -1008,9 +1009,11 @@ def main():
     # the same surface as the content pane, not a bolted-on extra.
     console_canvas = tk.Canvas(console_frame, bg=SURFACE, highlightthickness=0)
     console_canvas.pack(fill="both", expand=True)
-    _console_bg = load_image(CONTENT_BG_PATH)
-    if _console_bg:
-        console_canvas.create_image(0, 0, anchor="nw", image=_console_bg)
+    # Reuses _content_bg (same file, content pane above already loaded it)
+    # rather than a second load_image() call -- one PhotoImage, usable on
+    # both canvases, instead of decoding+holding the same PNG twice.
+    if _content_bg:
+        console_canvas.create_image(0, 0, anchor="nw", image=_content_bg)
 
     console = tk.Text(
         console_canvas, bg=SURFACE, fg=FG, insertbackground=FG,
@@ -1051,15 +1054,15 @@ def main():
     def _ensure_console_room():
         if _console_auto_expanded["done"]:
             return
-        _console_auto_expanded["done"] = True
         root.update_idletasks()
         total_h = main_pane.winfo_height()
         if total_h <= 1:
-            return
+            return  # window not fully realized yet -- retry on the next run, don't mark done
         try:
             _, sash_y = main_pane.sash_coord(0)
         except tk.TclError:
-            return
+            return  # same -- leave "done" False so a later call can still try
+        _console_auto_expanded["done"] = True
         new_sash_y = max(0, total_h - 260)
         if new_sash_y < sash_y:
             main_pane.sash_place(0, 0, new_sash_y)

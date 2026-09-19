@@ -978,6 +978,11 @@ cmd_day() {
 
 # ── Backup ─────────────────────────────────────────────────────────────────────
 cmd_backup() {
+  if [[ $# -gt 0 ]]; then
+    echo -e "  ${R}arc backup takes no arguments${N} (got: $*) — it always runs a full sync of local work → USB vault."
+    echo -e "  ${D}arc backup${N}  to run it; last run time is in ${D}arc day${N}."
+    return 1
+  fi
   echo -e "$HR"
   echo -e "  ${C}${B}arc backup${N}  —  sync local work → USB vault"
   echo -e "$HR\n"
@@ -6277,7 +6282,7 @@ cmd_deploy() {
 # ── Router ─────────────────────────────────────────────────────────────────────
 case "${1:-}" in
   day)            cmd_day ;;
-  backup)         cmd_backup ;;
+  backup)         cmd_backup "${@:2}" ;;
   restart|warm-restart) cmd_restart ;;
   safe-reboot)    cmd_safe_reboot ;;
   browser-clean)  cmd_browser_clean "${2:-}" ;;

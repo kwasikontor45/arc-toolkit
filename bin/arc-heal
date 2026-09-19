@@ -216,18 +216,23 @@ check_watcher_daemons() {
     fi
   done
 
-  # User-scope, no sudo needed.
-  if systemctl --user is-active --quiet arc-pine-bubbles; then
-    note "OK::watcher:arc-pine-bubbles::active"
-  else
-    systemctl --user restart arc-pine-bubbles 2>/dev/null
-    sleep 1
-    if systemctl --user is-active --quiet arc-pine-bubbles; then
-      note "HEALED::watcher:arc-pine-bubbles::was down, restarted"
+  # User-scope, no sudo needed. arc-pined added 2026-09-19: it is the daemon
+  # that actually SPEAKS notifications; its XDG autostart entry had been
+  # silently flipped to Hidden=true, so arc-break showed bubbles but never spoke.
+  local pu
+  for pu in arc-pine-bubbles arc-pined; do
+    if systemctl --user is-active --quiet "$pu"; then
+      note "OK::watcher:${pu}::active"
     else
-      note "FLAG::watcher:arc-pine-bubbles::down, restart failed — check: systemctl --user status arc-pine-bubbles"
+      systemctl --user restart "$pu" 2>/dev/null
+      sleep 1
+      if systemctl --user is-active --quiet "$pu"; then
+        note "HEALED::watcher:${pu}::was down, restarted"
+      else
+        note "FLAG::watcher:${pu}::down, restart failed — check: systemctl --user status ${pu}"
+      fi
     fi
-  fi
+  done
 }
 
 check_docker_health() {

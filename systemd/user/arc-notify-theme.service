@@ -1,0 +1,7 @@
+[Unit]
+Description=arc-notify-theme -- phase-colored XFCE notification popups
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/arc-notify-theme

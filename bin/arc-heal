@@ -260,6 +260,17 @@ check_watcher_daemons() {
       fi
     fi
   done
+  # Stock XFCE popups take the Kataleya phase colour from a generated CSS file (arc-notify-theme.timer);
+  # if the timer missed a boundary (asleep/off), the popups would keep the old phase colour.
+  local want have
+  want=$(python3 -c "import sys; sys.path.insert(0,'$HOME/khaos-lab/arc-toolkit/bin'); import _arc_ui as u; print(u.phase_name())" 2>/dev/null)
+  have=$(sed -n '1s/.*phase: \([a-z-]*\) \*\/.*/\1/p' "$HOME/.config/gtk-3.0/arc-notify.css" 2>/dev/null)
+  if [ -n "$want" ] && [ "$want" = "$have" ]; then
+    note "OK::notify-theme::popups on ${want}"
+  elif [ -n "$want" ]; then
+    "$HOME/.local/bin/arc-notify-theme" >/dev/null 2>&1
+    note "HEALED::notify-theme::popup colour was '${have:-none}', phase is '${want}' -- regenerated"
+  fi
 }
 
 check_inventory() {

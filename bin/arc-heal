@@ -246,6 +246,22 @@ check_docker_health() {
   else
     note "OK::docker::no containers crash-looping"
   fi
+
+  # Real gap closed 2026-09-19: sagan/evebox sat Exited for ~7 days after
+  # arc-docker-shutdown-stop's clean stop met restart:unless-stopped (which
+  # treats that as a deliberate stop and never restarts at boot). Crash-loop
+  # detection above can't see a container that's simply down. Any container
+  # with a restart policy (not "no") that isn't running is meant to be up.
+  local name policy
+  for name in $(docker ps -a --filter "status=exited" --filter "status=created" --format '{{.Names}}' 2>/dev/null); do
+    policy=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$name" 2>/dev/null)
+    [[ -z "$policy" || "$policy" == "no" ]] && continue
+    if docker start "$name" >/dev/null 2>&1; then
+      note "HEALED::docker:${name}::was down despite restart policy '${policy}', started"
+    else
+      note "FLAG::docker:${name}::down despite restart policy '${policy}', start failed — check: docker logs ${name}"
+    fi
+  done
 }
 
 # ── AWS on-demand lab: idle backstop, stale-sync check, dual-active check ──

@@ -318,12 +318,22 @@ CATEGORIES = {
         # Binary already carries cap_net_admin/cap_net_raw, captures live
         # with no sudo. Tutorial: ~/dev-notes/hq-main/sniffnet-tutorial.md
         Action("Sniffnet: launch (GUI, no sudo needed)", "arc net sniffnet", detach=True),
-        # bandwhich/iftop/nethogs deliberately not wired here -- all three
-        # are full-screen TUIs that also need sudo, same shape as "Sudo
-        # keepalive: start" above being left out on purpose: no real TTY
-        # for the sudo prompt from this console, and a TUI can't be
-        # captured as one-shot output anyway. Run `arc net bandwhich`,
-        # `arc net iftop`, or `arc net nethogs` from a real terminal.
+        # Wired 2026-09-19 (user's explicit ask, overriding the earlier
+        # "leave these out" call) -- the actual blocker was real (no TTY
+        # for the sudo prompt from this console, a TUI can't be captured
+        # as one-shot output), so the fix is a real terminal, not a
+        # workaround: `konsole --hold -e` gives each one its own genuine
+        # TTY for both the sudo prompt and the ncurses UI, same shape as
+        # the Sniffnet/UAD-ng detached-GUI launches above. `--hold` keeps
+        # the window open after the tool exits/errors instead of
+        # flashing shut, so a "command not found" or a mistyped sudo
+        # password is actually readable.
+        Action("bandwhich (opens in terminal, needs sudo)",
+               "konsole --hold -e arc net bandwhich", detach=True),
+        Action("iftop (opens in terminal, needs sudo)",
+               "konsole --hold -e arc net iftop", detach=True),
+        Action("nethogs (opens in terminal, needs sudo)",
+               "konsole --hold -e arc net nethogs", detach=True),
         # one-shot status, added 2026-09-10 -- distinct from the background
         # watch below, real data (internet/clients/nodes/dns/gateway),
         # confirmed working live this session (2026-08-31 addendum).

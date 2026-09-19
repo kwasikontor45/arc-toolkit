@@ -224,7 +224,8 @@ check_watcher_daemons() {
     fi
   done
 
-  # User-scope, no sudo needed. arc-pined added 2026-09-19: it is the daemon
+  # User-scope, no sudo needed. orage-alarms added 2026-09-19 (its XDG autostart entry never fired,
+  # so the calendar -- and every alarm -- silently wasn't running). arc-pined added 2026-09-19: it is the daemon
   # that actually SPEAKS notifications; its XDG autostart entry had been
   # silently flipped to Hidden=true, so arc-break showed bubbles but never spoke.
   # Private notes site (arc site): keep the guarded server up, and treat a
@@ -246,7 +247,7 @@ check_watcher_daemons() {
     note "OK::site-funnel::not public"
   fi
   local pu
-  for pu in arc-pine-bubbles arc-pined; do
+  for pu in arc-pine-bubbles arc-pined orage-alarms; do
     if systemctl --user is-active --quiet "$pu"; then
       note "OK::watcher:${pu}::active"
     else

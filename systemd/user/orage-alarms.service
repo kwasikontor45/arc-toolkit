@@ -1,0 +1,12 @@
+[Unit]
+Description=Orage calendar — runs hidden in the background so alarms fire into arc-pine (needs to be running for reminders)
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/orage
+Restart=on-failure
+RestartSec=3
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=default.target

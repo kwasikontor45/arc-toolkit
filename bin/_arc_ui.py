@@ -67,11 +67,45 @@ COLOR_ERROR = ROSE
 # overlay/fg/fg_muted) -- functional colors above stay fixed for legibility.
 PHASES = {
     "choice":     {"hour": 6,  "bg": "#201f30", "surface": "#26243c", "overlay": "#352f4d", "fg": "#e3e0f2", "fg_muted": "#726d8f"},  # dawn, iris-leaning
-    "still-pine": {"hour": 13, "bg": "#0f1c24", "surface": "#15252f", "overlay": "#1e3542", "fg": "#dbe8ec", "fg_muted": "#5c7681"},  # day, midnight ocean
-    "desire":     {"hour": 18, "bg": "#2b2035", "surface": "#342942", "overlay": "#493655", "fg": "#f1e7da", "fg_muted": "#8d7968"},  # golden hour, gold-leaning
+    "desire":     {"hour": 13, "bg": "#0f1c24", "surface": "#15252f", "overlay": "#1e3542", "fg": "#dbe8ec", "fg_muted": "#5c7681"},  # day (canonical desire 11-17), midnight ocean
+    "still-pine": {"hour": 18, "bg": "#2b2035", "surface": "#342942", "overlay": "#493655", "fg": "#f1e7da", "fg_muted": "#8d7968"},  # golden hour (canonical still-pine 17-21), gold-leaning
     "nyx":        {"hour": 24, "bg": BG,        "surface": SURFACE,  "overlay": OVERLAY,   "fg": FG,        "fg_muted": FG_MUTED},   # night, Rose Pine Moon as-is
 }
-_PHASE_ORDER = ["choice", "still-pine", "desire", "nyx"]
+_PHASE_ORDER = ["choice", "desire", "still-pine", "nyx"]
+
+# Canonical Kataleya phase table (fixed 2026-07-06 across every reimplementation;
+# hours are phase START times): choice 6-11 . desire 11-17 . still-pine 17-21 .
+# nyx 21-6. Until 2026-09-19 this engine had the desire/still-pine NAMES swapped
+# relative to it (colors/timing were fine, only the labels were wrong). The
+# anchors above stay where they are (palette drifts on its own schedule); the
+# `phase` label and PHASE_ACCENT below always follow the canonical table.
+PHASE_START = {"choice": 6, "desire": 11, "still-pine": 17, "nyx": 21}
+PHASE_ACCENT = {  # Kataleya's own accent per phase
+    "choice":     "#5ec8ed",
+    "desire":     "#f6c177",
+    "still-pine": "#c4a7e7",
+    "nyx":        "#ea9a97",
+}
+
+
+def phase_name(hour=None):
+    """Canonical Kataleya phase name for an hour (float) or right now."""
+    if hour is None:
+        now = datetime.now()
+        hour = now.hour + now.minute / 60
+    if hour >= PHASE_START["nyx"] or hour < PHASE_START["choice"]:
+        return "nyx"
+    if hour < PHASE_START["desire"]:
+        return "choice"
+    if hour < PHASE_START["still-pine"]:
+        return "desire"
+    return "still-pine"
+
+
+def phase_info(hour=None):
+    """(name, accent_hex) for the canonical phase at `hour` / now."""
+    name = phase_name(hour)
+    return name, PHASE_ACCENT[name]
 
 
 def _hex_to_rgb(h):
@@ -150,8 +184,8 @@ def circadian(hour=None):
     Colors are continuously interpolated between the two nearest anchor
     phases -- no hard cut at a phase boundary, by design (matches
     Kataleya's own current direction, not the earlier discrete-bucket
-    version). `phase` is the nearer anchor's name, for display/debugging
-    only -- don't branch UI logic on it, use the interpolated colors."""
+    version). `phase` is the canonical Kataleya phase name (phase_name()),
+    for display only -- don't branch UI logic on it, use the interpolated colors."""
     if hour is None:
         now = datetime.now()
         hour = now.hour + now.minute / 60
@@ -163,7 +197,7 @@ def circadian(hour=None):
         "overlay":  _lerp_hex(p1["overlay"], p2["overlay"], t),
         "fg":       _lerp_hex(p1["fg"], p2["fg"], t),
         "fg_muted": _lerp_hex(p1["fg_muted"], p2["fg_muted"], t),
-        "phase":    n1 if t < 0.5 else n2,
+        "phase":    phase_name(hour),
     }
 
 # ── Spacing scale -- a real 4px-based rhythm instead of ad hoc padx/pady

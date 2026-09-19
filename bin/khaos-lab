@@ -757,6 +757,12 @@ def main():
     tk.Label(header, text="lab", font=big_font, bg=BG, fg=TEAL).pack(side="left", padx=(0, 16))
     clock_lbl = tk.Label(header, text="", font=small_font, bg=BG, fg=FG_MUTED)
     clock_lbl.pack(side="right")
+    # Circadian phase readout (2026-09-19). The panel's palette is fixed on
+    # purpose, but which Kataleya phase it currently is (choice/desire/
+    # still-pine/nyx) is still useful at a glance -- shown in that phase's own
+    # accent, the only time-of-day color left in this window.
+    phase_lbl = tk.Label(header, text="", font=small_font, bg=BG, fg=FG_MUTED)
+    phase_lbl.pack(side="right", padx=(0, 14))
 
     # Global quick-search, added 2026-09-10 (v2 sweep). The Find view (own
     # sidebar category) searches note CONTENT across the 4 tracked trees;
@@ -1893,6 +1899,8 @@ def main():
     # ── Clock + auto status refresh ────────────────────────────────────────
     def tick():
         clock_lbl.configure(text=time.strftime("%H:%M:%S"))
+        _pn, _pc = ui.phase_info()
+        phase_lbl.configure(text=f"◐ {_pn}", fg=_pc)
         root.after(1000, tick)
 
     def auto_refresh():

@@ -1,41 +1,43 @@
 #!/usr/bin/env python3
 """
-arc-pine-bubbles — the actual visual notification renderer for arc-pine's
-own family of watchers (Suricata/Sagan/fail2ban/rkhunter/VPN/DNS/eero/
-lynis/chkrootkit/ClamAV). Built 2026-08-22, replacing the old design where
-those watchers called notify-send directly and got rendered by xfce4-notifyd
-alongside every other app's notifications with no shared stacking/dismiss
-policy -- that's what let a burst of alerts genuinely cover the whole
-screen, needing manual one-by-one dismissal.
+arc-pine-bubbles -- the visual notification renderer for arc-pine's watcher
+family (Suricata/Sagan/fail2ban/rkhunter/VPN/DNS/eero/lynis/chkrootkit/
+ClamAV/arc-heal, and -- once it routes through arc-pine-notify -- arc-break).
 
-Deliberately its own small process, not folded into arc-pined: arc-pined
-runs a GLib main loop (for its D-Bus monitor), and Tkinter needs its own
-main loop -- running both in one process is a real source of the exact
-"heavy/janky" behavior this was asked to avoid. Two small, single-purpose
-processes are simpler to reason about than one process juggling two event
-loops.
+Redesigned 2026-09-19 (was a plain Tk card): GTK3 + cairo, so it can do what
+Tk can't -- real per-pixel transparency on the desktop compositor. Frosted
+glass cards with rounded corners and a soft shadow, Kataleya phase-colored
+accent (choice/desire/still-pine/nyx, from _arc_ui.phase_info), Lato type,
+fade + slide-in, a thin countdown line, and hover-to-pause.
 
-Listens on a local Unix socket for render requests (one JSON object per
-line: {"urgency": "critical|normal|low", "app": "...", "summary": "...",
-"body": "..."}), sent by `arc-pine-notify`. Nothing else talks to this
-socket -- third-party app notifications (Brave, Bitwarden, etc.) never
-reach it, they keep rendering via xfce4-notifyd exactly as before,
-completely unaffected by any of this.
+Still its own small process (not folded into arc-pined): one GTK main loop
+here, arc-pined's GLib/D-Bus monitor there. Same wire protocol as before --
+one JSON object per line on the Unix socket:
+    {"urgency": "critical|normal|low", "app": "...", "summary": "...", "body": "..."}
+sent by `arc-pine-notify`. Third-party app notifications never reach this.
 
-Stacks bubbles from the top-right corner, hard cap on how many are visible
-at once (extra ones queue and appear as earlier ones auto-dismiss or get
-clicked away) -- this is the actual fix for "covers the whole screen."
+Structure (no cross-coupling): Palette (colors), CardPainter (pure cairo
+drawing, testable offscreen), Bubble (one window), BubbleManager (stack /
+queue / burst-merge), SocketBridge (thread -> queue).
 """
 
 import json
+import math
 import os
+import queue
 import socket
 import sys
 import threading
-import queue
 import time
-import tkinter as tk
 from pathlib import Path
+
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("Pango", "1.0")
+gi.require_version("PangoCairo", "1.0")
+import cairo
+from gi.repository import Gdk, GLib, Gtk, Pango, PangoCairo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _arc_ui as ui
@@ -43,352 +45,472 @@ import _arc_ui as ui
 SOCK_PATH = "/run/user/{}/arc-pine-bubbles.sock".format(os.getuid())
 CONFIG_PATH = Path.home() / ".config/arc-pine/config.json"
 
-# Only the render-relevant subset -- this process never makes a sound/
-# speak/mute decision (arc-pine-notify already decided that before it
-# ever calls push_bubble), so it has no business carrying those keys in
-# its own default. Found stale during a 2026-09-10 bug sweep: this dict
-# still had speak_apps/ignored_apps from before the v2 app_rules
-# migration, misleadingly implying this file cared about per-app rules
-# when nothing here ever read them.
 DEFAULT_CONFIG = {
-    "bubble_theme": "rose-pine-moon",
+    "bubble_theme": "circadian",
     "bubble_max_visible": 4,
-    "bubble_duration_ms": 12000,
-    "bubble_width": 340,
+    "bubble_duration_ms": 10000,
+    "bubble_width": 360,
+    "bubble_opacity": 0.82,   # card fill alpha (the glass)
+    "bubble_radius": 16,
 }
 
+# Static themes still selectable via config; "circadian" (default) is live.
 THEMES = {
-    "rose-pine-moon": {
-        "bg": "#2a273f", "border": "#393552", "fg": "#e0def4", "fg_muted": "#6e6a86",
-        "critical": "#eb6f92", "normal": "#3e8fb0", "low": "#6e6a86",
-    },
-    "nord": {
-        "bg": "#3b4252", "border": "#4c566a", "fg": "#eceff4", "fg_muted": "#81a1c1",
-        "critical": "#bf616a", "normal": "#88c0d0", "low": "#616e88",
-    },
-    "dracula": {
-        "bg": "#282a36", "border": "#44475a", "fg": "#f8f8f2", "fg_muted": "#6272a4",
-        "critical": "#ff5555", "normal": "#8be9fd", "low": "#6272a4",
-    },
-    "gruvbox": {
-        "bg": "#3c3836", "border": "#504945", "fg": "#ebdbb2", "fg_muted": "#928374",
-        "critical": "#fb4934", "normal": "#83a598", "low": "#928374",
-    },
+    "rose-pine-moon": {"surface": "#2a273f", "fg": "#e0def4", "muted": "#908caa", "accent": "#3e8fb0"},
+    "nord":           {"surface": "#3b4252", "fg": "#eceff4", "muted": "#81a1c1", "accent": "#88c0d0"},
+    "dracula":        {"surface": "#282a36", "fg": "#f8f8f2", "muted": "#6272a4", "accent": "#8be9fd"},
+    "gruvbox":        {"surface": "#3c3836", "fg": "#ebdbb2", "muted": "#928374", "accent": "#83a598"},
 }
+CRITICAL = "#eb6f92"
+URGENCY_RANK = {"low": 0, "normal": 1, "critical": 2}
 
-
-def _resolve_theme(name):
-    """Bubbles are short-lived (seconds), so unlike the always-open apps
-    this doesn't need a periodic retheme loop -- each new bubble just
-    resolves "circadian" fresh at the moment it's actually spawned,
-    which is enough to genuinely reflect the time of day it appeared.
-    Urgency accents (critical/normal/low) stay the fixed semantic colors
-    used everywhere else in the toolkit, not phase-interpolated -- same
-    "useful over pretty" reasoning as _arc_ui.py itself."""
-    if name == "circadian":
-        c = ui.circadian()
-        return {
-            "bg": c["surface"], "border": c["overlay"], "fg": c["fg"], "fg_muted": c["fg_muted"],
-            "critical": ui.ROSE, "normal": ui.PINE, "low": ui.FG_MUTED,
-        }
-    return THEMES.get(name, THEMES["rose-pine-moon"])
+FONT_TEXT = "Lato, Cantarell, DejaVu Sans"
+MARGIN = 20            # transparent margin around the card: room for the shadow
+PAD_X, PAD_TOP, PAD_BOTTOM = 18, 14, 16
+TEXT_LEFT = 28         # card-relative x where text starts (after the accent pill)
 
 
 def load_config():
     cfg = DEFAULT_CONFIG.copy()
-    if CONFIG_PATH.exists():
-        try:
-            with open(CONFIG_PATH) as f:
-                cfg.update(json.load(f))
-        except Exception:
-            pass
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg.update(json.load(f))
+    except Exception:
+        pass
     return cfg
 
 
-URGENCY_RANK = {"low": 0, "normal": 1, "critical": 2}
+def _rgb(hexstr):
+    h = hexstr.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
 
 
-class Bubble(tk.Toplevel):
-    """One rounded-card notification, self-contained and self-dismissing.
-    Can absorb repeat notifications from the same app while it's still on
-    screen instead of spawning a sibling next to itself -- see bump()."""
+def _mix(a, b, t):
+    return tuple(a[i] + (b[i] - a[i]) * t for i in range(3))
 
-    def __init__(self, master, theme, width, urgency, app, summary, body, duration_ms, on_close, on_update):
-        super().__init__(master)
+
+def _ease_out(t):
+    t = max(0.0, min(1.0, t))
+    return 1 - (1 - t) ** 3
+
+
+class Palette:
+    """Resolves colors for one bubble at the moment it spawns. Bubbles live
+    seconds, so resolving "circadian" once per bubble is enough to reflect the
+    time of day it appeared. Critical is always rose (functional color); normal
+    uses the current Kataleya phase accent; low is a quiet version of it."""
+
+    def __init__(self, theme, urgency):
+        if theme == "circadian" or theme not in THEMES:
+            c = ui.circadian()
+            _, phase_accent = ui.phase_info()
+            surface, fg, muted, accent = c["surface"], c["fg"], c["fg_muted"], phase_accent
+        else:
+            t = THEMES[theme]
+            surface, fg, muted, accent = t["surface"], t["fg"], t["muted"], t["accent"]
+        self.surface = _rgb(surface)
+        self.fg = _rgb(fg)
+        self.muted = _rgb(muted)
+        self.phase_accent = _rgb(accent)
+        self.set_urgency(urgency)
+
+    def set_urgency(self, urgency):
+        self.urgency = urgency
+        if urgency == "critical":
+            self.accent = _rgb(CRITICAL)
+        elif urgency == "low":
+            self.accent = _mix(self.phase_accent, self.muted, 0.55)
+        else:
+            self.accent = self.phase_accent
+
+
+def _rounded_rect(cr, x, y, w, h, r):
+    r = max(0.0, min(r, w / 2, h / 2))
+    cr.new_sub_path()
+    cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+    cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+    cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+    cr.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
+    cr.close_path()
+
+
+class CardPainter:
+    """Pure drawing + measuring -- no windows, no timers. Everything the card
+    looks like lives here, so it can be rendered to a PNG and inspected."""
+
+    def __init__(self, width, opacity, radius):
+        self.width = width            # full window width, margin included
+        self.opacity = opacity
+        self.radius = radius
+
+    def _layouts(self, cr, app, summary, body, count):
+        inner_w = self.width - 2 * MARGIN
+        text_w = inner_w - TEXT_LEFT - PAD_X
+        app_text = app.upper() + (f"  ×{count}" if count > 1 else "")
+
+        def mk(text, font, w, color=None, spacing=0, lines=None):
+            lay = PangoCairo.create_layout(cr)
+            lay.set_font_description(Pango.FontDescription(font))
+            lay.set_width(int(w * Pango.SCALE))
+            lay.set_wrap(Pango.WrapMode.WORD_CHAR)
+            if lines:
+                lay.set_ellipsize(Pango.EllipsizeMode.END)
+                lay.set_height(-lines)
+            if spacing:
+                attrs = Pango.AttrList()
+                attrs.insert(Pango.attr_letter_spacing_new(int(spacing * Pango.SCALE)))
+                lay.set_attributes(attrs)
+            lay.set_text(text, -1)
+            return lay
+
+        lays = {
+            "app": mk(app_text, f"{FONT_TEXT} Bold 8", text_w - 24, spacing=1.6),
+            "summary": mk(summary, f"{FONT_TEXT} Bold 11", text_w, lines=3),
+        }
+        if body:
+            lays["body"] = mk(body, f"{FONT_TEXT} 10", text_w, lines=4)
+        return lays
+
+    def measure(self, app, summary, body, count):
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1)
+        cr = cairo.Context(surf)
+        lays = self._layouts(cr, app, summary, body, count)
+        h = PAD_TOP + lays["app"].get_pixel_size()[1] + 5 + lays["summary"].get_pixel_size()[1]
+        if "body" in lays:
+            h += 3 + lays["body"].get_pixel_size()[1]
+        h += PAD_BOTTOM
+        return self.width, int(h + 2 * MARGIN)
+
+    def paint(self, cr, h, pal, app, summary, body, count, progress, hover, alpha=1.0):
+        cw = self.width - 2 * MARGIN
+        ch = h - 2 * MARGIN
+        x0 = y0 = MARGIN
+        glass = self.opacity
+
+        # soft drop shadow -- stacked translucent rounded rects, cheap "blur"
+        for i in range(10, 0, -1):
+            cr.set_source_rgba(0, 0, 0, 0.022 * (1 - i / 11.0) * alpha)
+            _rounded_rect(cr, x0 - i * 0.9, y0 - i * 0.5 + 3, cw + i * 1.8, ch + i * 1.8, self.radius + i)
+            cr.fill()
+
+        # glass body: subtle top-lit gradient over the phase surface color
+        top = _mix(pal.surface, (1, 1, 1), 0.07)
+        grad = cairo.LinearGradient(0, y0, 0, y0 + ch)
+        grad.add_color_stop_rgba(0, *top, glass * alpha)
+        grad.add_color_stop_rgba(1, *pal.surface, glass * 0.9 * alpha)
+        _rounded_rect(cr, x0, y0, cw, ch, self.radius)
+        cr.set_source(grad)
+        cr.fill_preserve()
+        # hairline border in the accent, faint inner top highlight
+        cr.set_line_width(1)
+        cr.set_source_rgba(*pal.accent, 0.38 * alpha)
+        cr.stroke()
+        cr.save()
+        _rounded_rect(cr, x0 + 0.5, y0 + 0.5, cw - 1, ch - 1, self.radius - 0.5)
+        cr.clip()
+        hl = cairo.LinearGradient(0, y0, 0, y0 + 14)
+        hl.add_color_stop_rgba(0, 1, 1, 1, 0.10 * alpha)
+        hl.add_color_stop_rgba(1, 1, 1, 1, 0.0)
+        cr.set_source(hl)
+        cr.rectangle(x0, y0, cw, 14)
+        cr.fill()
+        cr.restore()
+
+        # accent pill (with a soft glow) down the left edge
+        px, py, ph = x0 + 13, y0 + 14, ch - 28
+        for g, a in ((7, 0.05), (5, 0.08), (3, 0.13)):
+            cr.set_source_rgba(*pal.accent, a * alpha)
+            _rounded_rect(cr, px - g / 2, py - g / 2, 3 + g, ph + g, (3 + g) / 2)
+            cr.fill()
+        cr.set_source_rgba(*pal.accent, 0.95 * alpha)
+        _rounded_rect(cr, px, py, 3, ph, 1.5)
+        cr.fill()
+
+        # text
+        lays = self._layouts(cr, app, summary, body, count)
+        tx = x0 + TEXT_LEFT
+        ty = y0 + PAD_TOP
+        cr.set_source_rgba(*pal.accent, alpha)
+        cr.move_to(tx, ty)
+        PangoCairo.show_layout(cr, lays["app"])
+        ty += lays["app"].get_pixel_size()[1] + 5
+        cr.set_source_rgba(*pal.fg, alpha)
+        cr.move_to(tx, ty)
+        PangoCairo.show_layout(cr, lays["summary"])
+        ty += lays["summary"].get_pixel_size()[1]
+        if "body" in lays:
+            ty += 3
+            cr.set_source_rgba(*_mix(pal.muted, pal.fg, 0.4), alpha)   # lifted for legibility on glass
+            cr.move_to(tx, ty)
+            PangoCairo.show_layout(cr, lays["body"])
+
+        # close mark, only while hovered
+        if hover:
+            cx, cy = x0 + cw - 18, y0 + 17
+            cr.set_source_rgba(*pal.muted, 0.9 * alpha)
+            cr.set_line_width(1.4)
+            cr.set_line_cap(cairo.LINE_CAP_ROUND)
+            cr.move_to(cx - 3.5, cy - 3.5); cr.line_to(cx + 3.5, cy + 3.5)
+            cr.move_to(cx + 3.5, cy - 3.5); cr.line_to(cx - 3.5, cy + 3.5)
+            cr.stroke()
+
+        # countdown line along the bottom edge (clipped inside the card)
+        if progress is not None:
+            cr.save()
+            _rounded_rect(cr, x0, y0, cw, ch, self.radius)
+            cr.clip()
+            cr.set_source_rgba(*pal.accent, 0.5 * alpha)
+            cr.rectangle(x0, y0 + ch - 2.5, cw * max(0.0, min(1.0, progress)), 2.5)
+            cr.fill()
+            cr.restore()
+
+
+class Bubble(Gtk.Window):
+    """One notification. Owns its window, timers and animation only."""
+
+    def __init__(self, cfg, urgency, app, summary, body, on_close, on_update):
+        super().__init__(type=Gtk.WindowType.POPUP)
+        self.cfg = cfg
         self.on_close = on_close
         self.on_update = on_update
-        self.colors = _resolve_theme(theme)
-        self.width = width
-        self.duration_ms = duration_ms
-        self.app = app
-        self.urgency = urgency
+        self.app, self.summary, self.body = app, summary, body
         self.count = 1
+        self.urgency = urgency
+        self.pal = Palette(cfg.get("bubble_theme", "circadian"), urgency)
+        self.painter = CardPainter(int(cfg.get("bubble_width", 360)) + 2 * MARGIN,
+                                   float(cfg.get("bubble_opacity", 0.82)),
+                                   float(cfg.get("bubble_radius", 16)))
+        self.duration = max(2000, int(cfg.get("bubble_duration_ms", 10000)))
+        self.elapsed = 0
+        self.hover = False
+        self.dismissed = False
+        self.fade = 0.0            # 0 -> 1 in, 1 -> 0 out
+        self.slide = 14.0          # px offset, eased to 0
+        self.target_y = 0
+        self.cur_y = None
+        self.x = 0
 
-        self.overrideredirect(True)
-        self.attributes("-topmost", True)
-        self.configure(bg=self.colors["border"])
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+        self.set_app_paintable(True)
+        self.set_accept_focus(False)
+        self.set_skip_taskbar_hint(True)
+        self.set_keep_above(True)
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.ENTER_NOTIFY_MASK
+                        | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+        self.connect("draw", self._on_draw)
+        self.connect("button-press-event", lambda *_: self.dismiss())
+        self.connect("enter-notify-event", self._on_enter)
+        self.connect("leave-notify-event", self._on_leave)
 
-        pad = 2  # border thickness, drawn as an outer frame in the border color
-        self.inner = tk.Frame(self, bg=self.colors["bg"])
-        self.inner.pack(padx=pad, pady=pad, fill="both", expand=True)
+        self._remeasure()
+        self._tick_id = GLib.timeout_add(40, self._tick)
+        self._anim_start = time.monotonic()
 
-        # left accent strip signals urgency at a glance without needing to
-        # read anything -- a thin colored bar, not a loud full-card color.
-        self.strip = tk.Frame(self.inner, bg=self.colors["normal"], width=4)
-        self.strip.pack(side="left", fill="y")
+    # geometry -------------------------------------------------------------
+    def _remeasure(self):
+        self.w, self.h = self.painter.measure(self.app, self.summary, self.body, self.count)
+        self.set_default_size(self.w, self.h)
+        self.resize(self.w, self.h)
 
-        body_frame = tk.Frame(self.inner, bg=self.colors["bg"])
-        body_frame.pack(side="left", fill="both", expand=True, padx=(10, 12), pady=10)
+    def place(self, x, y, animate=True):
+        self.x = x
+        if self.cur_y is None or not animate:
+            self.cur_y = y
+        self.target_y = y
+        self.move(int(self.x + self.slide), int(self.cur_y))
 
-        header = tk.Frame(body_frame, bg=self.colors["bg"])
-        header.pack(fill="x")
-        self.app_lbl = tk.Label(header, text=app, font=("DejaVu Sans", 9, "bold"),
-                                 bg=self.colors["bg"], fg=self.colors["normal"])
-        self.app_lbl.pack(side="left")
-        close_btn = tk.Label(header, text="✕", font=("DejaVu Sans", 9),
-                              bg=self.colors["bg"], fg=self.colors["fg_muted"], cursor="hand2")
-        close_btn.pack(side="right")
-        close_btn.bind("<Button-1>", lambda e: self._dismiss())
+    # events ----------------------------------------------------------------
+    def _on_enter(self, *_):
+        self.hover = True
+        self.queue_draw()
 
-        self.summary_lbl = tk.Label(body_frame, text=summary, font=("DejaVu Sans", 10, "bold"),
-                                     bg=self.colors["bg"], fg=self.colors["fg"], wraplength=width - 60,
-                                     justify="left", anchor="w")
-        self.summary_lbl.pack(fill="x", pady=(4, 0))
+    def _on_leave(self, *_):
+        self.hover = False
+        self.queue_draw()
 
-        self.body_lbl = None
-        if body:
-            self.body_lbl = tk.Label(body_frame, text=body, font=("DejaVu Sans", 9),
-                                      bg=self.colors["bg"], fg=self.colors["fg_muted"], wraplength=width - 60,
-                                      justify="left", anchor="w")
-            self.body_lbl.pack(fill="x", pady=(2, 0))
-        self.body_frame = body_frame
+    def _on_draw(self, widget, cr):
+        cr.set_operator(cairo.OPERATOR_SOURCE)
+        cr.set_source_rgba(0, 0, 0, 0)
+        cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+        progress = 1.0 - min(1.0, self.elapsed / self.duration)
+        self.painter.paint(cr, self.h, self.pal, self.app, self.summary, self.body,
+                           self.count, progress, self.hover, alpha=1.0)
+        return False
 
-        # click anywhere on the card to dismiss early, not just the x
-        for w in (self.inner, body_frame, header):
-            w.bind("<Button-1>", lambda e: self._dismiss())
+    def _tick(self):
+        if self.dismissed and self.fade <= 0.0:
+            return False
+        dt = 0.040
+        # fade / slide
+        if self.dismissed:
+            self.fade = max(0.0, self.fade - dt / 0.22)
+        else:
+            self.fade = min(1.0, self.fade + dt / 0.18)
+            self.slide = 14.0 * (1 - _ease_out((time.monotonic() - self._anim_start) / 0.22))
+            if not self.hover:
+                self.elapsed += 40
+                if self.elapsed >= self.duration:
+                    self.dismiss()
+        self.set_opacity(self.fade)
+        # ease toward target y (stack reflow)
+        if self.cur_y is not None and abs(self.cur_y - self.target_y) > 0.5:
+            self.cur_y += (self.target_y - self.cur_y) * 0.35
+        elif self.cur_y is not None:
+            self.cur_y = self.target_y
+        if self.get_realized():
+            self.move(int(self.x + self.slide), int(self.cur_y or 0))
+        self.queue_draw()
+        if self.dismissed and self.fade <= 0.0:
+            self._finish()
+            return False
+        return True
 
-        self._apply_accent()
-
-        # Real bug found live 2026-08-22: measuring winfo_reqheight() before
-        # the window's own width was ever constrained let Tkinter compute
-        # wraplength-based label heights against an unconstrained natural
-        # width, not the real 340px target -- produced a wrong height (and
-        # from there a garbled geometry string) for some bubbles but not
-        # others, seemingly at random, in a burst. Explicitly constrain the
-        # window to the real width FIRST, then measure the height it
-        # actually needs at that width -- the standard correct order.
-        self.geometry(f"{width}x1")
-        self.update_idletasks()
-        self._width = width
-        self._height = max(self.winfo_reqheight(), 50)
-        self._dismissed = False
-        self._timer = self.after(duration_ms, self._dismiss)
-
-    def _apply_accent(self):
-        accent = self.colors.get(self.urgency, self.colors["normal"])
-        self.strip.configure(bg=accent)
-        self.app_lbl.configure(fg=accent)
-
+    # public ----------------------------------------------------------------
     def bump(self, urgency, summary, body):
-        """A new notification arrived for the same app while this bubble is
-        still showing -- absorb it instead of piling a sibling on the stack.
-        This is the actual fix for a burst (e.g. fail2ban firing 10x in a
-        second) covering the screen: it becomes one growing bubble, not 10."""
+        """Same app fired again while this bubble is up: absorb it (the burst
+        fix -- ten fail2ban alerts become one growing bubble, not ten)."""
         self.count += 1
         if URGENCY_RANK.get(urgency, 1) > URGENCY_RANK.get(self.urgency, 1):
-            self.urgency = urgency  # escalate accent color, never downgrade it
-            self._apply_accent()
-        self.app_lbl.configure(text=f"{self.app}  ×{self.count}")
-        self.summary_lbl.configure(text=summary)
-        newest_body = body or f"+{self.count - 1} earlier notification(s)"
-        if self.body_lbl is None:
-            self.body_lbl = tk.Label(self.body_frame, text=newest_body, font=("DejaVu Sans", 9),
-                                      bg=self.colors["bg"], fg=self.colors["fg_muted"],
-                                      wraplength=self.width - 60, justify="left", anchor="w")
-            self.body_lbl.pack(fill="x", pady=(2, 0))
-        else:
-            self.body_lbl.configure(text=newest_body)
-
-        self.update_idletasks()
-        self._height = max(self.winfo_reqheight(), 50)
-
-        try:
-            self.after_cancel(self._timer)
-        except Exception:
-            pass
-        self._timer = self.after(self.duration_ms, self._dismiss)
-
+            self.urgency = urgency
+            self.pal.set_urgency(urgency)
+        self.summary = summary
+        self.body = body or f"+{self.count - 1} earlier notification(s)"
+        self.elapsed = 0
+        self._remeasure()
         self.on_update()
 
-    def _dismiss(self):
-        if self._dismissed:
+    def dismiss(self):
+        if self.dismissed:
             return
-        self._dismissed = True
+        self.dismissed = True
+
+    def _finish(self):
         try:
-            self.after_cancel(self._timer)
-        except Exception:
-            pass
-        self.destroy()
-        self.on_close(self)
+            self.destroy()
+        finally:
+            self.on_close(self)
 
 
 class BubbleManager:
-    """Owns the stack -- positions, enforces the visible cap, promotes
-    queued bubbles as room opens up. This is the actual fix for the
-    "covers the whole screen" problem: no matter how many alerts fire,
-    only bubble_max_visible are ever on screen at once."""
+    """Owns the stack: positions, the visible cap, the queue, burst-merge."""
 
-    MARGIN = 16
-    GAP = 10
+    GAP = 4   # cards already carry their own margin, so the gap is small
 
-    def __init__(self, root, cfg):
-        self.root = root
+    def __init__(self, cfg):
         self.cfg = cfg
         self.active = []
-        self.active_by_app = {}
-        self.pending = queue.deque()
-
-    def screen_geom(self):
-        return self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        self.by_app = {}
+        self.pending = []
 
     def push(self, urgency, app, summary, body):
-        # Same app already has a live bubble on screen -- absorb into it
-        # rather than spawning a sibling (the actual burst-flood fix).
-        existing = self.active_by_app.get(app)
-        if existing is not None:
+        existing = self.by_app.get(app)
+        if existing is not None and not existing.dismissed:
             existing.bump(urgency, summary, body)
             return
         self.pending.append((urgency, app, summary, body))
         self._drain()
 
     def _drain(self):
-        max_visible = self.cfg.get("bubble_max_visible", 4)
-        while self.pending and len(self.active) < max_visible:
-            urgency, app, summary, body = self.pending.popleft()
-            # A queued item can itself now target an app that gained an
-            # active bubble while it was waiting -- absorb it too instead
-            # of spawning late.
-            existing = self.active_by_app.get(app)
-            if existing is not None:
+        cap = int(self.cfg.get("bubble_max_visible", 4))
+        while self.pending and len(self.active) < cap:
+            urgency, app, summary, body = self.pending.pop(0)
+            existing = self.by_app.get(app)
+            if existing is not None and not existing.dismissed:
                 existing.bump(urgency, summary, body)
                 continue
-            self._spawn(urgency, app, summary, body)
-
-    def _spawn(self, urgency, app, summary, body):
-        theme = self.cfg.get("bubble_theme", "rose-pine-moon")
-        width = self.cfg.get("bubble_width", 340)
-        duration = self.cfg.get("bubble_duration_ms", 12000)
-        b = Bubble(self.root, theme, width, urgency, app, summary, body,
-                   duration, on_close=self._on_close, on_update=self._reflow)
-        self.active.append(b)
-        self.active_by_app[app] = b
-        self._reflow()
+            b = Bubble(self.cfg, urgency, app, summary, body, self._on_close, self.reflow)
+            self.active.append(b)
+            self.by_app[app] = b
+            self.reflow()
+            b.show_all()
+            b.set_opacity(0.0)
 
     def _on_close(self, bubble):
         if bubble in self.active:
             self.active.remove(bubble)
-        if self.active_by_app.get(bubble.app) is bubble:
-            del self.active_by_app[bubble.app]
-        self._reflow()
+        if self.by_app.get(bubble.app) is bubble:
+            del self.by_app[bubble.app]
+        self.reflow()
         self._drain()
 
-    def _reflow(self):
-        sw, sh = self.screen_geom()
-        y = self.MARGIN
+    def _workarea(self):
+        display = Gdk.Display.get_default()
+        mon = display.get_primary_monitor() or display.get_monitor(0)
+        return mon.get_workarea()
+
+    def reflow(self):
+        wa = self._workarea()
+        y = wa.y + 6
         for b in self.active:
-            try:
-                x = sw - b._width - self.MARGIN
-                self._place(b, x, y)
-                y += b._height + self.GAP
-            except tk.TclError:
-                pass  # window already gone (user dismissed it mid-reflow)
-
-    def _place(self, b, x, y):
-        # Real bug found live 2026-08-22, reproduced consistently (always
-        # exactly the 4th bubble in a burst -- matching bubble_max_visible's
-        # default, suggesting a real timing interaction with how fast
-        # `poll()` can drain several queued pushes in one pass, not a
-        # one-off): a single geometry()+deiconify()+lift() call sometimes
-        # doesn't stick -- the window ends up somewhere else entirely
-        # (top-left) instead of the requested position, no error raised.
-        # Rather than chase the exact root cause further, verify the
-        # geometry actually landed and force-correct it if not -- this is
-        # correct regardless of *why* the first attempt didn't take.
-        b.geometry(f"{b._width}x{b._height}+{x}+{y}")
-        b.deiconify()
-        b.lift()
-        b.update_idletasks()
-        if (b.winfo_x(), b.winfo_y()) != (x, y):
-            b.geometry(f"{b._width}x{b._height}+{x}+{y}")
-            b.update_idletasks()
+            x = wa.x + wa.width - b.w - 4
+            b.place(x, y)
+            y += b.h - 2 * MARGIN + self.GAP + 8
 
 
-def socket_listener(sock_path, out_queue):
-    try:
-        os.unlink(sock_path)
-    except FileNotFoundError:
-        pass
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(sock_path)
-    os.chmod(sock_path, 0o600)
-    srv.listen(8)
-    while True:
-        conn, _ = srv.accept()
+class SocketBridge:
+    """Unix-socket listener thread -> queue. Nothing else talks to this."""
+
+    def __init__(self, path, out_queue):
+        self.path, self.q = path, out_queue
+
+    def start(self):
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
         try:
-            data = b""
-            while True:
-                chunk = conn.recv(4096)
-                if not chunk:
-                    break
-                data += chunk
-            if data:
-                msg = json.loads(data.decode())
-                out_queue.put(msg)
-        except Exception:
+            os.unlink(self.path)
+        except FileNotFoundError:
             pass
-        finally:
-            conn.close()
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(self.path)
+        os.chmod(self.path, 0o600)
+        srv.listen(8)
+        while True:
+            conn, _ = srv.accept()
+            try:
+                data = b""
+                while True:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                if data:
+                    self.q.put(json.loads(data.decode()))
+            except Exception:
+                pass
+            finally:
+                conn.close()
 
 
 def main():
-    root = tk.Tk()
-    root.withdraw()
-
     cfg = load_config()
-    mgr = BubbleManager(root, cfg)
+    mgr = BubbleManager(cfg)
     q = queue.Queue()
-
-    t = threading.Thread(target=socket_listener, args=(SOCK_PATH, q), daemon=True)
-    t.start()
+    SocketBridge(SOCK_PATH, q).start()
 
     def poll():
-        # reload config on the fly so theme/timing/cap changes from the
-        # Settings UI take effect without needing to restart this daemon
-        nonlocal cfg
         try:
             while True:
-                msg = q.get_nowait()
-                mgr.push(
-                    msg.get("urgency", "normal"),
-                    msg.get("app", "arc-pine"),
-                    msg.get("summary", ""),
-                    msg.get("body", ""),
-                )
+                m = q.get_nowait()
+                mgr.push(m.get("urgency", "normal"), m.get("app", "arc-pine"),
+                         m.get("summary", ""), m.get("body", ""))
         except queue.Empty:
             pass
-        root.after(150, poll)
+        return True
 
-    def reload_config_periodically():
-        nonlocal cfg
-        new_cfg = load_config()
-        if new_cfg != cfg:
-            cfg = new_cfg
-            mgr.cfg = cfg
-        root.after(3000, reload_config_periodically)
+    def reload_cfg():
+        new = load_config()
+        if new != mgr.cfg:
+            mgr.cfg = new
+        return True
 
-    root.after(150, poll)
-    root.after(3000, reload_config_periodically)
-    root.mainloop()
+    GLib.timeout_add(120, poll)
+    GLib.timeout_add(3000, reload_cfg)
+    Gtk.main()
 
 
 if __name__ == "__main__":

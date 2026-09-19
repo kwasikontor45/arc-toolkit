@@ -1,0 +1,10 @@
+[Unit]
+Description=Rebuild the notes site hourly (after the :00/:30 inventory scans)
+
+[Timer]
+OnCalendar=*:15
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

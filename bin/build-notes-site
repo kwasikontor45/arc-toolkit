@@ -316,52 +316,92 @@ def collect_notes():
     return notes
 
 
-BLUEPRINT_BODY = """
-<div class="panel hero">
-  <h1>INFRASTRUCTURE BLUEPRINT</h1>
-  <p class="hero-sub">click through to the real deep-reference doc or the live URL &mdash; last verified 2026-07-28</p>
-</div>
+# ── live inventory panels (2026-09-19) ─────────────────────────────────────
+# The Blueprint page used to be hardcoded HTML ("last verified 2026-07-28") that
+# listed boxes that no longer exist. It is now rendered from arc-inv's generated
+# inventory.json -- registry (what we say exists) reconciled against live probes --
+# so it can only be as stale as the last scan, and says exactly when that was.
+INVENTORY_JSON = HOME / "khaos-lab" / "inventory" / "inventory.json"
+KIND_TITLES = [("site", "sites & edge"), ("cloud-instance", "cloud instances"), ("service", "services"),
+               ("container", "containers"), ("device", "devices"), ("storage", "storage"),
+               ("job", "scheduled jobs"), ("repo", "repositories"), ("account", "accounts"),
+               ("domain", "domains"), ("credential", "credentials (names only)")]
 
-<div class="panel">
-  <span class="tag">01 &mdash; access path</span>
-  <div class="flow">
-    <div class="flow-step">YOU (browser / SSH client)</div>
-    <div class="flow-arrow">&darr;</div>
-    <div class="flow-step">NextDNS resolver &mdash; profile 275ee2</div>
-    <div class="flow-arrow">&darr;</div>
-    <div class="flow-step">Cloudflare edge &mdash; kontor.studio zone</div>
-    <div class="flow-arrow">&darr;</div>
-    <div class="flow-step"><b>Cloudflare Access</b> &mdash; email OTP, team kdev-kstudio</div>
-    <div class="flow-arrow">&darr; &darr;</div>
-    <div class="flow-step">tunnel &middot; bleedin6ed6e-workstation &nbsp;|&nbsp; tunnel &middot; csi-linux</div>
-    <div class="flow-arrow">&darr;</div>
-    <div class="flow-step">
-      <a href="https://ssh.kontor.studio">ssh.kontor.studio</a> &middot;
-      <a href="https://desktop.kontor.studio/vnc.html">desktop.kontor.studio</a> &middot;
-      <a href="https://csi-ssh.kontor.studio">csi-ssh.kontor.studio</a> &middot;
-      <a href="https://csi-desktop.kontor.studio">csi-desktop.kontor.studio</a>
-    </div>
-  </div>
-</div>
 
-<div class="panel">
-  <span class="tag">02 &mdash; AWS EC2 inventory</span>
-  <table>
-    <tr><th>Box</th><th>State</th><th>Deep ref</th></tr>
-    <tr><td>py-bite</td><td><span class="pill up">running</span> always-on</td><td><a href="notes/aws-ec2-ref-2ab9750fd718.html">aws-ec2-ref.md</a></td></tr>
-    <tr><td>csi-linux-native</td><td><span class="pill up">running</span></td><td><a href="notes/csi-ec2-ref-1c4bdb03832e.html">csi-ec2-ref.md</a></td></tr>
-  </table>
-  <p class="tag">wazuh-server and cloud-workstation torn down 2026-07-31 — replaced by the Docker-based Sagan+EveBox SOC lab.</p>
-  <p>Quick-connect for all of the above: <a href="notes/airplane-mode-connections-30110b1b2830.html">airplane-mode-connections.md</a></p>
-</div>
+def _load_inventory():
+    try:
+        return json.loads(INVENTORY_JSON.read_text())
+    except Exception:
+        return None
 
-<div class="panel">
-  <span class="tag">03 &mdash; where the paper trail lives</span>
-  <p><a href="notes/airplane-mode-connections-30110b1b2830.html">airplane-mode-connections.md</a> &mdash; start here for any "how do I connect" question.</p>
-  <p><a href="notes/resources-in-place-4326e6739be1.html">resources-in-place.md</a> &mdash; the master "what's live right now" snapshot (this page's own source).</p>
-  <p><a href="browse.html">browse // search</a> &mdash; full-text search across every note on this machine.</p>
-</div>
-"""
+
+def _pill(row):
+    obs, health = row.get("observed", "?"), row.get("health", "?")
+    if health == "drift":
+        return '<span class="pill watch">drift</span>'
+    if health in ("attention", "unknown"):
+        return f'<span class="pill watch">{html.escape(health)}</span>'
+    cls = "up" if obs in ("up", "running", "manual") else "down"
+    return f'<span class="pill {cls}">{html.escape(obs)}</span>'
+
+
+def inventory_summary_panel(inv):
+    if not inv:
+        return '<div class="panel"><span class="tag">inventory</span><p>No inventory yet &mdash; run <code>arc inv scan</code>.</p></div>'
+    c = inv.get("counts", {})
+    bits = " &middot; ".join(f"{html.escape(k)}: {v}" for k, v in sorted(c.items()))
+    att = [r for r in inv["assets"] if r["health"] in ("drift", "attention", "unknown")]
+    rows = "".join(f'<tr><td>{html.escape(r["id"])}</td><td>{_pill(r)}</td><td>{html.escape("; ".join(r["problems"]) or r["observed"])}</td></tr>'
+                   for r in att[:12])
+    more = f'<p class="tag">+{len(att) - 12} more &mdash; see the blueprint page</p>' if len(att) > 12 else ""
+    unt = f'<p class="tag">{len(inv["untracked"])} unregistered item(s) found by discovery &mdash; adopt or ignore</p>' if inv["untracked"] else ""
+    gen = html.escape((inv.get("generated") or "")[:16].replace("T", " "))
+    return (f'<div class="panel"><span class="tag">live inventory &mdash; {len(inv["assets"])} assets &middot; scanned {gen} &middot; {bits}</span>'
+            + (f'<table><tr><th>needs attention</th><th>health</th><th>why</th></tr>{rows}</table>{more}' if att else '<p>Every registered asset matches its desired state.</p>')
+            + unt + '</div>')
+
+
+def inventory_blueprint_body():
+    inv = _load_inventory()
+    if not inv:
+        return '<div class="panel hero"><h1>INFRASTRUCTURE BLUEPRINT</h1><p class="hero-sub">no inventory yet &mdash; run <code>arc inv scan</code></p></div>'
+    scan = (inv.get("scan") or {}).get("at", "never")
+    led = inv.get("ledger", {})
+    out = [f'<div class="panel hero"><h1>INFRASTRUCTURE BLUEPRINT</h1><p class="hero-sub">generated from the live inventory &mdash; '
+           f'{len(inv["assets"])} assets, last scan {html.escape(scan[:16].replace("T", " "))}, ledger {"verified" if led.get("verified") else "BROKEN"} '
+           f'({led.get("entries", 0)} entries). Nothing on this page is hand-written.</p></div>']
+    out.append(inventory_summary_panel(inv))
+    live = [r for r in inv["assets"] if r.get("status") != "retired"]
+    for kind, title in KIND_TITLES:
+        rows = [r for r in live if r["kind"] == kind]
+        if not rows:
+            continue
+        body = ""
+        for r in rows:
+            where = r.get("url") or r.get("purpose", "")
+            cell = f'<a href="{html.escape(where)}">{html.escape(where)}</a>' if str(where).startswith("http") else html.escape(where)
+            body += (f'<tr><td>{html.escape(r.get("name", r["id"]))}</td><td>{html.escape(r.get("status", "active"))}</td>'
+                     f'<td>{_pill(r)}</td><td>{cell}</td></tr>')
+        out.append(f'<div class="panel"><span class="tag">{html.escape(title)}</span><table><tr><th>name</th><th>desired</th><th>now</th><th>what / where</th></tr>{body}</table></div>')
+    ret = [r for r in inv["assets"] if r.get("status") == "retired"]
+    if ret:
+        body = "".join(f'<tr><td>{html.escape(r.get("name", r["id"]))}</td><td>{html.escape(r.get("retired_on", "?"))}</td>'
+                       f'<td>{html.escape(r.get("retired_reason", ""))}</td><td>{"<span class=\"pill watch\">still present</span>" if r["observed"] == "up" else "gone" if r["observed"] == "absent" else "attested"}</td></tr>'
+                       for r in ret)
+        out.append(f'<div class="panel"><span class="tag">retired &mdash; and verified gone where checkable</span><table><tr><th>was</th><th>retired</th><th>why</th><th>now</th></tr>{body}</table></div>')
+    ev = "".join(f'<tr><td>{html.escape(e["ts"][:16].replace("T", " "))}</td><td>{html.escape(e["event"])}</td><td>{html.escape(e["id"])}</td></tr>'
+                 for e in inv.get("recent", [])[:15])
+    out.append(f'<div class="panel"><span class="tag">recent changes (tamper-evident ledger)</span><table><tr><th>when</th><th>event</th><th>asset</th></tr>{ev}</table></div>')
+    links = []
+    for label, path in (("airplane-mode-connections.md", HOME / "khaos-lab" / "airplane-mode-connections.md"),
+                        ("resources-in-place.md", HOME / "khaos-lab" / "resources-in-place.md"),
+                        ("inventory procedures (README)", HOME / "dev-notes" / "intel-ops" / "inventory" / "README.md")):
+        if path.exists():
+            links.append(f'<p><a href="notes/{slug_for(path)}">{label}</a></p>')
+    out.append('<div class="panel"><span class="tag">paper trail</span>' + "".join(links) + '<p><a href="browse.html">browse // search</a> &mdash; full-text search across every note.</p></div>')
+    return "\n".join(out)
+
+
 
 
 def main():
@@ -422,11 +462,13 @@ def main():
     else:
         dash_html = "<p>resources-in-place.md not found.</p>"
 
+    built_at = __import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')
     dash_body = f"""
     <div class="panel hero">
       <h1>SITES &amp; SERVERS</h1>
-      <p class="hero-sub">the living blueprint &mdash; resources-in-place.md, rendered</p>
+      <p class="hero-sub">built {built_at} &mdash; live inventory summary + the how-to notes (resources-in-place.md)</p>
     </div>
+    {inventory_summary_panel(_load_inventory())}
     <div class="panel">{dash_html}</div>
     """
     (OUT / "index.html").write_text(
@@ -435,7 +477,7 @@ def main():
     )
 
     (OUT / "blueprint.html").write_text(
-        page_shell("BLUEPRINT", BLUEPRINT_BODY, active="blueprint"),
+        page_shell("BLUEPRINT", inventory_blueprint_body(), active="blueprint"),
         encoding="utf-8",
     )
 

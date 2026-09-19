@@ -1,0 +1,932 @@
+#!/usr/bin/env python3
+"""
+arc-inv -- inventory & accounting for everything we run, own, or depend on.
+
+Method (standard asset-management / bookkeeping practice, made mechanical):
+
+  REGISTER    ~/dev-notes/intel-ops/inventory/registry.toml -- the "books": every
+              asset we say exists, with purpose, criticality, and its DESIRED
+              lifecycle state (active | on-demand | standby | retiring | retired
+              | planned). Human/agent-edited, tracked in git.
+  PROBES      each asset says how to verify it (http, systemd, docker, aws-ec2,
+              tailscale, path, git, dns, mount, manual). A scan compares what is
+              OBSERVED to what is DESIRED; a mismatch is DRIFT.
+  DISCOVERY   independent sweeps (docker, AWS across regions, systemd units,
+              tailnet, git repos, Cloudflare, GitHub, cron) find things nobody
+              registered -> an "untracked" queue to adopt or ignore. This is the
+              physical count that keeps the books honest.
+  LEDGER      ~/dev-notes/intel-ops/inventory/ledger.jsonl -- append-only journal
+              of every state change / discovery / retirement / review, hash-
+              chained so history can't be silently rewritten (`verify`).
+  RETIRE      a retired asset is PROBED TO BE ABSENT; if it still exists that is
+              a zombie (cost / security exposure) and shows as drift.
+  ATTEST      probes can't check accounts, domains, tokens: those carry
+              `reviewed` + `review_every_days` and `expires_on`, so they surface
+              as "review due" / "expiring" instead of silently going stale.
+  REPORTS     ~/khaos-lab/inventory/inventory.{json,md} regenerated every scan;
+              the notes site and master book render from them (nothing hand-kept).
+
+State (observed, per-asset streaks) lives in ~/.local/state/arc-inv/state.json --
+machine-written, not tracked. Only *transitions* reach the ledger and only
+transitions notify, so it stays quiet when nothing changed.
+
+Commands:
+  arc-inv                    summary            arc-inv list [kind|status]
+  arc-inv show <id>          one asset          arc-inv scan [--deep] [--quiet]
+  arc-inv drift              what's wrong       arc-inv untracked
+  arc-inv adopt <identity> --id ID --kind KIND [--name N] [--status S] [--purpose P]
+  arc-inv ignore <identity> --reason R          arc-inv retire <id> --reason R
+  arc-inv review <id>        attest reviewed today
+  arc-inv history [id]       ledger             arc-inv verify   check ledger chain
+  arc-inv report             regenerate reports
+"""
+
+import argparse
+import concurrent.futures as cf
+import hashlib
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tomllib
+import urllib.error
+import urllib.request
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+HOME = Path.home()
+_SANDBOX = os.environ.get("ARC_INV_SANDBOX")     # tests: run against a throwaway copy, never the real books
+INV_DIR = Path(_SANDBOX) / "inv" if _SANDBOX else HOME / "dev-notes" / "intel-ops" / "inventory"
+REGISTRY = INV_DIR / "registry.toml"
+LEDGER = INV_DIR / "ledger.jsonl"
+STATE_DIR = Path(_SANDBOX) / "state" if _SANDBOX else HOME / ".local" / "state" / "arc-inv"
+STATE = STATE_DIR / "state.json"
+OUT_DIR = Path(_SANDBOX) / "out" if _SANDBOX else HOME / "khaos-lab" / "inventory"
+
+DEFAULT_REGION = "us-east-1"
+OK_OBS = {                      # desired status -> observed values that are healthy
+    "active":    {"up", "running"},
+    "on-demand": {"up", "running", "stopped", "down"},
+    "standby":   {"up", "running", "stopped", "down"},
+    "retired":   {"absent"},
+}
+KINDS = ["site", "service", "container", "cloud-instance", "device", "repo", "storage",
+         "job", "account", "domain", "credential"]
+
+
+def now():
+    return datetime.now(timezone.utc).astimezone()
+
+
+def iso(dt=None):
+    return (dt or now()).isoformat(timespec="seconds")
+
+
+def sh(*cmd, timeout=15):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout, r.stderr
+    except Exception as e:
+        return 127, "", str(e)
+
+
+def collapse(p):
+    p = str(p)
+    h = str(HOME)
+    return "~" + p[len(h):] if p.startswith(h) else p
+
+
+# ── provider snapshots (fetched once per scan, shared by probes + discovery) ──
+class Context:
+    def __init__(self, deep=False):
+        self.deep = deep
+        self._c = {}
+
+    def _memo(self, key, fn):
+        if key not in self._c:
+            try:
+                self._c[key] = fn()
+            except Exception:
+                self._c[key] = None
+        return self._c[key]
+
+    def docker(self):                     # name -> state
+        def f():
+            rc, out, _ = sh("docker", "ps", "-a", "--format", "{{.Names}}|{{.State}}")
+            if rc:
+                return None
+            return dict(l.split("|", 1) for l in out.splitlines() if "|" in l)
+        return self._memo("docker", f)
+
+    def units(self, scope):               # unit -> active state ; only what's loaded/known
+        def f():
+            base = ["systemctl"] + (["--user"] if scope == "user" else [])
+            rc, out, _ = sh(*base, "list-units", "--all", "--no-legend", "--plain", "--type=service,timer")
+            units = {}
+            for l in out.splitlines():
+                p = l.split()
+                if len(p) >= 4 and p[1] != "not-found":
+                    units[p[0]] = p[2]        # unit -> active|inactive|failed
+            rc, out, _ = sh(*base, "list-unit-files", "--no-legend", "--plain", "--type=service,timer")
+            for l in out.splitlines():
+                p = l.split()
+                if p and p[0] not in units:
+                    units[p[0]] = "inactive"
+            return units
+        return self._memo(f"units:{scope}", f)
+
+    def tailnet(self):
+        def f():
+            rc, out, _ = sh("tailscale", "status", "--json")
+            d = json.loads(out)
+            nodes = {}
+            s = d.get("Self", {})
+            nodes[(s.get("HostName") or "").strip()] = "up" if s.get("Online") else "down"
+            for p in (d.get("Peer") or {}).values():
+                nodes[(p.get("HostName") or "").strip()] = "up" if p.get("Online") else "down"
+            return nodes
+        return self._memo("tailnet", f)
+
+    def ec2(self):                        # name-or-id -> (state, region, id)
+        def f():
+            regions = [DEFAULT_REGION]
+            if self.deep:
+                rc, out, _ = sh("aws", "ec2", "describe-regions", "--query", "Regions[].RegionName", "--output", "json")
+                if rc == 0:
+                    regions = json.loads(out)
+            res = {}
+            q = 'Reservations[].Instances[].[InstanceId,State.Name,Tags[?Key==`Name`]|[0].Value]'
+
+            def one(r):
+                rc, out, _ = sh("aws", "ec2", "describe-instances", "--region", r, "--query", q, "--output", "json", timeout=30)
+                return r, (json.loads(out) if rc == 0 else None)
+            with cf.ThreadPoolExecutor(8) as ex:
+                for r, rows in ex.map(one, regions):
+                    if rows is None:
+                        if r == DEFAULT_REGION:
+                            return None
+                        continue
+                    for iid, state, name in rows:
+                        res[name or iid] = ("absent" if state == "terminated" else
+                                            "running" if state == "running" else
+                                            "stopped" if state in ("stopped", "stopping") else state, r, iid)
+            return res
+        return self._memo("ec2", f)
+
+    def cf_token(self):
+        for f in (HOME / "dev-notes/surgery-tools/.cftk",):
+            try:
+                for line in f.read_text().splitlines():
+                    if line.startswith("arc-deploy-workers="):
+                        return line.split("=", 1)[1].strip()
+            except Exception:
+                pass
+        return None
+
+    def cloudflare(self):                 # {"cf-worker:name","cf-pages:name"}
+        def f():
+            tok = self.cf_token()
+            if not tok:
+                return None
+            acct = "995c814862b0c8331259a715f6becd93"
+            found = set()
+            ok = False
+            for path, prefix, key in ((f"/accounts/{acct}/workers/scripts", "cf-worker", "id"),
+                                      (f"/accounts/{acct}/pages/projects", "cf-pages", "name")):
+                req = urllib.request.Request("https://api.cloudflare.com/client/v4" + path,
+                                             headers={"Authorization": f"Bearer {tok}"})
+                try:
+                    with urllib.request.urlopen(req, timeout=12) as r:
+                        d = json.load(r)
+                    if d.get("success"):
+                        ok = True
+                        found |= {f"{prefix}:{x[key]}" for x in d.get("result", [])}
+                except Exception:
+                    pass
+            return found if ok else None
+        return self._memo("cloudflare", f)
+
+    def github(self):
+        def f():
+            rc, out, _ = sh("gh", "repo", "list", "kwasikontor45", "--limit", "200", "--json", "name,isArchived", timeout=25)
+            if rc:
+                return None
+            return {f"gh:kwasikontor45/{x['name']}": ("archived" if x["isArchived"] else "live") for x in json.loads(out)}
+        return self._memo("github", f)
+
+    def git_repos(self):
+        def f():
+            out = set()
+            for root in (HOME / "khaos-lab", HOME / "dev-notes"):
+                for dirpath, dirs, _ in os.walk(root):
+                    depth = len(Path(dirpath).relative_to(root).parts)
+                    if ".git" in dirs:
+                        out.add("git:" + collapse(dirpath))
+                        dirs[:] = []
+                        continue
+                    dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", "__pycache__", "notes-site", "inventory") and depth < 3]
+            root_git = HOME / "dev-notes" / ".git"
+            if root_git.exists():
+                out.add("git:~/dev-notes")
+            return out
+        return self._memo("git", f)
+
+    def cron(self):
+        def f():
+            rc, out, _ = sh("crontab", "-l")
+            ids = set()
+            for l in out.splitlines():
+                l = l.strip()
+                if not l or l.startswith("#") or "=" in l.split()[0]:
+                    continue
+                cmd = l.split(None, 5)[-1]
+                m = re.search(r"([\w.-]+)\s*(?:[>|&;]|$)", cmd.split()[0] if cmd.split() else "")
+                tok = Path(cmd.split()[0]).name if cmd.split() else cmd
+                ids.add("cron:" + tok)
+            return ids
+        return self._memo("cron", f)
+
+
+# ── probes: (observed, detail) ───────────────────────────────────────────────
+def probe_http(p, ctx):
+    url = p["url"]
+    expect = p.get("expect")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "arc-inv/1"})
+        with urllib.request.urlopen(req, timeout=int(p.get("timeout", 12))) as r:
+            code = r.status
+    except urllib.error.HTTPError as e:
+        code = e.code
+    except Exception as e:
+        return "down", f"{type(e).__name__}"
+    good = (code in expect) if expect else (200 <= code < 400)
+    return ("up" if good else "down"), f"HTTP {code}"
+
+
+def probe_systemd(p, ctx):
+    units = ctx.units(p.get("scope", "system"))
+    if units is None:
+        return "unknown", "systemctl failed"
+    st = units.get(p["unit"])
+    if st is None:
+        return "absent", "unit not found"
+    return ("running" if st in ("active", "activating") else "stopped"), st
+
+
+def probe_docker(p, ctx):
+    d = ctx.docker()
+    if d is None:
+        return "unknown", "docker unavailable"
+    st = d.get(p["name"])
+    if st is None:
+        return "absent", "no such container"
+    return ("running" if st == "running" else "stopped"), st
+
+
+def probe_ec2(p, ctx):
+    e = ctx.ec2()
+    if e is None:
+        return "unknown", "aws unreachable"
+    hit = e.get(p["name"])
+    if hit is None:
+        return "absent", "no such instance"
+    return hit[0], f"{hit[2]} {hit[1]}"
+
+
+def probe_tailnet(p, ctx):
+    t = ctx.tailnet()
+    if t is None:
+        return "unknown", "tailscale unavailable"
+    st = t.get(p["node"])
+    return (st, "tailnet node") if st else ("absent", "not on tailnet")
+
+
+def probe_path(p, ctx):
+    path = Path(os.path.expanduser(p["path"]))
+    return ("up", "exists") if path.exists() else ("absent", "missing")
+
+
+def probe_git(p, ctx):
+    path = Path(os.path.expanduser(p["path"]))
+    if not (path / ".git").exists():
+        return "absent", "not a git repo / missing"
+    rc, out, _ = sh("git", "-C", str(path), "remote")
+    return "up", (f"remotes: {', '.join(out.split()) or 'none (local only)'}")
+
+
+def probe_dns(p, ctx):
+    try:
+        socket.getaddrinfo(p["name"], None)
+        return "up", "resolves"
+    except socket.gaierror:
+        return "absent", "does not resolve"
+    except Exception:
+        return "unknown", "resolver error"
+
+
+def probe_mount(p, ctx):
+    return ("up", "mounted") if os.path.ismount(p["path"]) else ("down", "not mounted")
+
+
+def probe_github(p, ctx):
+    g = ctx.github()
+    if g is None:
+        return "unknown", "gh unavailable"
+    st = g.get(f"gh:kwasikontor45/{p['repo']}")
+    if st is None:
+        return "absent", "no such repo"
+    return ("up", "live") if st == "live" else ("stopped", "archived")
+
+
+def probe_cloudflare(p, ctx):
+    c = ctx.cloudflare()
+    if c is None:
+        return "unknown", "cloudflare api unavailable"
+    return ("up", "deployed") if p["name"] in c else ("absent", "not on the account")
+
+
+def probe_manual(p, ctx):
+    return "manual", "attested, not probed"
+
+
+PROBES = {"http": probe_http, "systemd": probe_systemd, "docker": probe_docker, "aws-ec2": probe_ec2,
+          "tailnet": probe_tailnet, "path": probe_path, "git": probe_git, "dns": probe_dns,
+          "mount": probe_mount, "github": probe_github, "cloudflare": probe_cloudflare, "manual": probe_manual}
+
+
+def identity_of(asset):
+    """Stable key linking a registered asset to what discovery finds."""
+    ids = list(asset.get("identity", []) if isinstance(asset.get("identity"), list) else
+               ([asset["identity"]] if asset.get("identity") else []))
+    p = asset.get("probe") or {}
+    t = p.get("type")
+    if t == "systemd":
+        ids.append(f"systemd:{p.get('scope', 'system')}:{p['unit']}")
+    elif t == "docker":
+        ids.append(f"docker:{p['name']}")
+    elif t == "aws-ec2":
+        ids.append(f"ec2:{p['name']}")
+    elif t == "tailnet":
+        ids.append(f"ts:{p['node']}")
+    elif t == "git":
+        ids.append("git:" + collapse(os.path.expanduser(p["path"])))
+    elif t == "github":
+        ids.append(f"gh:kwasikontor45/{p['repo']}")
+    elif t == "cloudflare":
+        ids.append(p["name"])
+    return ids
+
+
+# ── discovery ────────────────────────────────────────────────────────────────
+def discover(ctx):
+    found = {}                             # identity -> {kind, label, detail}
+
+    def add(ident, kind, label, detail=""):
+        found[ident] = {"kind": kind, "label": label, "detail": detail}
+    d = ctx.docker()
+    for n, st in (d or {}).items():
+        add(f"docker:{n}", "container", n, st)
+    e = ctx.ec2()
+    for n, (st, region, iid) in (e or {}).items():
+        if st != "absent":
+            add(f"ec2:{n}", "cloud-instance", n, f"{st} in {region} ({iid})")
+    for scope in ("system", "user"):
+        units = ctx.units(scope) or {}
+        for u, st in units.items():
+            if u.endswith(".service") and u[:-8] + ".timer" in units:
+                continue                                  # timer's payload -- the timer is the asset
+            if u.endswith("@.service"):
+                continue                                  # template, not a runnable thing
+            if re.match(r"(arc-|notes-site|sagan|evebox)", u):
+                add(f"systemd:{scope}:{u}", "job" if u.endswith(".timer") else "service", u, f"{scope} {st}")
+    for n, st in (ctx.tailnet() or {}).items():
+        add(f"ts:{n}", "device", n, f"tailnet {st}")
+    for g in (ctx.git_repos() or set()):
+        add(g, "repo", g[4:], "local git repo")
+    for c in (ctx.cloudflare() or set()):
+        add(c, "site", c, "Cloudflare")
+    for g, st in (ctx.github() or {}).items():
+        add(g, "repo", g[3:], f"GitHub ({st})")
+    for c in (ctx.cron() or set()):
+        add(c, "job", c[5:], "crontab")
+    return found
+
+
+# ── registry ─────────────────────────────────────────────────────────────────
+class Registry:
+    def __init__(self):
+        self.path = REGISTRY
+
+    def load(self):
+        with open(self.path, "rb") as f:
+            d = tomllib.load(f)
+        self.meta = d.get("meta", {})
+        self.assets = d.get("asset", [])
+        self.ignores = d.get("ignore", [])
+        ids = [a["id"] for a in self.assets]
+        dup = {i for i in ids if ids.count(i) > 1}
+        if dup:
+            raise SystemExit(f"registry: duplicate ids {sorted(dup)}")
+        return self
+
+    def by_id(self):
+        return {a["id"]: a for a in self.assets}
+
+    def ignored(self):
+        return {i["identity"] for i in self.ignores}
+
+    # text-level edits keep the file human-formatted and commented
+    def _text(self):
+        return self.path.read_text()
+
+    def _write(self, text):
+        tomllib.loads(text)                               # must still parse
+        shutil.copy(self.path, str(self.path) + ".bak")
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(text)
+        os.replace(tmp, self.path)
+
+    def _blocks(self, text):
+        parts = re.split(r"(?m)^(?=\[\[asset\]\])", text)
+        return parts[0], parts[1:]
+
+    def set_fields(self, asset_id, fields):
+        head, blocks = self._blocks(self._text())
+        hit = False
+        for i, b in enumerate(blocks):
+            if re.search(rf'(?m)^id\s*=\s*"{re.escape(asset_id)}"\s*$', b):
+                hit = True
+                for k, v in fields.items():
+                    line = f'{k} = "{v}"'
+                    if re.search(rf"(?m)^{k}\s*=", b):
+                        b = re.sub(rf"(?m)^{k}\s*=.*$", line, b)
+                    else:
+                        b = b.rstrip("\n") + "\n" + line + "\n\n"
+                blocks[i] = b
+        if not hit:
+            raise SystemExit(f"no such asset: {asset_id}")
+        self._write(head + "".join(blocks))
+
+    def append_asset(self, a):
+        lines = ["[[asset]]"] + [f'{k} = "{v}"' for k, v in a.items()]
+        text = self._text().rstrip("\n") + "\n\n" + "\n".join(lines) + "\n"
+        self._write(text)
+
+    def append_ignore(self, identity, reason):
+        text = self._text().rstrip("\n") + f'\n\n[[ignore]]\nidentity = "{identity}"\nreason = "{reason}"\n'
+        self._write(text)
+
+
+# ── ledger (append-only, hash-chained) ───────────────────────────────────────
+class Ledger:
+    def __init__(self):
+        self.path = LEDGER
+
+    def _last(self):
+        if not self.path.exists():
+            return 0, "0" * 64
+        last = None
+        with open(self.path) as f:
+            for last in f:
+                pass
+        if not last:
+            return 0, "0" * 64
+        d = json.loads(last)
+        return d["seq"], d["hash"]
+
+    @staticmethod
+    def _h(prev, body):
+        return hashlib.sha256((prev + json.dumps(body, sort_keys=True, separators=(",", ":"))).encode()).hexdigest()
+
+    def append(self, event, asset_id="", actor="scan", **data):
+        seq, prev = self._last()
+        body = {"seq": seq + 1, "ts": iso(), "event": event, "id": asset_id, "actor": actor, "data": data}
+        body["prev"] = prev
+        body["hash"] = self._h(prev, {k: v for k, v in body.items() if k not in ("prev", "hash")})
+        INV_DIR.mkdir(parents=True, exist_ok=True)
+        with open(self.path, "a") as f:
+            f.write(json.dumps(body, sort_keys=True) + "\n")
+
+    def entries(self):
+        if not self.path.exists():
+            return []
+        with open(self.path) as f:
+            return [json.loads(l) for l in f if l.strip()]
+
+    def verify(self):
+        prev = "0" * 64
+        for i, e in enumerate(self.entries(), 1):
+            body = {k: v for k, v in e.items() if k not in ("prev", "hash")}
+            if e["prev"] != prev or e["seq"] != i or e["hash"] != self._h(prev, body):
+                return False, i
+            prev = e["hash"]
+        return True, i if self.path.exists() else 0
+
+
+# ── state + reconciliation ───────────────────────────────────────────────────
+class Books:
+    def __init__(self):
+        self.reg = Registry().load()
+        self.ledger = Ledger()
+        try:
+            self.state = json.loads(STATE.read_text())
+        except Exception:
+            self.state = {}
+        self.state.setdefault("assets", {})
+        self.state.setdefault("untracked", {})
+        self.notes = []                                   # (urgency, summary, body) to send
+
+    def save(self):
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = STATE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.state, indent=1, sort_keys=True))
+        os.replace(tmp, STATE)
+
+    # -- health of one asset ------------------------------------------------
+    def assess(self, a, obs, detail, st):
+        desired = a.get("status", "active")
+        today = date.today()
+        problems = []
+        health = "ok"
+        if desired in ("retiring", "planned"):
+            health = "info"
+        elif obs == "unknown":
+            health = "unknown"
+        elif obs == "manual":
+            every = int(a.get("review_every_days", self.reg.meta.get("review_default_days", 90)))
+            rv = a.get("reviewed")
+            if desired == "retired":
+                health = "ok"
+            elif not rv:
+                health, problems = "attention", ["never attested -- verify and run: arc inv review " + a["id"]]
+            elif (today - date.fromisoformat(rv)).days > every:
+                health, problems = "attention", [f"review overdue ({(today - date.fromisoformat(rv)).days}d > {every}d)"]
+        else:
+            ok = OK_OBS.get(desired, set())
+            if obs not in ok:
+                need = 1 if a.get("criticality") == "high" else 2
+                st["fail_streak"] = st.get("fail_streak", 0) + 1
+                reason = (f"zombie: retired but still present ({detail})" if desired == "retired"
+                          else f"expected {'/'.join(sorted(ok))}, observed {obs} ({detail})")
+                if st["fail_streak"] >= need:
+                    health, problems = "drift", [reason]
+                else:
+                    health, problems = "ok", [f"possible drift, confirming ({st['fail_streak']}/{need})"]
+            else:
+                st["fail_streak"] = 0
+        exp = a.get("expires_on")
+        if exp and desired != "retired":
+            days = (date.fromisoformat(exp) - today).days
+            if days < 0:
+                health, problems = "drift", problems + [f"EXPIRED {-days}d ago ({exp})"]
+            elif days <= 30:
+                health = "attention" if health == "ok" else health
+                problems.append(f"expires in {days}d ({exp})")
+        return health, problems
+
+    def scan(self, deep=False, quiet=False):
+        ctx = Context(deep=deep)
+        assets = self.reg.assets
+        t_scan = iso()
+        # run probes (http in parallel)
+        results = {}
+
+        def run(a):
+            p = a.get("probe") or {"type": "manual"}
+            fn = PROBES.get(p.get("type"))
+            if not fn:
+                return a["id"], ("unknown", f"bad probe type {p.get('type')}")
+            try:
+                return a["id"], fn(p, ctx)
+            except Exception as e:
+                return a["id"], ("unknown", f"{type(e).__name__}: {e}")
+        with cf.ThreadPoolExecutor(12) as ex:
+            for aid, r in ex.map(run, assets):
+                results[aid] = r
+        # Suspected drift on an asset we have no failure history for: re-probe once
+        # with FRESH provider data before believing it. Real problems then surface in
+        # this scan (not 30 min later); blips (a slow curl, a systemctl hiccup) are
+        # filtered and never reach the ledger or a notification.
+        suspects = []
+        for a in assets:
+            obs, _d = results[a["id"]]
+            desired = a.get("status", "active")
+            prior = self.state["assets"].get(a["id"], {}).get("fail_streak", 0)
+            if desired in OK_OBS and obs not in ("manual", "unknown") and obs not in OK_OBS[desired] and prior == 0:
+                suspects.append(a)
+        if suspects:
+            ctx2 = Context(deep=False)
+            def rerun(a):
+                p = a.get("probe") or {"type": "manual"}
+                try:
+                    return a["id"], PROBES[p["type"]](p, ctx2)
+                except Exception as e:
+                    return a["id"], ("unknown", f"{type(e).__name__}")
+            with cf.ThreadPoolExecutor(6) as ex:
+                for aid, r2 in ex.map(rerun, suspects):
+                    if r2[0] == results[aid][0]:
+                        self.state["assets"].setdefault(aid, {"first_seen": t_scan})["fail_streak"] = 1   # confirmed once already
+                    results[aid] = r2
+        changed = 0
+        for a in assets:
+            aid = a["id"]
+            obs, detail = results[aid]
+            st = self.state["assets"].setdefault(aid, {"first_seen": t_scan})
+            prev_obs, prev_health = st.get("observed"), st.get("health")
+            health, problems = self.assess(a, obs, detail, st)
+            if obs != "unknown":
+                st["last_probe_ok"] = t_scan
+            st.update(observed=obs, detail=detail, health=health, problems=problems, last_probe=t_scan)
+            if prev_obs != obs:
+                st["observed_since"] = t_scan
+                if prev_obs is not None:
+                    changed += 1
+                    self.ledger.append("state_change", aid, frm=prev_obs, to=obs, detail=detail)
+            elif "observed_since" not in st:
+                st["observed_since"] = t_scan
+            if prev_health != health and prev_health is not None:
+                self.ledger.append("health_change", aid, frm=prev_health, to=health, problems=problems)
+                if health == "drift":
+                    self.notes.append(("critical" if a.get("criticality") == "high" else "normal",
+                                       f"DRIFT: {a.get('name', aid)}", "; ".join(problems)))
+                elif prev_health == "drift" and health in ("ok", "info"):
+                    self.notes.append(("low", f"recovered: {a.get('name', aid)}", f"now {obs}"))
+                elif health == "attention" and prev_health == "ok":
+                    self.notes.append(("low", f"needs attention: {a.get('name', aid)}", "; ".join(problems)))
+        # discovery -> untracked queue
+        found = discover(ctx)
+        covered = set()
+        for a in assets:
+            covered.update(identity_of(a))
+        covered |= self.reg.ignored()
+        seen_now = set()
+        for ident, info in found.items():
+            if ident in covered:
+                continue
+            seen_now.add(ident)
+            u = self.state["untracked"].get(ident)
+            if u is None:
+                self.state["untracked"][ident] = dict(info, first_seen=t_scan, last_seen=t_scan)
+                self.ledger.append("discovered", ident, kind=info["kind"], detail=info["detail"])
+                self.notes.append(("normal", f"unregistered {info['kind']}: {info['label']}",
+                                   f"{info['detail']} -- adopt or ignore: arc inv adopt {ident}"))
+            else:
+                u.update(info, last_seen=t_scan)
+        for ident in list(self.state["untracked"]):
+            if ident not in seen_now:
+                self.ledger.append("untracked_gone", ident)
+                del self.state["untracked"][ident]
+        # deep-only sources that failed shouldn't silently look like "nothing found"
+        self.state["scan"] = {"at": t_scan, "deep": deep, "assets": len(assets), "changed": changed,
+                              "sources": {"docker": ctx.docker() is not None, "aws": ctx.ec2() is not None,
+                                          "tailnet": ctx.tailnet() is not None, "cloudflare": ctx.cloudflare() is not None,
+                                          "github": ctx.github() is not None}}
+        if deep:
+            self.state["last_deep"] = t_scan
+        self.save()
+        self.report()
+        if not quiet:
+            self.summary()
+        self._notify()
+
+    def _notify(self):
+        helper = HOME / ".local/bin/arc-pine-notify"
+        if _SANDBOX or not helper.exists() or not self.notes:
+            return
+        shown = self.notes[:4]
+        for urg, summ, body in shown:
+            subprocess.Popen([str(helper), urg, "arc-inv", summ, body], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        if len(self.notes) > 4:
+            subprocess.Popen([str(helper), "normal", "arc-inv", f"+{len(self.notes) - 4} more inventory changes",
+                              "see: arc inv drift"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+
+    # -- views --------------------------------------------------------------
+    def view(self):
+        rows = []
+        for a in self.reg.assets:
+            st = self.state["assets"].get(a["id"], {})
+            rows.append({**a, "observed": st.get("observed", "?"), "detail": st.get("detail", ""),
+                         "health": st.get("health", "?"), "problems": st.get("problems", []),
+                         "since": st.get("observed_since", ""), "last_ok": st.get("last_probe_ok", "")})
+        return rows
+
+    def counts(self, rows=None):
+        rows = rows or self.view()
+        c = {}
+        for r in rows:
+            c[r["health"]] = c.get(r["health"], 0) + 1
+        return c
+
+    def summary(self):
+        rows = self.view()
+        c = self.counts(rows)
+        sc = self.state.get("scan", {})
+        print(f"\n  inventory: {len(rows)} assets  |  " + "  ".join(f"{k} {v}" for k, v in sorted(c.items())) +
+              f"  |  untracked {len(self.state['untracked'])}  |  scan {sc.get('at', 'never')}")
+        bad = [r for r in rows if r["health"] in ("drift", "attention", "unknown")]
+        for r in bad:
+            print(f"    [{r['health']:<9}] {r['id']:<34} {'; '.join(r['problems']) or r['observed']}")
+        for ident, u in sorted(self.state["untracked"].items()):
+            print(f"    [untracked] {ident:<34} {u['detail']}")
+        if not bad and not self.state["untracked"]:
+            print("    all accounted for")
+        print()
+
+    # -- reports ------------------------------------------------------------
+    def report(self):
+        rows = self.view()
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        ok, n = self.ledger.verify()
+        data = {"generated": iso(), "scan": self.state.get("scan"), "counts": self.counts(rows),
+                "ledger": {"verified": ok, "entries": n}, "assets": rows,
+                "untracked": [dict(identity=k, **v) for k, v in sorted(self.state["untracked"].items())],
+                "recent": self.ledger.entries()[-30:][::-1]}
+        (OUT_DIR / "inventory.json").write_text(json.dumps(data, indent=1, sort_keys=True))
+        (OUT_DIR / "inventory.md").write_text(self._markdown(data))
+
+    def _markdown(self, d):
+        rows = d["assets"]
+        L = ["# Inventory", "",
+             f"*Generated {d['generated']} by `arc-inv` from the register + a live scan "
+             f"(last scan {d['scan']['at'] if d['scan'] else 'never'}). Nothing here is hand-written: "
+             "edit `~/dev-notes/intel-ops/inventory/registry.toml`, then `arc inv scan`.*", "",
+             "**" + " · ".join(f"{k}: {v}" for k, v in sorted(d["counts"].items())) +
+             f" · untracked: {len(d['untracked'])} · ledger {'verified' if d['ledger']['verified'] else 'BROKEN'} "
+             f"({d['ledger']['entries']} entries)**", ""]
+        attn = [r for r in rows if r["health"] in ("drift", "attention", "unknown")]
+        L += ["## Needs attention", ""]
+        if attn or d["untracked"]:
+            L += ["| id | health | detail |", "|---|---|---|"]
+            for r in attn:
+                L.append(f"| {r['id']} | {r['health']} | {'; '.join(r['problems']) or r['observed']} |")
+            for u in d["untracked"]:
+                L.append(f"| {u['identity']} | untracked | {u['detail']} -- adopt or ignore |")
+        else:
+            L.append("Nothing. Every registered asset matches its desired state and nothing unregistered was found.")
+        L.append("")
+        live = [r for r in rows if r.get("status") != "retired"]
+        for kind in KINDS:
+            ks = [r for r in live if r["kind"] == kind]
+            if not ks:
+                continue
+            L += [f"## {kind}s", "", "| id | name | desired | observed | health | purpose / where |", "|---|---|---|---|---|---|"]
+            for r in ks:
+                where = r.get("url") or r.get("purpose", "")
+                L.append(f"| {r['id']} | {r.get('name', '')} | {r.get('status', 'active')} | {r['observed']} | "
+                         f"{r['health']} | {where} |")
+            L.append("")
+        ret = [r for r in rows if r.get("status") == "retired"]
+        if ret:
+            L += ["## Retired (verified absent where checkable)", "", "| id | retired | reason | verified now |", "|---|---|---|---|"]
+            for r in ret:
+                L.append(f"| {r['id']} | {r.get('retired_on', '?')} | {r.get('retired_reason', '')} | "
+                         f"{'gone' if r['observed'] == 'absent' else 'attested' if r['observed'] == 'manual' else 'STILL PRESENT'} |")
+            L.append("")
+        L += ["## Recent ledger events", "", "| when | event | asset | detail |", "|---|---|---|---|"]
+        for e in d["recent"][:20]:
+            L.append(f"| {e['ts'][:16]} | {e['event']} | {e['id']} | {json.dumps(e['data'])[:90]} |")
+        return "\n".join(L) + "\n"
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+def cmd_list(b, args):
+    for r in b.view():
+        if args.filter and args.filter not in (r["kind"], r.get("status"), r["health"]):
+            continue
+        print(f"  {r['id']:<34} {r['kind']:<15} {r.get('status', 'active'):<10} {r['observed']:<9} {r['health']}")
+
+
+def cmd_show(b, args):
+    r = {x["id"]: x for x in b.view()}.get(args.id)
+    if not r:
+        raise SystemExit("no such asset")
+    for k, v in r.items():
+        print(f"  {k:<18} {v}")
+    print("\n  history:")
+    for e in [e for e in b.ledger.entries() if e["id"] == args.id][-8:]:
+        print(f"    {e['ts'][:16]}  {e['event']:<14} {json.dumps(e['data'])[:90]}")
+
+
+def cmd_drift(b, args):
+    b.summary()
+
+
+def cmd_untracked(b, args):
+    for ident, u in sorted(b.state["untracked"].items()):
+        print(f"  {ident:<40} {u['kind']:<15} {u['detail']}   (first seen {u['first_seen'][:10]})")
+    if not b.state["untracked"]:
+        print("  none")
+
+
+def cmd_adopt(b, args):
+    u = b.state["untracked"].get(args.identity)
+    kind = args.kind or (u or {}).get("kind")
+    if not kind:
+        raise SystemExit("need --kind")
+    ident = args.identity
+    probe = None
+    typ, _, rest = ident.partition(":")
+    if typ == "docker":
+        probe = f'probe = {{ type = "docker", name = "{rest}" }}'
+    elif typ == "ec2":
+        probe = f'probe = {{ type = "aws-ec2", name = "{rest}" }}'
+    elif typ == "ts":
+        probe = f'probe = {{ type = "tailnet", node = "{rest}" }}'
+    elif typ == "git":
+        probe = f'probe = {{ type = "git", path = "{rest}" }}'
+    elif typ == "systemd":
+        scope, _, unit = rest.partition(":")
+        probe = f'probe = {{ type = "systemd", scope = "{scope}", unit = "{unit}" }}'
+    a = {"id": args.id, "name": args.name or (u or {}).get("label", args.id), "kind": kind,
+         "status": args.status, "criticality": "medium", "purpose": args.purpose or "(describe me)",
+         "added": str(date.today())}
+    text = "[[asset]]\n" + "\n".join(f'{k} = "{v}"' for k, v in a.items())
+    if probe:
+        text += "\n" + probe
+    else:
+        text += f'\nidentity = ["{ident}"]\nprobe = {{ type = "manual" }}'
+    reg = Registry().load()
+    reg._write(reg._text().rstrip("\n") + "\n\n" + text + "\n")
+    b.ledger.append("asset_added", args.id, actor="cli", identity=ident, kind=kind)
+    print(f"  adopted {ident} as {args.id} -- edit purpose/criticality in registry.toml, then: arc inv scan")
+
+
+def cmd_ignore(b, args):
+    Registry().load().append_ignore(args.identity, args.reason)
+    b.ledger.append("ignored", args.identity, actor="cli", reason=args.reason)
+    print("  ignored:", args.identity)
+
+
+def cmd_retire(b, args):
+    a = b.reg.by_id().get(args.id)
+    if not a:
+        raise SystemExit("no such asset")
+    b.reg.set_fields(args.id, {"status": "retired", "retired_on": str(date.today()), "retired_reason": args.reason})
+    b.ledger.append("asset_retired", args.id, actor="cli", reason=args.reason)
+    print(f"  {args.id} retired -- the next scan probes that it is really gone (zombies show as drift)."
+          " Retirement checklist: data disposed/archived, credentials revoked, DNS removed, billing stopped.")
+
+
+def cmd_review(b, args):
+    b.reg.set_fields(args.id, {"reviewed": str(date.today())})
+    b.ledger.append("review_attested", args.id, actor="cli")
+    print(f"  {args.id} attested as reviewed today")
+
+
+def cmd_history(b, args):
+    es = b.ledger.entries()
+    if args.id:
+        es = [e for e in es if e["id"] == args.id]
+    for e in es[-40:]:
+        print(f"  #{e['seq']:<5} {e['ts'][:16]}  {e['event']:<15} {e['id']:<30} {json.dumps(e['data'])[:80]}")
+
+
+def cmd_verify(b, args):
+    ok, n = b.ledger.verify()
+    print(f"  ledger: {n} entries, chain " + ("INTACT" if ok else f"BROKEN at entry {n}"))
+    sys.exit(0 if ok else 1)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="arc-inv", add_help=False)
+    sub = ap.add_subparsers(dest="cmd")
+    s = sub.add_parser("scan"); s.add_argument("--deep", action="store_true"); s.add_argument("--quiet", action="store_true")
+    s = sub.add_parser("list"); s.add_argument("filter", nargs="?")
+    s = sub.add_parser("show"); s.add_argument("id")
+    sub.add_parser("drift"); sub.add_parser("untracked"); sub.add_parser("verify"); sub.add_parser("report")
+    s = sub.add_parser("adopt"); s.add_argument("identity"); s.add_argument("--id", required=True)
+    s.add_argument("--kind"); s.add_argument("--name"); s.add_argument("--status", default="active"); s.add_argument("--purpose")
+    s = sub.add_parser("ignore"); s.add_argument("identity"); s.add_argument("--reason", required=True)
+    s = sub.add_parser("retire"); s.add_argument("id"); s.add_argument("--reason", required=True)
+    s = sub.add_parser("review"); s.add_argument("id")
+    s = sub.add_parser("history"); s.add_argument("id", nargs="?")
+    args = ap.parse_args()
+    if args.cmd in (None, "help"):
+        if args.cmd is None and STATE.exists():
+            Books().summary()
+            print("  arc inv help | scan | list | show <id> | drift | untracked | adopt | retire | review | history\n")
+        else:
+            print(__doc__)
+        return
+    b = Books()
+    if args.cmd == "scan":
+        deep = args.deep
+        last = b.state.get("last_deep")
+        if not deep and (not last or (now() - datetime.fromisoformat(last)) > timedelta(hours=24)):
+            deep = True                                   # cheap enough once a day: every AWS region
+        b.scan(deep=deep, quiet=args.quiet)
+    elif args.cmd == "report":
+        b.report(); print("  reports written to", collapse(OUT_DIR))
+    else:
+        {"list": cmd_list, "show": cmd_show, "drift": cmd_drift, "untracked": cmd_untracked, "adopt": cmd_adopt,
+         "ignore": cmd_ignore, "retire": cmd_retire, "review": cmd_review, "history": cmd_history,
+         "verify": cmd_verify}[args.cmd](b, args)
+
+
+if __name__ == "__main__":
+    main()

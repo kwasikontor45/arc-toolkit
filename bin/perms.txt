@@ -19,6 +19,7 @@
 711 arc-gate-bypass
 711 arc-heal
 750 arc-home-sweep
+775 arc-inv
 711 arc-kismet
 755 arc-login-bg
 711 arc-lynis-check

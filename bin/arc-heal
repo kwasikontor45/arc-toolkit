@@ -253,6 +253,32 @@ check_watcher_daemons() {
   done
 }
 
+check_inventory() {
+  # Added 2026-09-19 with arc-inv. Two jobs: (1) the scanner itself must not die
+  # silently -- if the state is >3h old, re-run it (self-heal); (2) surface real
+  # drift (an asset not in its desired state, a zombie retired resource) here so
+  # it shows up alongside every other finding. "never attested" items are NOT
+  # flagged here -- they're a standing to-do list in `arc inv`, not a fault.
+  local inv="$HOME/.local/bin/arc-inv" state="$HOME/.local/state/arc-inv/state.json" age=999999
+  [[ -x "$inv" ]] || return 0
+  [[ -f "$state" ]] && age=$(( $(date +%s) - $(stat -c %Y "$state") ))
+  if (( age > 10800 )); then
+    if "$inv" scan --quiet >/dev/null 2>&1; then
+      note "HEALED::inventory::scan was ${age}s stale (timer not firing?), re-ran it"
+    else
+      note "FLAG::inventory::scan is ${age}s stale and a re-run failed — check: arc inv scan; systemctl --user status arc-inv-scan"
+      return
+    fi
+  fi
+  local drift
+  drift=$(python3 -c "import json;d=json.load(open('$state'));print(sum(1 for v in d['assets'].values() if v.get('health')=='drift'))" 2>/dev/null)
+  if [[ "${drift:-0}" -gt 0 ]]; then
+    note "FLAG::inventory::${drift} asset(s) drifting from their desired state — run: arc inv drift"
+  else
+    note "OK::inventory::no drift, scan ${age}s old"
+  fi
+}
+
 check_docker_health() {
   # Real gap closed 2026-08-22: sagan sat crash-looping (122 restarts,
   # stale pidfile bug) with nothing catching it until a manual check
@@ -304,7 +330,8 @@ check_aws_lab_idle() {
   _aws_lab_conf_quiet || return 0
   command -v aws >/dev/null 2>&1 || return 0
   local any_flagged=0
-  for pair in "gvm:$GVM_INSTANCE_ID:gvm" "soclab:$SOCLAB_INSTANCE_ID:soc-lab"; do
+  for pair in "gvm:$GVM_INSTANCE_ID:gvm" "soclab:$SOCLAB_INSTANCE_ID:soc-lab" "wazuh:${WAZUH_INSTANCE_ID:-x}:wazuh"; do
+    [[ "$pair" == wazuh:x:* ]] && continue   # not configured
     local label="${pair%%:*}"; local rest="${pair#*:}"; local iid="${rest%%:*}"; local arc_sub="${rest#*:}"
     local info; info=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
       --query 'Reservations[0].Instances[0].{State:State.Name,Launch:LaunchTime}' --output json 2>/dev/null)
@@ -555,6 +582,7 @@ check_dns_leak
 check_mirror_freshness
 check_watcher_daemons
 check_docker_health
+check_inventory
 check_cron_health
 check_arc_sot_drift
 check_aws_lab_idle

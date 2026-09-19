@@ -1,0 +1,9 @@
+[Unit]
+Description=arc-site-build — rebuild the private notes site (renders the live inventory)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/build-notes-site
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+TimeoutStartSec=300
+Nice=10

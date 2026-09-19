@@ -1,0 +1,10 @@
+[Unit]
+Description=Recompile the master book daily
+
+[Timer]
+OnCalendar=*-*-* 05:10:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

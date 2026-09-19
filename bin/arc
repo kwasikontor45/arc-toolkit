@@ -4447,7 +4447,9 @@ cmd_help() {
   echo -e "  ${D}arc ${C}evebox open${N}           ${M}open the web UI (http://127.0.0.1:5636)${N}"
   echo -e "  ${D}arc ${C}soc-lab${N}               ${M}status of the Splunk + SQL Server + Nessus lab containers${N}"
   echo -e "  ${D}arc ${C}soc-lab start/stop/restart/logs${N}  ${M}manage all three containers (docker compose under the hood)${N}"
-  echo -e "  ${D}arc ${C}aws-status${N}             ${M}quick combined snapshot -- both cloud instances + budget spend${N}"
+  echo -e "  ${D}arc ${C}aws-status${N}             ${M}quick combined snapshot -- all three cloud instances (gvm/soclab/wazuh) + budget spend${N}"
+  echo -e "  ${D}arc ${C}wazuh cloud-start|stop|status|open${N}  ${M}wazuh-cloud (Wazuh SIEM, on-demand EC2)${N}"
+  echo -e "  ${D}arc ${C}wazuh otx-sync${N}          ${M}pull AlienVault OTX pulses into wazuh-cloud's threat-intel lists${N}"
   echo -e "  ${D}arc ${C}gvm${N}                   ${M}GVM/OpenVAS -- local removed 2026-08-31, moving to on-demand AWS${N}"
   echo -e "  ${D}arc ${C}zap${N}                   ${M}OWASP ZAP web app scanner (manual-start, lab-only targets by default)${N}"
   echo -e "  ${D}arc ${C}darkstat${N}              ${M}live traffic dashboard (manual-start, loopback only)${N}"
@@ -4572,6 +4574,11 @@ cmd_help() {
   echo -e "  ${D}arc ${C}find ${W}<query>${N}          ${M}search across arc-lt-cmc + dev-notes + khaos-lab + vault/archive${N}"
   echo -e "  ${D}arc ${C}book${N}                  ${M}compiled reference archive (master-book.md) — stats${N}"
   echo -e "  ${D}arc ${C}book rebuild${N}          ${M}recompile it from current notes${N}"
+  echo -e "  ${D}arc ${C}inv${N}                   ${M}inventory & accounting -- what we have vs what we say we have (drift, untracked, expiring)${N}"
+  echo -e "  ${D}arc ${C}inv scan${N}              ${M}probe + discover everything now (also runs every 30 min)${N}"
+  echo -e "  ${D}arc ${C}inv list|show|drift|untracked${N}  ${M}browse the register / see what needs attention${N}"
+  echo -e "  ${D}arc ${C}inv adopt|ignore|retire|review${N}  ${M}record a new asset / dismiss noise / decommission / attest a manual item${N}"
+  echo -e "  ${D}arc ${C}inv history|verify${N}    ${M}the tamper-evident change ledger${N}"
   echo -e "  ${D}arc ${C}site${N}                  ${M}private notes dashboard — local disk, tailnet-only, guarded (status)${N}"
   echo -e "  ${D}arc ${C}site build${N}            ${M}rebuild it from current notes${N}"
   echo -e "  ${D}arc ${C}site open${N}             ${M}open it here in your browser${N}"
@@ -5716,7 +5723,7 @@ _aws_lab_check_local_docker() {
 }
 
 cmd_aws_status() {
-  # Quick combined snapshot -- both cloud instances + budget spend, one
+  # Quick combined snapshot -- all three cloud instances + budget spend, one
   # command. Queries AWS directly rather than round-tripping through the
   # khaos-lab-credit-demo Lambda -- lower latency, no dependency on that
   # function staying deployed (it exists for its own reasons, this doesn't
@@ -5725,7 +5732,8 @@ cmd_aws_status() {
   echo -e "$HR"
   echo -e "  ${C}${B}arc aws-status${N}"
   echo -e "$HR\n"
-  for pair in "gvm-cloud:$GVM_INSTANCE_ID" "soclab-cloud:$SOCLAB_INSTANCE_ID"; do
+  for pair in "gvm-cloud:$GVM_INSTANCE_ID" "soclab-cloud:$SOCLAB_INSTANCE_ID" "wazuh-cloud:${WAZUH_INSTANCE_ID:-}"; do
+    [[ "${pair#*:}" == "" ]] && continue
     local label="${pair%%:*}"; local iid="${pair#*:}"
     local state; state=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
       --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
@@ -6288,6 +6296,7 @@ case "${1:-}" in
   find)           cmd_find "${2:-}" ;;
   book)           cmd_book "${2:-}" ;;
   site)           cmd_site "${@:2}" ;;
+  inv|inventory)  "$HOME/.local/bin/arc-inv" "${@:2}" ;;
   emoji)          cmd_emoji "${2:-}" "${@:3}" ;;
   hq)             cmd_hq "${2:-}" ;;
   top)            cmd_top ;;

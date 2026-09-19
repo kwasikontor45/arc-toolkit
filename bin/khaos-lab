@@ -4,57 +4,88 @@ khaos-lab — central control panel for the arc toolkit.
 Renamed twice 2026-08-26 (control panel -> khaos-panel -> khaos-klinik ->
 khaos-lab), user's own call each time -- keep it simple stuck.
 
-A lightweight GUI front-end over the `arc` CLI you already have. Every
-button here shells out to the exact same `arc <subcommand>` (or a small,
-well-understood handful of raw commands for live status) already built,
-tested, and running on this machine -- this does not reimplement any
-logic, it's a dashboard/launcher over what already works.
+A lightweight GUI front-end over the `arc` CLI you already have. Every button
+shells out to the same `arc <subcommand>` (or a small handful of raw commands
+for live status) already built and running on this machine -- this does not
+reimplement logic, it's a dashboard/launcher over what already works. The one
+exception is reading generated JSON (khaos-lab/inventory/inventory.json) for
+the Inventory view.
 
-Manual-start only, same principle as arc-break/arc-pine/darkstat/zap --
-no autostart entry, nothing brings this up on its own.
+Manual-start only, same principle as arc-break/arc-pine/darkstat/zap -- no
+autostart entry, nothing brings this up on its own.
 
-Layout: left sidebar picks a category, right side shows that category's
-actions, bottom is a shared output console (every action's real stdout/
-stderr lands there) plus a free-form command box for anything not
-covered by a button.
+Layout: left sidebar picks a category, right side shows that category's view,
+bottom is a shared output console (every action's real stdout/stderr lands
+there).
+
+Structure (rewritten class-based 2026-09-19 -- it used to be one 1,300-line
+main() of nested closures, which is where most of its bugs came from):
+
+  Runner        the ONE way commands run: output to a temp file (never a pipe a
+                stray grandchild can hold open), own process group so a timeout
+                kills the whole tree, stdin closed so nothing waits on a TTY.
+  UiBridge      worker threads NEVER touch Tk; they post callables here and the
+                main thread runs them (Tkinter isn't thread-safe).
+  Poller        named periodic jobs: exactly one chain per name, an in-flight
+                guard (a slow check skips a beat instead of piling up), stopped
+                when the view that owns it goes away.
+  ConfirmPolicy one rule for which actions need a confirm step (by verb), so it
+                can't drift per-button; documented overrides only.
+  Dialog        one modal-dialog helper (was three copy-pasted popups).
+  View classes  one per screen; each owns its widgets and its poll jobs.
+  App           window, panes, sidebar, routing, tick/watchdog loops.
+
+`khaos-lab --selftest` builds the UI, opens every view, and fails on any Tk
+callback error or leaked poll job -- run it after any edit (use xvfb-run so it
+doesn't touch your real screen).
 """
 
 import calendar
+import concurrent.futures as cf
+import json
+import os
+import queue
 import re
 import shlex
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
-from datetime import datetime
+import traceback
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _arc_ui as ui
 from tkinter import font as tkfont
 
-HEADER_ICON_PATH = Path.home() / ".local/share/khaos-lab/header-icon.png"
-HEADER_BG_PATH   = Path.home() / ".local/share/khaos-lab/header-bg.png"
-SIDEBAR_BG_PATH  = Path.home() / ".local/share/khaos-lab/sidebar-bg.png"
-SIDEBAR_ICON_PATH = Path.home() / ".local/share/khaos-lab/sidebar-icon.png"
-CONTENT_BG_PATH  = Path.home() / ".local/share/khaos-lab/content-bg.png"
-TASKBAR_ICON_PATH = Path.home() / ".local/share/khaos-lab/taskbar-icon.png"
-HEAL_LOG_PATH    = Path.home() / "khaos-lab/arc-heal-log/latest-status.md"
-ORAGE_ICS_PATH   = Path.home() / ".local/share/orage/orage.ics"
+HOME = Path.home()
+HEADER_ICON_PATH = HOME / ".local/share/khaos-lab/header-icon.png"
+HEADER_BG_PATH   = HOME / ".local/share/khaos-lab/header-bg.png"
+SIDEBAR_BG_PATH  = HOME / ".local/share/khaos-lab/sidebar-bg.png"
+SIDEBAR_ICON_PATH = HOME / ".local/share/khaos-lab/sidebar-icon.png"
+CONTENT_BG_PATH  = HOME / ".local/share/khaos-lab/content-bg.png"
+TASKBAR_ICON_PATH = HOME / ".local/share/khaos-lab/taskbar-icon.png"
+HEAL_LOG_PATH    = HOME / "khaos-lab/arc-heal-log/latest-status.md"
+ORAGE_ICS_PATH   = HOME / ".local/share/orage/orage.ics"
+INVENTORY_JSON   = HOME / "khaos-lab/inventory/inventory.json"
 
-# Logs view (2026-09-08) -- a real, curated set, not "every log on the
-# machine." Picked for what's actually worth reviewing day to day: what
-# self-heal did, what got noticed/notified, and the three security logs
-# `arc logs` already treats as the "critical snapshot." Text logs are all
-# readable without sudo (this user is in the `adm` group, and
-# nextdns-heal.log is world-readable) -- only PURGE needs root, via the
-# narrow `arc-log-purge` sudoers rule (exact truncate commands only).
+# Logs view -- a curated set, not "every log on the machine": what self-heal
+# did, what got noticed/notified, and the security logs `arc logs` already
+# treats as the critical snapshot. Every text log here is readable without
+# sudo (this user is in `adm`; nextdns-heal.log is world-readable) -- `sudo`
+# below only means PURGE goes through the narrow `arc-log-purge` sudoers rule
+# (exact truncate commands only), so a path with sudo=True that isn't in that
+# rule simply reports "purge failed" instead of clearing.
 LOG_SOURCES = [
     {"key": "arc-heal", "name": "Self-heal (arc-heal)", "kind": "text",
-     "path": Path.home() / "khaos-lab/arc-heal-log/history.log", "sudo": False},
+     "path": HOME / "khaos-lab/arc-heal-log/history.log", "sudo": False},
     {"key": "notify", "name": "Notifications (arc-pine)", "kind": "sqlite",
-     "path": Path.home() / ".local/share/arc-pine/history.db", "sudo": False},
+     "path": HOME / ".local/share/arc-pine/history.db", "sudo": False},
     {"key": "nextdns-heal", "name": "DNS self-heal (nextdns-heal)", "kind": "text",
      "path": Path("/var/log/nextdns-heal.log"), "sudo": True},
     {"key": "auth", "name": "Auth (auth.log)", "kind": "text",
@@ -63,163 +94,28 @@ LOG_SOURCES = [
      "path": Path("/var/log/ufw.log"), "sudo": True},
     {"key": "fail2ban", "name": "fail2ban", "kind": "text",
      "path": Path("/var/log/fail2ban.log"), "sudo": True},
-    # Added 2026-09-10, v2 sweep -- same read pattern (plain tail, no sudo
-    # needed to view; sudo=True here is about PURGE only, matching the
-    # sudoers-rule semantics above). rkhunter.log confirmed readable
-    # without sudo right now (root:adm 640, this user's in adm) but marked
-    # sudo=True anyway for purge consistency -- see arc-log-purge sudoers
-    # file, needs its own path list extended + `arc sot install-sudoers`
-    # re-run before purge works for these three specifically. clamav/
-    # chkrootkit logs don't exist yet (no scan run) -- view will correctly
-    # show "not found" until `arc sec clamav`/`arc sec chkrootkit` runs once.
     {"key": "clamav", "name": "Antivirus (clamav)", "kind": "text",
      "path": Path("/var/log/clamav-home-scan.log"), "sudo": True},
-    # Path corrected 2026-09-19: /var/log/chkrootkit.log never existed on this machine, so this
-    # view always said "not found" while the nightly scan wrote /var/log/chkrootkit/log.today.
-    # World-readable (root:root 644); no sudo needed to view. Purge isn't offered for it (the
-    # scan regenerates it daily and arc-log-purge's sudoers list doesn't cover this path).
+    # 2026-09-19: /var/log/chkrootkit.log never existed here, so this view always said
+    # "not found" while the nightly scan wrote /var/log/chkrootkit/log.today (root:root
+    # 644, no sudo to view). Purge isn't offered (regenerated daily; not in the sudoers rule).
     {"key": "chkrootkit", "name": "Rootkit scan (chkrootkit)", "kind": "text",
      "path": Path("/var/log/chkrootkit/log.today"), "sudo": False},
     {"key": "rkhunter", "name": "Rootkit scan (rkhunter)", "kind": "text",
      "path": Path("/var/log/rkhunter.log"), "sudo": True},
 ]
-# Taskbar-icon bug (2026-08-27, real root cause found 2026-08-29): the
-# window-list entry showed a generic icon instead of khaos-lab's own art.
-# className="khaos-lab" (below) was a real, separate correctness fix
-# (WM_CLASS was genuinely just generic "Tk") but didn't move the taskbar
-# icon on its own. The actual cause: iconphoto()'s image was 256x256 --
-# too large for a single _NET_WM_ICON X11 property write. Verified directly
-# via `xprop`: at 256x256 the property came back completely empty (silent
-# failure, no error anywhere); at 48x48, the exact same call produces a
-# real, correctly-sized icon block and the taskbar picks it up immediately
-# -- no panel restart needed at all, the plugin just reads live window
-# state. TASKBAR_ICON_PATH is a pre-shrunk 48x48 copy of icon.png for
-# this reason -- iconphoto() needs a small image, the hicolor
-# icon-theme install (still 256x256, correct for that use) is unrelated.
-# This WM theme also turns out not to render any titlebar-corner icon at
-# all (confirmed via a zoomed screenshot) -- the earlier "blank icon for
-# the titlebar" workaround was solving a problem that didn't exist here,
-# and is gone now that the real icon just works.
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+# Taskbar icon (2026-08-29 root cause): iconphoto()'s image was 256x256 -- too
+# large for one _NET_WM_ICON X11 property write, which failed silently (verified
+# via xprop: empty at 256, real block at 48). TASKBAR_ICON_PATH is a pre-shrunk
+# 48x48 copy for exactly that reason. className="khaos-lab" is a separate real
+# fix (WM_CLASS was generic "Tk").
 
-
-def strip_ansi(text):
-    """arc's own subcommands print real ANSI color codes for terminal use
-    -- a plain Tkinter Text/Label renders those as literal garbage
-    characters instead of interpreting them. Strip before ever displaying
-    command output anywhere in this GUI."""
-    return _ANSI_RE.sub("", text)
-
-
-def load_image(path):
-    """Load a PhotoImage, or None if the file's missing/unreadable. Every
-    themed image in this app (header icon/bg, sidebar bg, content bg, the
-    blank titlebar icon) used to repeat the same 5-line try/except around
-    this -- trimmed 2026-08-27 into one place, same behavior, less to keep
-    in sync. Caller must keep the returned object referenced (a local that
-    goes out of scope gets garbage-collected and the image just vanishes,
-    a classic Tkinter gotcha) -- unchanged from before, this helper doesn't
-    change that contract, just the loading boilerplate."""
-    if not path.exists():
-        return None
-    try:
-        return tk.PhotoImage(file=str(path))
-    except Exception:
-        return None
-
-
-def get_upcoming_events(limit=3):
-    """Read Orage's real calendar file directly and return the next few
-    upcoming events, briefly formatted. Deliberately a lightweight regex
-    parser, not a full RFC5545 library -- a full icalendar dependency
-    isn't installed and isn't worth adding just for this. Only SUMMARY +
-    DTSTART are read -- never DESCRIPTION, which can hold considerably
-    more personal detail than belongs in a glanced-at dashboard tile.
-
-    Handles both DTSTART forms Orage actually writes: timed
-    (DTSTART:20260918T143000) and all-day (DTSTART;VALUE=DATE:20281009,
-    no time component at all). The original version only matched the
-    timed form, so any all-day event silently failed the regex and never
-    appeared here regardless of how soon it was -- real bug, found
-    2026-08-31 when a same-day-added all-day event ("phoenix-home-
-    stretch") never showed up. All-day events sort/compare by date only
-    (comparing them to `now` as midnight would wrongly exclude one dated
-    today, since midnight has already passed) and print without a time."""
-    if not ORAGE_ICS_PATH.exists():
-        return []
-    try:
-        text = ORAGE_ICS_PATH.read_text()
-    except Exception:
-        return []
-
-    events = []
-    for block in re.findall(r"BEGIN:VEVENT.*?END:VEVENT", text, re.DOTALL):
-        summary_m = re.search(r"^SUMMARY:(.*)$", block, re.MULTILINE)
-        dtstart_m = re.search(r"^DTSTART[^:]*:(\d{8})(?:T(\d{6}))?", block, re.MULTILINE)
-        if not (summary_m and dtstart_m):
-            continue
-        date_part, time_part = dtstart_m.group(1), dtstart_m.group(2)
-        try:
-            if time_part:
-                dt = datetime.strptime(date_part + "T" + time_part, "%Y%m%dT%H%M%S")
-                all_day = False
-            else:
-                dt = datetime.strptime(date_part, "%Y%m%d")
-                all_day = True
-        except ValueError:
-            continue
-        events.append((dt, summary_m.group(1).strip(), all_day))
-
-    now = datetime.now()
-    upcoming = sorted(
-        (e for e in events if (e[0].date() >= now.date() if e[2] else e[0] >= now)),
-        key=lambda e: e[0],
-    )
-    out = []
-    for dt, summary, all_day in upcoming[:limit]:
-        when = dt.strftime("%b %d") if all_day else dt.strftime("%b %d, %I:%M %p").replace(" 0", " ")
-        out.append(f"{when} — {summary}")
-    return out
-
-
-def strip_banner(text, cmd=None):
-    """Most `arc` subcommands wrap their real output in a decorative
-    header/footer (a horizontal-rule line, the command's own name as a
-    repeated title, another rule) meant for full-width terminal display.
-    Dumped raw into a small dashboard tile it just looks like clutter --
-    drop any line that's purely box-drawing/dash characters, any blank
-    lines, and the title-echo line (the command's own name, which arc's
-    banner style always repeats verbatim) if `cmd` is given."""
-    title = cmd.strip().lower() if cmd else None
-    lines = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if all(ch in "─-—= " for ch in stripped):
-            continue
-        if title and stripped.lower() == title:
-            continue
-        lines.append(stripped)
-    return "\n".join(lines)
-
-# ── Palette -- "low-life-high-tech", khaos-lab's own fixed identity ────────
-# Was a circadian() snapshot (same drifting-with-time-of-day language as
-# arc-break/arc-pine) until 2026-09-19 -- user's explicit call: this is a
-# C&C panel, not a lifestyle companion, and wanted a fixed grimy-terminal/
-# neon-emblem look ("low-life-high-tech"), not a mood ring, plus a logo
-# that actually reads instead of fading into a soft pastel header. Kept
-# separate from _arc_ui's shared circadian palette rather than changed
-# there -- arc-break/arc-pine/arc-pine-bubbles keep the Kataleya look,
-# this app gets its own. Near-black ground + amber (matches the winged
-# mechanical-emblem art's own warm metal/gear tones, confirmed by actually
-# opening header-icon.png/content-bg.png rather than guessing) as primary
-# accent, hot magenta for danger/alerts, acid cyan for ok/info -- same
-# semantic roles (GOLD/ROSE/TEAL) the rest of the file already keys off
-# of, just re-cast. BORDER is new -- tile/row edges used highlightbackground
-# =BG before, which was BG-on-BG, i.e. invisible; a real (if subtle) hairline
-# is part of the same "everything reads as flat" complaint as the logo.
+# ── Palette -- "low-life-high-tech", khaos-lab's own fixed identity ───────────
+# Fixed on purpose (2026-09-19, user's explicit call: a C&C panel, not a mood
+# ring). Near-black ground, amber primary accent (matches the emblem art),
+# hot magenta for danger, acid cyan for ok/info. Only the header phase label
+# still follows the time of day.
 BG       = "#0a0c10"
 SURFACE  = "#12151b"
 OVERLAY  = "#1c212a"
@@ -231,1731 +127,1683 @@ ROSE     = "#ff3864"
 PINE     = "#0f9b9b"
 TEAL     = "#00e5c7"
 
-def run(cmd, timeout=30):
-    """Run a shell command, return (ok, output). Never raises."""
+
+# ── text helpers ─────────────────────────────────────────────────────────────
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def strip_ansi(text):
+    """arc's subcommands print real ANSI colors for terminals; a Tk Text shows
+    them as literal garbage. Strip before displaying output anywhere."""
+    return _ANSI_RE.sub("", text)
+
+
+def strip_banner(text, cmd=None):
+    """Most `arc` subcommands wrap output in a decorative rule/title header and
+    footer meant for a full-width terminal. In a small tile that's clutter --
+    drop rule-only lines, blanks, and the command's own title echo."""
+    title = cmd.strip().lower() if cmd else None
+    lines = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or all(ch in "─-—= " for ch in s):
+            continue
+        if title and s.lower() == title:
+            continue
+        lines.append(s)
+    return "\n".join(lines)
+
+
+def load_image(path):
+    """PhotoImage or None. Callers must keep the result referenced (a local that
+    goes out of scope is garbage-collected and the image just vanishes)."""
+    if not path.exists():
+        return None
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
-        out = (r.stdout or "") + (r.stderr or "")
-        return r.returncode == 0, strip_ansi(out).strip()
-    except subprocess.TimeoutExpired:
-        return False, f"(timed out after {timeout}s -- command may still be running in the background)"
-    except Exception as e:
-        return False, f"(error launching command: {e})"
+        return tk.PhotoImage(file=str(path))
+    except Exception:
+        return None
 
 
-def launch_detached(cmd):
-    """For actions that open a *persistent* GUI window (arc-break gui,
-    arc-pine, emoji picker, TOTP app) rather than run-and-exit. This is
-    NOT the same as run() with a trailing `&` -- a classic Python
-    subprocess gotcha, confirmed live: subprocess.run(shell=True,
-    capture_output=True) creates a pipe that a backgrounded grandchild
-    process inherits, and .communicate() then blocks waiting for that
-    pipe's write end to close, which never happens as long as the GUI
-    window stays open -- even with `&>/dev/null` in the shell command
-    itself. Popen with stdio all DEVNULL avoids the pipe entirely, so this
-    returns instantly regardless of how long the launched window stays
-    open.
-
-    Deliberately NOT passing start_new_session=True here -- a second real
-    bug found live: that setsid()'s the child into a new session outside
-    systemd-logind's tracking of this login session, and logind reaped it
-    consistently around 4-5s in (confirmed by direct timed observation,
-    with vs. without the flag). Plain DEVNULL-redirected Popen, still
-    inside the normal session, doesn't have this problem and the window
-    stays open exactly as long as the user keeps it open."""
+def get_upcoming_events(limit=3):
+    """Next few Orage events, read straight from its ics (a lightweight regex
+    parser -- no icalendar dependency). Only SUMMARY + DTSTART are read, never
+    DESCRIPTION (more personal detail than belongs in a glanced-at tile).
+    Handles timed (DTSTART:20260918T143000) and all-day (DTSTART;VALUE=DATE:...)
+    forms; all-day events compare by date so one dated today isn't excluded just
+    because midnight already passed."""
+    if not ORAGE_ICS_PATH.exists():
+        return []
     try:
-        subprocess.Popen(
-            cmd, shell=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-        )
+        text = ORAGE_ICS_PATH.read_text()
+    except Exception:
+        return []
+    events = []
+    for block in re.findall(r"BEGIN:VEVENT.*?END:VEVENT", text, re.DOTALL):
+        summary_m = re.search(r"^SUMMARY:(.*)$", block, re.MULTILINE)
+        dtstart_m = re.search(r"^DTSTART[^:]*:(\d{8})(?:T(\d{6}))?", block, re.MULTILINE)
+        if not (summary_m and dtstart_m):
+            continue
+        date_part, time_part = dtstart_m.group(1), dtstart_m.group(2)
+        try:
+            if time_part:
+                dt, all_day = datetime.strptime(date_part + "T" + time_part, "%Y%m%dT%H%M%S"), False
+            else:
+                dt, all_day = datetime.strptime(date_part, "%Y%m%d"), True
+        except ValueError:
+            continue
+        events.append((dt, summary_m.group(1).strip(), all_day))
+    now = datetime.now()
+    upcoming = sorted((e for e in events if (e[0].date() >= now.date() if e[2] else e[0] >= now)),
+                      key=lambda e: e[0])
+    out = []
+    for dt, summary, all_day in upcoming[:limit]:
+        when = dt.strftime("%b %d") if all_day else dt.strftime("%b %d, %I:%M %p").replace(" 0", " ")
+        out.append(f"{when} — {summary}")
+    return out
+
+
+def fmt_age(minutes):
+    if minutes is None:
+        return "never"
+    minutes = int(minutes)
+    if minutes < 2:
+        return "just now"
+    if minutes < 120:
+        return f"{minutes}m ago"
+    return f"{minutes // 60}h ago"
+
+
+# ── execution core ───────────────────────────────────────────────────────────
+class Runner:
+    """The ONE way this app runs commands.
+
+    Captured runs write to a temp file, not a pipe, so a stray grandchild (a
+    tunnel, a browser) that inherits the write end can never hold a read open.
+    We only wait on the shell itself, and on timeout kill the whole process
+    GROUP (process_group=0): the old subprocess.run(shell=True, timeout=...)
+    returned on time but killed only the shell, orphaning everything it had
+    started (measured: 2 processes left running after a 3s timeout; 0 now).
+    stdin is closed so nothing waits on a TTY (sudo, prompts) -- it fails fast
+    with a real error instead of hanging.
+
+    detach() is for persistent GUI windows: Popen with stdio on DEVNULL returns
+    instantly however long the window stays open. Deliberately NOT
+    start_new_session -- setsid()'d children were reaped by logind ~4-5s in
+    (confirmed by timed observation). Finished children are reaped by reap()
+    so they don't linger as zombies."""
+
+    MAX_OUT = 200_000
+
+    def __init__(self):
+        self._detached = []
+        self._lock = threading.Lock()
+
+    def run(self, cmd, timeout=30):
+        """(ok, output). Never raises."""
+        timed_out = False
+        try:
+            with tempfile.TemporaryFile() as tf:
+                p = subprocess.Popen(cmd, shell=True, stdin=subprocess.DEVNULL, stdout=tf,
+                                     stderr=subprocess.STDOUT, process_group=0)
+                try:
+                    rc = p.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    timed_out, rc = True, None
+                    self._kill_group(p)
+                tf.seek(0)
+                out = strip_ansi(tf.read(self.MAX_OUT).decode("utf-8", "replace")).strip()
+        except Exception as e:
+            return False, f"(error launching command: {e})"
+        if timed_out:
+            return False, (out + "\n" if out else "") + f"(timed out after {timeout}s -- killed)"
+        return rc == 0, out
+
+    @staticmethod
+    def _kill_group(p):
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            p.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            p.wait()
+
+    def detach(self, cmd):
+        try:
+            p = subprocess.Popen(cmd, shell=True, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            return False, f"(error launching: {e})"
+        with self._lock:
+            self._detached.append(p)
         return True, "launched"
-    except Exception as e:
-        return False, f"(error launching: {e})"
+
+    def reap(self):
+        with self._lock:
+            self._detached = [p for p in self._detached if p.poll() is None]
 
 
+class UiBridge:
+    """Worker threads must never call Tk (not thread-safe -- intermittent
+    "main thread is not in main loop" errors). They post callables here; the
+    main thread drains the queue on a short timer. Errors in a callback go to
+    the app's callback-exception handler instead of killing the pump."""
+
+    def __init__(self, root):
+        self.root = root
+        self._q = queue.Queue()
+        root.after(40, self._pump)
+
+    def post(self, fn, *args):
+        self._q.put((fn, args))
+
+    def _pump(self):
+        try:
+            for _ in range(300):
+                fn, args = self._q.get_nowait()
+                try:
+                    fn(*args)
+                except Exception:
+                    self.root.report_callback_exception(*sys.exc_info())
+        except queue.Empty:
+            pass
+        self.root.after(40, self._pump)
+
+
+class Poller:
+    """Named periodic jobs. Guarantees the old code lacked: exactly ONE chain
+    per name (start() cancels any previous one -- the old aws poll started a new
+    never-ending chain on every visit to Status), an in-flight guard (a slow
+    check skips a beat instead of stacking threads), and nothing applies to a
+    view that's gone (alive() is checked before every apply)."""
+
+    def __init__(self, root, bridge):
+        self.root, self.bridge = root, bridge
+        self._jobs = {}
+
+    def start(self, name, every_ms, work, apply, alive):
+        self.stop(name)
+        job = {"after": None, "busy": False, "stop": False}
+        self._jobs[name] = job
+
+        def run_once():
+            if job["stop"] or job["busy"]:
+                return
+            job["busy"] = True
+
+            def worker():
+                try:
+                    res, err = work(), None
+                except Exception as e:
+                    res, err = None, e
+                self.bridge.post(finish, res, err)
+            threading.Thread(target=worker, daemon=True).start()
+
+        def finish(res, err):
+            job["busy"] = False
+            if job["stop"] or not alive():
+                return
+            if err is not None:
+                raise err
+            apply(res)
+
+        def beat():
+            if job["stop"]:
+                return
+            job["after"] = self.root.after(every_ms, beat)   # next beat first: one chain, always
+            run_once()
+
+        job["kick"] = run_once
+        beat()
+
+    def kick(self, name):
+        job = self._jobs.get(name)
+        if job:
+            job["kick"]()
+
+    def stop(self, name):
+        job = self._jobs.pop(name, None)
+        if job:
+            job["stop"] = True
+            if job["after"] is not None:
+                try:
+                    self.root.after_cancel(job["after"])
+                except Exception:
+                    pass
+
+    def active(self):
+        return sorted(self._jobs)
+
+
+# ── actions + confirm policy ─────────────────────────────────────────────────
 class Action:
-    """One button: a label, the real command it runs, whether it needs a
-    confirm step first (destructive/system-changing actions only -- plain
-    status/read-only checks run immediately), and whether it's a
-    detached GUI launch (see launch_detached()) rather than a normal
-    run-and-capture-output command."""
-    def __init__(self, label, cmd, confirm=False, timeout=30, detach=False):
-        self.label = label
-        self.cmd = cmd
-        self.confirm = confirm
-        self.timeout = timeout
-        self.detach = detach
+    """One button: a label, the command it runs, and how. `confirm=None` means
+    "decide by ConfirmPolicy" (the normal case); True/False overrides -- False
+    only with a comment saying why. `detach` = persistent GUI launch."""
+
+    def __init__(self, label, cmd, confirm=None, timeout=30, detach=False):
+        self.label, self.cmd, self.confirm = label, cmd, confirm
+        self.timeout, self.detach = timeout, detach
+
+
+class ConfirmPolicy:
+    """One rule, by verb, instead of a per-button flag that drifts (the old
+    code left `sudo stop`, `fix audio` -- which restarts the panel -- `fix
+    display` and `break stop` ungated while gating near-identical siblings).
+    Anything that starts/stops/restarts/rebuilds/toggles/connects/changes
+    network or system state needs a confirm click; read-only checks run
+    immediately."""
+
+    VERBS = re.compile(
+        r"\b(start|stop|restart|reboot|kill|purge|clean|update|upgrade|rebuild|build|baseline|"
+        r"snapshot|snap|backup|toggle|connect|disconnect|killswitch|expose|unexpose|enable|"
+        r"disable|fix|on|off)\b", re.I)
+
+    @classmethod
+    def inferred(cls, action):
+        return bool(cls.VERBS.search(action.cmd))
+
+    @classmethod
+    def required(cls, action):
+        return action.confirm if action.confirm is not None else cls.inferred(action)
+
+    @classmethod
+    def overrides(cls, categories):
+        """Actions explicitly exempted from a confirm the verbs say they need
+        (for review / selftest output -- each must have a stated reason)."""
+        return [(c, a.label, a.cmd) for c, acts in categories.items() for a in acts
+                if a.confirm is False and cls.inferred(a)]
 
 
 CATEGORIES = {
-    "Status": [],  # special-cased: live dashboard, not a button list
-    "Cockpit": [],  # special-cased: network/pipeline/cloud/local live overview, added 2026-09-07
-    "Logs": [],  # special-cased: click a log, review/purge/keep, added 2026-09-08
-    "Find": [],  # special-cased: search arc-lt-cmc/dev-notes/khaos-lab/vault-archive, added 2026-09-10
+    "Status": [],     # special view: live host/security dashboard
+    "Cockpit": [],    # special view: network / cloud / remote-access overview
+    "Inventory": [],  # special view: register vs reality (arc inv), added 2026-09-19
+    "Logs": [],       # special view: review / purge curated logs
+    "Find": [],       # special view: search arc-lt-cmc / dev-notes / khaos-lab / vault
     "Network": [
-        # ProtonVPN reinstalled 2026-09-07 -- CLI-only this time
-        # (proton-vpn-cli, WireGuard-based), no GTK app. `arc vpn connect`/
-        # `disconnect` is one-shot-safe (real output, no TUI); `signin` is
-        # deliberately NOT wired here -- it needs a real interactive
-        # credential prompt, run it from a terminal.
-        Action("VPN: status",       "arc vpn status"),
-        Action("VPN: connect (fastest)", "arc vpn connect", confirm=True, timeout=30),
-        Action("VPN: disconnect",   "arc vpn disconnect", confirm=True, timeout=15),
-        Action("VPN: leak check",   "arc vpn leak-check", timeout=15),
+        # ProtonVPN is CLI-only (proton-vpn-cli, WireGuard). `signin` is deliberately NOT
+        # wired -- it needs a real interactive credential prompt; run it in a terminal.
+        Action("VPN: status", "arc vpn status"),
+        Action("VPN: connect (fastest)", "arc vpn connect", timeout=90),
+        Action("VPN: disconnect", "arc vpn disconnect", timeout=30),
+        Action("VPN: leak check", "arc vpn leak-check", timeout=15),
         Action("VPN: autoconnect status", "arc vpn autoconnect"),
-        # killswitch toggle added 2026-09-10 (v2 sweep) -- confirm-gated,
-        # real security-relevant behavior change (blocks all internet if
-        # the VPN drops), matches the confirm pattern already used for
-        # connect/disconnect above.
-        Action("VPN: killswitch on",  "arc vpn killswitch on", confirm=True),
-        Action("VPN: killswitch off", "arc vpn killswitch off", confirm=True),
-        Action("DNS status",        "arc dns status"),
-        Action("DNS leak check",    "arc dns check", timeout=15),
-        Action("Restart NextDNS",   "arc dns restart", confirm=True),
-        # on/off/blocklists added 2026-09-10 -- on/off toggle real system
-        # DNS resolution behavior (confirm-gated), blocklists is a
-        # read-only profile-config check.
-        Action("DNS: turn on",      "arc dns on", confirm=True),
-        Action("DNS: turn off",     "arc dns off", confirm=True),
-        Action("DNS: blocklists",   "arc dns blocklists"),
-        # arc-dns-hot/-cold are separate top-level binaries (not `arc dns`
-        # subcommands) -- hot = boot-enabled + aggressive filtering,
-        # cold = boot-disabled + fall back to system DNS. Both real,
-        # system-level config changes -- confirm-gated.
+        Action("VPN: killswitch on", "arc vpn killswitch on"),
+        Action("VPN: killswitch off", "arc vpn killswitch off"),
+        Action("DNS status", "arc dns status"),
+        Action("DNS leak check", "arc dns check", timeout=15),
+        Action("Restart NextDNS", "arc dns restart"),
+        Action("DNS: turn on", "arc dns on"),
+        Action("DNS: turn off", "arc dns off"),
+        Action("DNS: blocklists", "arc dns blocklists"),
+        # arc-dns-hot/-cold are separate top-level binaries, not `arc dns` subcommands: hot =
+        # boot-enabled + aggressive filtering, cold = boot-disabled + system DNS. Real system
+        # config changes, so confirm=True (the verb rule can't see them by name).
         Action("DNS: hot profile (boot-enabled, aggressive)", "arc-dns-hot", confirm=True),
         Action("DNS: cold profile (boot-disabled, system DNS)", "arc-dns-cold", confirm=True),
-        Action("Network stats",     "arc net stats"),
-        # Sniffnet added 2026-09-10 -- interactive traffic-analysis GUI,
-        # complements Darkstat's always-on lightweight overview below.
-        # Binary already carries cap_net_admin/cap_net_raw, captures live
-        # with no sudo. Tutorial: ~/dev-notes/hq-main/sniffnet-tutorial.md
+        Action("Network stats", "arc net stats"),
         Action("Sniffnet: launch (GUI, no sudo needed)", "arc net sniffnet", detach=True),
-        # Wired 2026-09-19 (user's explicit ask, overriding the earlier
-        # "leave these out" call) -- the actual blocker was real (no TTY
-        # for the sudo prompt from this console, a TUI can't be captured
-        # as one-shot output), so the fix is a real terminal, not a
-        # workaround: `konsole --hold -e` gives each one its own genuine
-        # TTY for both the sudo prompt and the ncurses UI, same shape as
-        # the Sniffnet/UAD-ng detached-GUI launches above. `--hold` keeps
-        # the window open after the tool exits/errors instead of
-        # flashing shut, so a "command not found" or a mistyped sudo
-        # password is actually readable.
-        Action("bandwhich (opens in terminal, needs sudo)",
-               "konsole --hold -e arc net bandwhich", detach=True),
-        Action("iftop (opens in terminal, needs sudo)",
-               "konsole --hold -e arc net iftop", detach=True),
-        Action("nethogs (opens in terminal, needs sudo)",
-               "konsole --hold -e arc net nethogs", detach=True),
-        # one-shot status, added 2026-09-10 -- distinct from the background
-        # watch below, real data (internet/clients/nodes/dns/gateway),
-        # confirmed working live this session (2026-08-31 addendum).
+        # A TUI + a sudo prompt can't be captured as one-shot output (no TTY), so these get a
+        # real terminal: `konsole --hold -e` keeps the window open after exit/error so a
+        # "command not found" or mistyped sudo password is actually readable.
+        Action("bandwhich (opens in terminal, needs sudo)", "konsole --hold -e arc net bandwhich", detach=True),
+        Action("iftop (opens in terminal, needs sudo)", "konsole --hold -e arc net iftop", detach=True),
+        Action("nethogs (opens in terminal, needs sudo)", "konsole --hold -e arc net nethogs", detach=True),
         Action("Eero: summary (one-shot)", "arc eero-summary", timeout=15),
         Action("Eero: start monitor", "arc eero-watch", confirm=True),
-        # `arc eero-logs` itself pipes through glow/less then a `read`
-        # prompt to clear/keep -- also not one-shot-capturable, so this
-        # reads the log file directly instead.
-        Action("Eero: recent log (last 30 lines)",
-               "tail -n 30 /home/architect-of-chaos/dev-notes/surgery-tools/eero/eero-watch.log"),
-        Action("Eero: stop monitor",  "arc stop-eero", confirm=True),
+        # `arc eero-logs` pipes through glow/less then a `read` prompt -- not one-shot
+        # capturable -- so read the log file directly.
+        Action("Eero: recent log (last 30 lines)", "tail -n 30 ~/dev-notes/surgery-tools/eero/eero-watch.log"),
+        Action("Eero: stop monitor", "arc stop-eero"),
     ],
     "Reference": [
-        Action("Book: status",          "arc book"),
-        Action("Book: rebuild",         "arc book rebuild", confirm=True, timeout=30),
-        Action("Site: status",          "arc site"),
-        Action("Site: build",           "arc site build", confirm=True, timeout=30),
-        Action("Site: open (browser)",  "arc site open"),
+        Action("Book: status", "arc book"),
+        Action("Book: rebuild", "arc book rebuild", timeout=120),
+        Action("Site: status", "arc site"),
+        Action("Site: build", "arc site build", timeout=60),
+        Action("Site: open (browser)", "arc site open"),
+        # `arc site url` (the private address) is deliberately NOT here -- it refuses non-TTY
+        # output on purpose so the secret path never lands in a log or transcript. Exposure
+        # controls + the guard audit live under Remote Access.
     ],
-    # Android/ADB device management, added 2026-09-09. Deliberately
-    # device-agnostic -- all four actions are pure reads or launch UAD-ng's
-    # own GUI for actual debloat work. An earlier version had a Cricket
-    # Ovation 3-specific debloat button; removed 2026-09-10 at the user's
-    # own call (device no longer owned, was only ever meant as a guide).
+    # Android/ADB, device-agnostic: pure reads, or UAD-ng's own GUI for debloat work.
     "Phone": [
-        Action("Device: status",        "arc phone status"),
+        Action("Device: status", "arc phone status"),
         Action("Device: full info (read-only, any device)", "arc phone info", timeout=15),
         Action("Device: list packages", "arc phone packages", timeout=15),
-        Action("Device: export package snapshot (read-only, any device)",
-               "arc phone export", timeout=15),
-        # doctor/reboot added 2026-09-10 -- doctor turns the actual
-        # technique that found two real crash-looping disabled packages
-        # this session (dropbox crash log cross-checked against every
-        # disabled package, not just name-pattern guessing) into a
-        # one-shot read-only check. reboot is the same reboot+poll-for-
-        # boot_completed loop that turned out to be required (not
-        # optional) after two different live/OS-level fixes this session.
-        Action("Device: doctor (disabled pkgs vs. real crash evidence, read-only)",
-               "arc phone doctor", timeout=20),
-        Action("Device: reboot + wait for full boot", "arc phone reboot", confirm=True, timeout=90),
+        Action("Device: export package snapshot (read-only, any device)", "arc phone export", timeout=15),
+        Action("Device: doctor (disabled pkgs vs. real crash evidence, read-only)", "arc phone doctor", timeout=20),
+        Action("Device: reboot + wait for full boot", "arc phone reboot", timeout=90),
         Action("UAD-ng: launch (any device, GUI)", "arc phone uad", detach=True),
     ],
     "Security": [
-        Action("SOP status",        "arc sop status"),
-        Action("SOP violations",    "arc sop violations"),
+        Action("SOP status", "arc sop status"),
+        Action("SOP violations", "arc sop violations"),
         Action("SOP compliance check", "arc sop check"),
-        Action("SOP baseline (re-hash SOP files)", "arc sop baseline", confirm=True),
-        Action("System heal check", "arc heal", timeout=60),
+        Action("SOP baseline (re-hash SOP files)", "arc sop baseline"),
+        Action("System heal check", "arc heal", timeout=90),
         Action("Lynis audit (slow)", "arc sec lynis", confirm=True, timeout=180),
-        # "start" deliberately not here -- it needs a real TTY for the sudo
-        # password prompt, which this console's subprocess doesn't have.
-        # Run `arc sudo start` from an actual terminal instead.
+        # `arc sudo start` needs a real TTY for the sudo password -- run it in a terminal.
         Action("Sudo keepalive: status", "arc sudo status"),
-        Action("Sudo keepalive: stop",   "arc sudo stop"),
-        Action("Mic status",        "arc mic status"),
-        Action("Mic: toggle on/off", "arc mic toggle"),
-        # Security audit suite -- 2nd of 3 things picked from `arc help`
-        # (2026-08-31). `arc sec audit` deliberately NOT included -- it
-        # needs sudo access to /etc/shadow and /etc/sudoers with no
-        # existing NOPASSWD coverage, and granting that passwordlessly is
-        # a real, meaningfully bigger security tradeoff than the narrow
-        # read-only grants made elsewhere -- not worth it for GUI
-        # convenience alone. firewall/apps/logs all verified safe first
-        # (firewall needed one new narrow NOPASSWD rule for read-only
-        # `ufw status`, added 2026-08-31; apps/logs need no sudo at all).
+        Action("Sudo keepalive: stop", "arc sudo stop"),
+        Action("Mic status", "arc mic status"),
+        # confirm=False on purpose: the mic toggle is an instant privacy control -- turning it
+        # OFF must never be slowed by a dialog (it's meant to be only ever on when explicitly on).
+        Action("Mic: toggle on/off", "arc mic toggle", confirm=False),
+        # NOT wired (need sudo with no NOPASSWD rule / a TTY): `arc sec audit`, `arc sec f2b`,
+        # the clamav/chkrootkit/rkhunter scan STARTERS, `arc users check|sessions`, and every
+        # mutating `arc users` subcommand. Their results are covered read-only via Logs.
         Action("Firewall status (ufw)", "arc sec firewall"),
         Action("Installed apps audit (apt/snap/flatpak)", "arc sec apps", timeout=20),
         Action("Recent security logs (auth/sudo/ufw)", "arc sec logs"),
-        # AWS account-level audit trail (management-events-cloudtrail,
-        # set up 2026-08-31, log file validation on) -- needs the AWS CLI
-        # + claude-ops credentials already used by the AWS Lab tile, no
-        # separate sudo/local access required.
         Action("CloudTrail: recent AWS events", "arc sec cloudtrail", timeout=15),
-        # v2 sweep, 2026-09-10 -- checked each of these live before wiring.
-        # clamav STATUS is sudo-free (just checks for a running scan / tails
-        # the log); the scan-START path (`arc sec clamav` bare) uses
-        # `nohup sudo bash -c ...` and hits the same no-TTY wall as
-        # `arc sec audit`/`arc sudo start` -- deliberately NOT wired, run
-        # `arc sec clamav` from a real terminal to kick off a scan.
-        # chkrootkit/rkhunter scan-triggers excluded for the identical
-        # reason (`sudo bash -c 'chkrootkit ...'`/`sudo rkhunter --check`).
-        # Their last-scan *results* are already covered read-only, no-sudo,
-        # via the Logs view (LOG_SOURCES gained clamav/chkrootkit/rkhunter
-        # entries this same pass).
         Action("Clamav: scan status", "arc sec clamav status"),
-        # sec net: verified sudo-free (ss/nmcli/arp all run as this user).
         Action("Network overview (ports/connections/dns/arp)", "arc sec net", timeout=15),
-        # arc sec f2b deliberately NOT wired at all -- every subcommand
-        # (banned/check/logs/ban/unban/restart) shells to
-        # `sudo fail2ban-client ...` with no matching NOPASSWD sudoers rule,
-        # same no-TTY trap. fail2ban activity is still visible read-only,
-        # no-sudo, via the Logs view's fail2ban entry (raw log tail).
-        #
-        # arc users: verified live which subcommands are actually sudo-free
-        # before wiring -- bare overview and `groups`/`passwd-age` are;
-        # `check` (needs `sudo passwd -S` per account) and `sessions` (needs
-        # `sudo lastb` for failed logins) are not, left terminal-only. Every
-        # mutating users subcommand (add/del/lock/unlock/chmod/chown/etc)
-        # stays terminal-only regardless -- never one-click from the GUI.
         Action("Users: overview", "arc users"),
         Action("Users: your groups", "arc users groups"),
         Action("Users: password age", "arc users passwd-age"),
     ],
-    # SOC -- every local Docker + monitor interface with a real UI, lab or
-    # not (2026-08-29 -- widened from IDS/IPS-only per explicit request:
-    # "wire all docker interfaces... lab or not"). One place to reach
-    # nearly all of them without opening a browser tab first; each has a
-    # single explicit "open in browser" action for the ones that genuinely
-    # need their full graphical UI (EveBox search, Splunk).
+    # SOC -- every local Docker + monitor interface with a real UI, lab or not.
     "SOC": [
-        Action("IDS/IPS: full status", "bash -c \"echo '-- suricata --'; systemctl status suricata --no-pager -l | head -6; echo; echo '-- sagan --'; arc sagan status; echo; echo '-- evebox --'; arc evebox status\"", timeout=20),
+        Action("IDS/IPS: full status",
+               "bash -c \"echo '-- suricata --'; systemctl status suricata --no-pager -l | head -6; echo; "
+               "echo '-- sagan --'; arc sagan status; echo; echo '-- evebox --'; arc evebox status\"", timeout=20),
         Action("Sagan: recent alerts (native, no browser)", "arc sagan alerts", timeout=15),
-        Action("Restart Sagan + EveBox", "bash -c 'arc sagan restart && arc evebox restart'", confirm=True, timeout=30),
+        Action("Restart Sagan + EveBox", "bash -c 'arc sagan restart && arc evebox restart'", timeout=60),
         Action("Open EveBox dashboard (browser)", "arc evebox open"),
-        # soc-lab: Splunk training container -- SQL Server torn down
-        # 2026-08-31 (never held real data, confirmed empty first) and
-        # Nessus purged 2026-08-25, both gone from this lab entirely now.
-        # start is confirm-gated and given a longer timeout since a cold
-        # Splunk container genuinely takes a while to initialize.
         Action("soc-lab: status (Splunk)", "arc soc-lab status"),
-        Action("soc-lab: start",    "arc soc-lab start", confirm=True, timeout=120),
-        Action("soc-lab: stop",     "arc soc-lab stop", confirm=True, timeout=30),
+        Action("soc-lab: start", "arc soc-lab start", timeout=120),     # cold Splunk takes a while
+        Action("soc-lab: stop", "arc soc-lab stop", timeout=60),
         Action("Open Splunk dashboard (browser)", "arc soc-lab open"),
-        # soc-lab CLOUD: `cloud-open` (2026-09-07) tunnels + launches the
-        # browser itself now, same one-click pattern as the local action
-        # above -- re-resolves the live public IP every click (no Elastic
-        # IP, changes on every start) and kills any stale tunnel first.
-        Action("Open Splunk dashboard (browser, cloud)", "arc soc-lab cloud-open", timeout=20),
-        # darkstat: live traffic dashboard, loopback-only web UI. start/stop
-        # need root (systemd unit) -- NOPASSWD sudoers rule added 2026-08-29
-        # (arc-darkstat) specifically so this button doesn't hang waiting on
-        # a password prompt with no TTY to answer it.
-        Action("Darkstat: status",  "arc darkstat status"),
-        Action("Darkstat: start",   "arc darkstat start", confirm=True, timeout=15),
-        Action("Darkstat: stop",    "arc darkstat stop", confirm=True, timeout=15),
+        # cloud-open tunnels + launches the browser itself; re-resolves the live IP every click
+        # (no Elastic IP) and kills any stale tunnel first.
+        Action("Open Splunk dashboard (browser, cloud)", "arc soc-lab cloud-open", timeout=30),
+        Action("Darkstat: status", "arc darkstat status"),
+        Action("Darkstat: start", "arc darkstat start", timeout=15),
+        Action("Darkstat: stop", "arc darkstat stop", timeout=15),
         Action("Open darkstat dashboard (browser)", "arc darkstat open"),
-        # GVM/OpenVAS: local native install fully purged 2026-08-31 (was the
-        # single biggest local RAM/CPU cost on this 7.7GB box) -- moved to
-        # on-demand AWS, cloud-* subcommands landed 2026-08-31. Buttons wired
-        # 2026-09-07 once `cloud-open` became a real one-click tunnel+launch
-        # (was print-only before) -- same live-IP-every-click pattern as
-        # soc-lab cloud above, gvm-cloud also has no Elastic IP.
-        Action("gvm-cloud: status",  "arc gvm cloud-status"),
-        Action("gvm-cloud: start",   "arc gvm cloud-start", confirm=True, timeout=180),
-        Action("gvm-cloud: stop",    "arc gvm cloud-stop", confirm=True, timeout=60),
-        Action("Open GVM dashboard (browser, cloud)", "arc gvm cloud-open", timeout=20),
-        # wazuh-cloud: added 2026-09-08, replacing the retired-OSSIM lab plan
-        # (see aws-infra's variables.tf for the full reasoning). Same
-        # tunnel+launch cloud-open pattern, same no-Elastic-IP live-lookup
-        # convention. Longer start timeout than gvm-cloud's -- a from-scratch
-        # rebuild's first boot runs the real 5-10min manager+indexer+
-        # dashboard install, not just a docker compose up.
+        Action("gvm-cloud: status", "arc gvm cloud-status"),
+        Action("gvm-cloud: start", "arc gvm cloud-start", timeout=180),
+        Action("gvm-cloud: stop", "arc gvm cloud-stop", timeout=90),
+        Action("Open GVM dashboard (browser, cloud)", "arc gvm cloud-open", timeout=30),
         Action("wazuh-cloud: status", "arc wazuh cloud-status"),
-        Action("wazuh-cloud: start",  "arc wazuh cloud-start", confirm=True, timeout=600),
-        Action("wazuh-cloud: stop",   "arc wazuh cloud-stop", confirm=True, timeout=60),
-        Action("Open Wazuh dashboard (browser, cloud)", "arc wazuh cloud-open", timeout=20),
-        # ZAP's real day-to-day "interface" is its desktop GUI app, not a
-        # browser tab -- daemon mode (arc zap start) is an API-only scan
-        # backend for `arc zap spider/active <target>`, out of scope for a
-        # one-click GUI button (needs a real target argument, and first-run
-        # addon install can take minutes). Status only for the daemon,
-        # `gui` launches the actual app people look at.
-        Action("ZAP: status",       "arc zap status"),
+        Action("wazuh-cloud: start", "arc wazuh cloud-start", timeout=600),  # first boot runs the real install
+        Action("wazuh-cloud: stop", "arc wazuh cloud-stop", timeout=90),
+        Action("Open Wazuh dashboard (browser, cloud)", "arc wazuh cloud-open", timeout=30),
+        Action("ZAP: status", "arc zap status"),
         Action("ZAP: open desktop app", "arc zap gui", detach=True),
-        # Kismet: real wireless recon monitor, but genuinely disruptive --
-        # takes the only WiFi adapter into monitor mode, dropping WiFi/VPN
-        # for as long as it runs (confirmed in arc-kismet's own header
-        # comment, plus a real 2026-08-23 incident where a crash left wlan0
-        # dead until reboot). Warning lives right in the button label, not
-        # just the confirm dialog -- confirm=True alone wasn't judged
-        # enough given the history here.
-        Action("Kismet: status",    "arc kismet status"),
-        Action("Kismet: start (drops WiFi/VPN while running!)", "arc kismet start", confirm=True, timeout=15),
-        Action("Kismet: stop (restores WiFi/VPN)", "arc kismet stop", confirm=True, timeout=20),
+        # Kismet takes the only WiFi adapter into monitor mode -- drops WiFi/VPN while it runs
+        # (a 2026-08-23 crash left wlan0 dead until reboot). The warning is in the label itself.
+        Action("Kismet: status", "arc kismet status"),
+        Action("Kismet: start (drops WiFi/VPN while running!)", "arc kismet start", timeout=20),
+        Action("Kismet: stop (restores WiFi/VPN)", "arc kismet stop", timeout=30),
         Action("Open Kismet dashboard (browser)", "xdg-open http://127.0.0.1:2501"),
     ],
-    # Cloud -- new 2026-09-10, v2 sweep. The always-on py-bite EC2 box plus
-    # the two account-level cost/usage checks -- none of this had ANY
-    # panel presence before (the SOC category's "cloud" entries are the
-    # on-demand security labs, gvm/wazuh/soc-lab-cloud -- a different
-    # thing entirely from py-bite, which is the always-running personal
-    # server). `arc aws` needs ~/.ssh/py-bite.pem -- confirmed missing on
-    # this machine right now (checked live), so `status`/`logs`/`htop`
-    # will honestly report that until the key's restored from vault
-    # backup. Wired anyway -- an honest "key not found" is real, useful
-    # information, better than the box having zero panel presence at all.
+    # Cloud -- AWS + Cloudflare accounting. (The py-bite EC2 actions that lived here died with
+    # the old AWS account 2026-08-17; py-bite is on PythonAnywhere now.)
     "Cloud": [
-        Action("py-bite: status", "arc aws status", timeout=20),
-        Action("py-bite: recent auth.log", "arc aws logs", timeout=20),
-        Action("Combined AWS snapshot (both cloud instances + budget)", "arc aws-status", timeout=20),
+        Action("AWS snapshot (gvm / soclab / wazuh + budget)", "arc aws-status", timeout=40),
+        Action("Cloud instances per the inventory (read-only)", "arc inv list cloud-instance"),
         Action("Cloudflare Workers usage (free-tier check)", "arc cf-watch", timeout=15),
         Action("Cloudflare Workers usage: recent history", "arc cf-watch log"),
     ],
-    # Dev -- new 2026-09-10. kali-workbench had zero panel presence;
-    # confirmed live it doesn't currently exist on this machine
-    # ("container not found") -- `start` should create it per `arc kali`'s
-    # own doc ("starts it if stopped"), wired anyway so that's a one-click
-    # provision rather than a remembered terminal command. `arc mirrors`
-    # (sync-mirrors cron status) is read-only, sudo-free.
     "Dev": [
         Action("Kali container: status", "arc kali status", timeout=15),
-        Action("Kali container: start",  "arc kali start", confirm=True, timeout=60),
-        Action("Kali container: stop",   "arc kali stop", confirm=True, timeout=20),
+        Action("Kali container: start", "arc kali start", timeout=60),
+        Action("Kali container: stop", "arc kali stop", timeout=30),
         Action("Kali container: recent logs", "arc kali logs", timeout=15),
-        Action("Mirror sync: status (sync-mirrors cron)", "arc mirrors", timeout=15),
+        Action("Mirror sync: status (sync-mirrors)", "arc mirrors", timeout=15),
     ],
-    # Remote Access -- new 2026-09-10. This controls actual inbound access
-    # to this machine (Cloudflare Tunnel + VNC bundle) and had zero panel
-    # presence -- deserves clear visibility given the security sensitivity,
-    # not just a command someone has to remember exists. Confirmed live:
-    # not installed on this machine right now, first-time setup needs
-    # `sudo bash ~/khaos-lab/setup-local-desktop-vnc.sh` run from a real
-    # terminal (one-time, needs a real sudo TTY) -- status is wired since
-    # it reports that honestly and instantly; start/stop wired too since
-    # once installed they're the actual real control surface for this,
-    # but if run before setup they'll just surface the same "not installed"
-    # message, not hang (verified `status` returns instantly, no sudo
-    # prompt, when uninstalled).
+    # Remote Access -- how this machine is reached from outside: Tailscale SSH (primary) and
+    # the private notes site over `tailscale serve`. (The old Cloudflare-Tunnel + VNC bundle,
+    # `arc desktop`, no longer exists -- "not installed" -- so its buttons are gone.)
     "Remote Access": [
-        Action("Status (Cloudflare Tunnel + VNC)", "arc desktop status", timeout=15),
-        Action("Enable (survives reboot until stopped)", "arc desktop start", confirm=True, timeout=30),
-        Action("Disable (full teardown)", "arc desktop stop", confirm=True, timeout=20),
+        Action("Tailscale: status", "tailscale status"),
+        Action("Tailscale: what is exposed (serve)", "tailscale serve status"),
+        Action("Private site: audit every guard layer", "arc site audit", timeout=60),
+        Action("Private site: expose to my tailnet", "arc site expose", timeout=30),
+        Action("Private site: stop exposing", "arc site unexpose", timeout=30),
+        # confirm=False: a pure read -- the verb rule only tripped on "backup" inside the unit's name.
+        Action("Backup tunnel unit: state (inert by design)",
+               "bash -c 'systemctl --user is-active arc-remote-backup-tunnel; exit 0'", confirm=False),
+        # Never wired: `arc site url` (secret address -- terminal only) and `arc site rotate`.
     ],
     "Maintenance": [
-        Action("Disk overview",     "arc disk"),
-        Action("System health",     "arc health"),
-        Action("Git repo audit",    "arc audit", timeout=60),
-        Action("Deep clean (cache/apt/journal)", "arc clean", confirm=True, timeout=120),
-        Action("Update system (apt)", "arc update", confirm=True, timeout=300),
-        Action("Backup now",        "arc backup", confirm=True, timeout=60),
-        # v2 sweep additions, 2026-09-10:
-        # - `arc mount`: trivial, was missing, genuinely useful one-click.
-        # - `arc snap`: confirmed live this is a REAL Timeshift snapshot
-        #   (full rsync of the root filesystem via the same mechanism as
-        #   timeshift-check), not a quick MEGA sync as its one-line help
-        #   text implies -- genuinely slow (minutes), confirm-gated with a
-        #   long timeout matching the pattern already used for lynis/
-        #   wazuh-cloud-start.
-        # - `arc sweep status`/`dry`: read-only preview only, never `purge`
-        #   (that's a real delete, terminal-only on purpose).
-        # - `arc disk caches`/`clean`: caches is a sized report (safe),
-        #   clean actually reclaims space (confirm-gated, matches update/
-        #   backup's own pattern).
-        # - `arc keys`: public keys only, pure read -- does NOT re-add
-        #   `guard`/`guard-quiet` as a button, matches standing memory
-        #   (feedback_manual_start_tools.md) that this stays manual/opt-in.
-        # - `arc browser-clean`: closes Brave+Firefox as a side effect,
-        #   confirm-gated like the other disruptive fixes below.
-        # - `arc logs ts`: Timeshift's own backup log, glob-picks the
-        #   latest run -- doesn't fit LOG_SOURCES' fixed-path shape, wired
-        #   as a plain action instead, reuses the CLI's own logic as-is.
-        # arc day (morning startup: USB check, backup status, repos) --
-        # verified sudo-free, safe one-click. arc sync (vault -> MEGA)
-        # deliberately NOT wired -- `sudo /usr/local/bin/vault-backup-mega`
-        # with no `-n`, same no-TTY trap as the clamav/chkrootkit/
-        # rkhunter scan-triggers above. arc mega (browse MEGA) also
-        # excluded -- needs a mode argument (ls/lsd/tree), same class as
-        # rename/wire/mirror being left terminal-only.
+        Action("Disk overview", "arc disk"),
+        Action("System health", "arc health"),
+        Action("Git repo audit", "arc audit", timeout=60),
+        Action("Deep clean (cache/apt/journal)", "arc clean", timeout=180),
+        Action("Update system (apt)", "arc update", timeout=600),
+        Action("Backup now", "arc backup", timeout=180),
         Action("Morning startup check (arc day)", "arc day", timeout=20),
-        Action("Mount USB vault", "arc mount", timeout=15),
-        Action("System snapshot (Timeshift, slow)", "arc snap", confirm=True, timeout=600),
+        Action("Mount USB vault", "arc mount", confirm=False, timeout=20),   # benign, reversible
+        Action("System snapshot (Timeshift, slow)", "arc snap", timeout=600),
         Action("Home sweep: status", "arc sweep status"),
-        Action("Home sweep: dry run (preview only)", "arc sweep dry", timeout=20),
+        Action("Home sweep: dry run (preview only)", "arc sweep dry", timeout=20),   # never `purge` here
         Action("Disk: reclaimable caches (report only)", "arc disk caches", timeout=15),
-        Action("Disk: clean reclaimable caches", "arc disk clean", confirm=True, timeout=60),
-        Action("SSH public keys (both accounts)", "arc keys"),
-        Action("Browser cache clean (closes Brave+Firefox)", "arc browser-clean", confirm=True, timeout=30),
+        Action("Disk: clean reclaimable caches", "arc disk clean", timeout=60),
+        Action("SSH public keys (both accounts)", "arc keys"),          # public keys only
+        Action("Browser cache clean (closes Brave+Firefox)", "arc browser-clean", timeout=30),
         Action("Timeshift backup log", "arc logs ts", timeout=15),
-        # arc-sot: the canonical SOT repo for every personal script (incl.
-        # this app) -- status is a safe read-only drift check, snapshot
-        # commits+pushes+mirrors to USB (confirm-gated, real network/git
-        # action). pull/bootstrap deliberately not buttons here -- both are
-        # rarer, more consequential operations (pull needs a clean working
-        # tree or it refuses; bootstrap is for a machine that isn't this
-        # one) better run deliberately from a terminal, not a one-click.
         Action("Personal tooling: status (arc sot)", "arc sot status"),
-        Action("Personal tooling: snapshot (arc sot)", "arc sot snapshot", confirm=True, timeout=60),
-        # Quick Fixes -- one of 3 things picked from `arc help`'s full list
-        # (2026-08-31) to wire in here: one-click remediation for the
-        # handful of annoyances that otherwise mean remembering a terminal
-        # command. Brave/WiFi confirm-gated since they have a real,
-        # if brief, disruptive side effect (closed tabs / dropped
-        # connectivity); display/audio are quick and safe, left one-click.
-        # Panel gets its own extra-cautious label -- a real outage happened
-        # once this session restarting it, not a hypothetical risk.
-        Action("Fix: relaunch Brave",       "arc fix brave", confirm=True),
+        Action("Personal tooling: snapshot (arc sot)", "arc sot snapshot", timeout=120),
+        # Quick fixes. `fix audio` restarts the XFCE panel and `fix display` the compositor, so
+        # the verb rule gates them like `fix panel` (which caused a real outage once).
+        Action("Fix: relaunch Brave", "arc fix brave"),
         Action("Fix: restart display compositor", "arc fix display"),
-        Action("Fix: WiFi toggle off/on",   "arc fix wifi", confirm=True, timeout=15),
-        Action("Fix: audio profile",        "arc fix audio"),
-        Action("Fix: taskbar panel (has caused a real outage before)", "arc fix panel", confirm=True),
+        Action("Fix: WiFi toggle off/on", "arc fix wifi", timeout=20),
+        Action("Fix: audio profile (restarts the panel)", "arc fix audio"),
+        Action("Fix: taskbar panel (has caused a real outage before)", "arc fix panel"),
     ],
     "Personal": [
         Action("Break timer status", "arc break status"),
-        Action("Break: start",      "arc break start"),
-        Action("Break: stop",       "arc break stop"),
-        # These three launch a *persistent* GUI window that stays open
-        # until the user closes it -- `arc break gui` in particular calls
-        # Tkinter's own mainloop() directly (blocking) -- launched via
-        # launch_detached() (Popen with DEVNULL-redirected stdio), not the
-        # normal run()/capture_output path, which was confirmed live to
-        # hang indefinitely on any backgrounded GUI process regardless of
-        # shell-level `&`/`nohup` (a real Python subprocess pipe-inheritance
-        # gotcha, not an arc-break-specific issue).
-        Action("Break: open GUI",   "arc-break gui", detach=True),
+        # confirm=False: starting the break timer is the user's own deliberate, harmless,
+        # reversible click (the tool must never auto-start -- this button IS the manual start).
+        Action("Break: start", "arc break start", confirm=False),
+        Action("Break: stop", "arc break stop"),
+        Action("Break: open GUI", "arc-break gui", detach=True),
         Action("Open arc-pine (notification history/settings)", "arc-pine", detach=True),
-        # 3rd of 3 things picked from `arc help` (2026-08-31) -- quick,
-        # non-interactive count check, distinct from the GUI launch above.
         Action("Notification history: count", "arc notify status"),
-        # Emoji picker + TOTP authenticator removed from this panel 2026-09-07
-        # (user's call) -- both still exist and work as `arc emoji`/`arc auth`
-        # from a real terminal, just not surfaced as panel buttons anymore.
+        Action("Notify stack: state (voice / bubbles / private site)",
+               "bash -c 'for u in arc-pined arc-pine-bubbles notes-site; do printf \"%-18s %s\\n\" $u "
+               "\"$(systemctl --user is-active $u)\"; done'"),
+        Action("Notify stack: restart voice + bubbles", "systemctl --user restart arc-pined arc-pine-bubbles"),
+        Action("Notify: send a test bubble", "arc-pine-notify normal khaos-lab 'Test notification' "
+               "'Sent from the khaos-lab panel'"),
+        # Emoji picker + TOTP app were removed from the panel 2026-09-07 (user's call); both
+        # still work as `arc emoji` / `arc auth` from a terminal.
     ],
 }
 
 
-def main():
-    # className explicit, not left at Tk's own default -- real bug found
-    # 2026-08-27: WM_CLASS was actually just generic "Tk" this whole time
-    # (confirmed via `xprop WM_CLASS`), never "khaos-lab" as the .desktop
-    # file's StartupWMClass=khaos-lab assumed it would be. A genuine
-    # correctness fix on its own, independent of the taskbar-icon bug
-    # (see TASKBAR_ICON_PATH's comment above for that one).
-    root = tk.Tk(className="khaos-lab")
-    root.title("khaos☠️lab")
-    root.configure(bg=BG)
-    # 660, not the original 600 -- the Status view grew a 4th tile row
-    # (self-heal) 2026-08-27 and 600 didn't leave room to actually show it,
-    # confirmed live via screenshot (tile was silently clipped, not visibly
-    # broken -- easy to miss without actually looking).
-    #
-    # Real regression found 2026-08-29: the forced "+40+40" position, combined
-    # with xfwm4 adding its own ~50px of decoration offset on top of that
-    # (confirmed live via `xdotool getwindowgeometry` -- actual placed y
-    # ended up 92, not the requested 40), pushed the window's bottom edge to
-    # y=792 -- past the real usable desktop area (`_NET_WORKAREA` confirmed
-    # 766px tall, the bottom 34px reserved by the taskbar panel). The
-    # bottom-most widget (the free-form "arc <cmd>" entry row) rendered
-    # right where the panel covers it -- invisible, not removed. Dropping
-    # the forced position lets xfwm4's own placement algorithm keep the
-    # whole window on-screen (it already accounts for panel struts when
-    # given the choice), which a hardcoded position can't -- verified live,
-    # confirmed the command row is visible again with this change.
-    # 700->730, 2026-09-19 -- the sidebar brand badge (see body_pane/sidebar
-    # block below) needed a little more real vertical room than trimming
-    # alone could recover; 730 is still comfortably inside the confirmed
-    # 766px _NET_WORKAREA from the regression above, and geometry_watchdog
-    # keeps repositioning this dynamically regardless of size anyway.
-    root.geometry("860x730")
-    root.minsize(720, 480)
+# ── data sources (read-only) ─────────────────────────────────────────────────
+class InventoryData:
+    """arc-inv's generated inventory.json -- the panel reads the report, it
+    never re-implements the probes."""
 
-    _taskbar_icon = load_image(TASKBAR_ICON_PATH)
-    if _taskbar_icon:
-        root.iconphoto(True, _taskbar_icon)
-
-    try:
-        # DejaVu Sans, not JetBrains Mono, specifically for the header title --
-        # confirmed live (throwaway test window, 2026-08-26) that JetBrains
-        # Mono (a code font) has no glyph for the skull-and-crossbones
-        # character at all, so Tk just rendered blank space for it -- not a
-        # transparency/color issue, a missing-glyph one. DejaVu Sans has real
-        # coverage for it (confirmed via `fc-match ":charset=2620"`), and Tk
-        # doesn't do automatic per-character font fallback the way a browser
-        # or GTK app would, so the font itself had to change, not just retry.
-        big_font    = tkfont.Font(family="DejaVu Sans", size=14, weight="bold")
-        label_font  = tkfont.Font(family="JetBrains Mono", size=10)
-        small_font  = tkfont.Font(family="JetBrains Mono", size=9)
-        mono_font   = tkfont.Font(family="JetBrains Mono", size=9)
-        nav_font    = tkfont.Font(family="JetBrains Mono", size=10)
-    except Exception:
-        big_font = label_font = small_font = mono_font = nav_font = tkfont.Font(size=10)
-
-    # ── Header ──────────────────────────────────────────────────────────────
-    # "Low-life-high-tech" pass, 2026-09-19 -- user's own words: "cant see
-    # my logo anymore... doesnt have to be necessarily transparent to see
-    # either." Root cause, confirmed by actually looking at the source art
-    # (not assumed): header-bg/sidebar-bg/content-bg are real, good
-    # winged-mechanical/circuit/gear artwork -- just rendered at low
-    # brightness/contrast that nearly vanishes against a dark palette, and
-    # (for header-bg specifically) the quick-search box below used to
-    # `fill="x", expand=True` and ate almost the entire strip. Two real
-    # fixes, not a new invented look: the four PNGs under
-    # ~/.local/share/khaos-lab got a one-time brightness/contrast/color
-    # boost (originals kept in _orig-backup-2026-09-19/ alongside them),
-    # and header-icon.png got regenerated bigger (64->88px) from the same
-    # boosted source instead of just upscaled blocky in-app. The emoji
-    # skull next to the wordmark is gone -- the actual logo already reads
-    # as a mechanical/skull emblem now that it's visible, a second flat
-    # unicode skull glyph next to it was redundant, part of what read as
-    # "tacky."
-    header = tk.Frame(root, bg=BG)
-    header.pack(fill="x", padx=14, pady=(14, 8))
-
-    # Background watermark first (place(), not pack()) so the icon/title/
-    # clock -- all packed normally below -- stack visually on top of it and
-    # keep their own correct left/right-anchored resize behavior. relwidth/
-    # relheight=1 means it re-fills the header automatically on resize,
-    # unlike a Canvas here would need manual <Configure> tracking for.
-    _header_bg = load_image(HEADER_BG_PATH)
-    if _header_bg:
-        tk.Label(header, image=_header_bg, bg=BG).place(relx=0, rely=0, relwidth=1, relheight=1)
-
-    # highlightthickness/highlightbackground -- same native-border technique
-    # as the Status tiles (see build_status_view), not a new mechanism --
-    # turns the icon into a real framed emblem instead of a bare thumbnail
-    # that used to blend straight into the header behind it.
-    _header_icon = load_image(HEADER_ICON_PATH)
-    if _header_icon:
-        tk.Label(header, image=_header_icon, bg=BG,
-                 highlightthickness=2, highlightbackground=GOLD).pack(side="left", padx=(0, 10))
-
-    tk.Label(header, text="khaos", font=big_font, bg=BG, fg=GOLD).pack(side="left")
-    tk.Label(header, text="/", font=big_font, bg=BG, fg=FG_MUTED).pack(side="left")
-    tk.Label(header, text="lab", font=big_font, bg=BG, fg=TEAL).pack(side="left", padx=(0, 16))
-    clock_lbl = tk.Label(header, text="", font=small_font, bg=BG, fg=FG_MUTED)
-    clock_lbl.pack(side="right")
-    # Circadian phase readout (2026-09-19). The panel's palette is fixed on
-    # purpose, but which Kataleya phase it currently is (choice/desire/
-    # still-pine/nyx) is still useful at a glance -- shown in that phase's own
-    # accent, the only time-of-day color left in this window.
-    phase_lbl = tk.Label(header, text="", font=small_font, bg=BG, fg=FG_MUTED)
-    phase_lbl.pack(side="right", padx=(0, 14))
-
-    # Global quick-search, added 2026-09-10 (v2 sweep). The Find view (own
-    # sidebar category) searches note CONTENT across the 4 tracked trees;
-    # this searches ACTION LABELS across every category -- the actual fix
-    # for "100+ buttons across 15 categories, can't find the one I want
-    # fast." Lives in the header (real free space between the title and
-    # the clock) rather than the 150px sidebar Canvas, which has no room
-    # for an Entry without reworking its manual Y-offset button layout.
-    # Pure in-memory string filtering, no subprocess -- cheap enough to
-    # re-render live on every keystroke rather than waiting for Enter.
-    # Fixed width, not fill="x" + expand=True -- that used to claim the
-    # entire remaining header strip, which was most of what was crushing
-    # header-bg.png's visibility (see the header block's comment above).
-    # 260px is still comfortably wide for typing an action name; the real
-    # space it gives back is what actually shows the art between the
-    # wordmark and the clock now.
-    search_var = tk.StringVar()
-    search_entry = tk.Entry(
-        header, textvariable=search_var, font=small_font, width=28,
-        bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat",
-        highlightthickness=1, highlightbackground=OVERLAY, highlightcolor=GOLD,
-    )
-    search_entry.pack(side="left", ipady=4, padx=(0, 16))
-    search_entry.insert(0, "quick-jump: type an action name…")
-    search_entry.configure(fg=FG_MUTED)
-    _search_placeholder = {"active": True}
-
-    def _search_focus_in(_e=None):
-        if _search_placeholder["active"]:
-            search_entry.delete(0, "end")
-            search_entry.configure(fg=FG)
-            _search_placeholder["active"] = False
-
-    def _search_focus_out(_e=None):
-        if not search_var.get().strip():
-            _search_placeholder["active"] = True
-            search_entry.insert(0, "quick-jump: type an action name…")
-            search_entry.configure(fg=FG_MUTED)
-
-    search_entry.bind("<FocusIn>", _search_focus_in)
-    search_entry.bind("<FocusOut>", _search_focus_out)
-
-    tk.Frame(root, bg=OVERLAY, height=1).pack(fill="x", padx=14)
-
-    # ── Body/console split, drag-resizable ───────────────────────────────────
-    # Real layout complaint (2026-08-29): the console was fixed at
-    # height=9 lines and packed fill="x" only (no expand) -- every extra
-    # pixel from resizing the window went entirely to body (sidebar+
-    # content), so the output area could never grow no matter how the
-    # window was resized. A PanedWindow with a draggable sash fixes this
-    # properly instead of just picking a different fixed split: the user
-    # can grow the console themselves whenever they want more room to
-    # read output, and shrink it back for more sidebar/content room.
-    main_pane = tk.PanedWindow(
-        root, orient="vertical", bg=OVERLAY, sashwidth=6, sashrelief="flat",
-        bd=0, showhandle=False, opaqueresize=True,
-    )
-    main_pane.pack(fill="both", expand=True, padx=14, pady=10)
-
-    # ── Body: sidebar + content ────────────────────────────────────────────
-    body = tk.Frame(main_pane, bg=BG)
-    # height=400 (was 460 pre-2026-09-19) -- just the INITIAL split, the
-    # sash is fully drag-resizable from here either way. Trimmed because
-    # PanedWindow gives the first-added pane (this one) its full hint and
-    # only lets the second pane (console) have whatever's left, confirmed
-    # live -- at 460 the console was landing within a few px of its own
-    # 110 floor by default regardless of its own height=190 hint, which is
-    # the other half of the "give output more room" fix (see
-    # _ensure_console_room below for the other half: auto-grow once on
-    # first real command output). Still comfortably fits the Status view's
-    # 5 tile rows with room to spare, confirmed live via screenshot.
-    main_pane.add(body, minsize=240, height=400)
-
-    # Horizontal PanedWindow, not a plain pack -- real user feedback
-    # 2026-09-11: the sidebar/content split had no way to adjust at all
-    # (150px fixed), unlike the vertical body/output split below which
-    # was already a real drag-resizable PanedWindow. Same treatment here.
-    body_pane = tk.PanedWindow(
-        body, orient="horizontal", bg=OVERLAY, sashwidth=6, sashrelief="flat",
-        bd=0, showhandle=False, opaqueresize=True,
-    )
-    body_pane.pack(fill="both", expand=True)
-
-    # Canvas, not Frame -- lets the watermark image sit behind the nav
-    # buttons. Tk buttons are opaque (bg=BG is a solid fill, no real alpha),
-    # so the image only actually shows through in the empty space the nav
-    # buttons don't cover -- that's by design, not a bug: a background
-    # image directly behind clickable buttons would just be invisible
-    # anyway, covered edge-to-edge by each button's own fill. With 14
-    # categories the button stack runs most of the Canvas's height, which
-    # is exactly why the dedicated badge band below exists -- real estate
-    # the art is GUARANTEED to keep, not competing with the nav list for
-    # the same pixels.
-    sidebar = tk.Canvas(body_pane, bg=BG, width=150, highlightthickness=0)
-    body_pane.add(sidebar, minsize=110, width=150)
-
-    # Second pane: a plain wrapper Frame holding content+its scrollbar
-    # exactly as before -- PanedWindow panes are added as single widgets,
-    # so the existing content/content_scroll pack() pairing stays inside
-    # this one extra container rather than needing to change at all.
-    content_wrap = tk.Frame(body_pane, bg=SURFACE)
-    body_pane.add(content_wrap, minsize=300)
-
-    _sidebar_bg = load_image(SIDEBAR_BG_PATH)
-    if _sidebar_bg:
-        sidebar.create_image(0, 0, anchor="nw", image=_sidebar_bg)
-
-    # Brand badge, 2026-09-19 -- a fixed strip at the TOP of the sidebar
-    # Canvas, drawn before the nav buttons and never covered by them (they
-    # start below it, see SIDEBAR_TOP below). Same emblem as the header
-    # icon, smaller. This is the direct fix for "can't see my logo" in the
-    # sidebar specifically: sidebar-bg.png's own baked-in wordmark is real
-    # but sits low in a 520px image that a 14-item button stack covers
-    # almost end to end, so it was structurally unviewable, not just dim.
-    #
-    # Kept deliberately compact (30px, small_font not nav_font) -- a first
-    # pass at 48px/nav_font pushed Maintenance/Personal off the bottom of
-    # the sidebar Canvas (confirmed live via screenshot: the 14-category
-    # list was already landing right at the sidebar's bottom edge before
-    # this badge existed at all, zero margin to spare). The durable fix is
-    # the scrollregion + wheel binding added after the nav loop below --
-    # this smaller size plus the root.geometry bump just keeps things
-    # comfortable without relying on scrolling for the common case.
-    _sidebar_icon = load_image(SIDEBAR_ICON_PATH)
-    if _sidebar_icon:
-        sidebar.create_image(8, 6, anchor="nw", image=_sidebar_icon)
-    sidebar.create_text(34, 16, anchor="w", text="khaos-lab", font=small_font, fill=GOLD)
-    sidebar.create_line(0, 30, 150, 30, fill=OVERLAY, width=1)
-    SIDEBAR_TOP = 30
-
-    # Canvas, not Frame -- same reasoning as the sidebar: lets the watermark
-    # show behind the actual view (status tiles / action rows), visible in
-    # whatever margin/gap those don't opaquely cover. Each view-builder
-    # embeds its own frame via _embed_content() below instead of .pack(),
-    # and that helper keeps it stretched to the canvas's current size on
-    # resize (a plain create_window() child doesn't auto-follow the canvas
-    # growing/shrinking the way a packed fill="both" child would).
-    content = tk.Canvas(content_wrap, bg=SURFACE, highlightthickness=0)
-    # Real bug found+fixed 2026-08-29: the SOC category grew to 18 actions
-    # while _embed_content forced the embedded frame to the canvas's exact
-    # visible height (see below) -- with no scrollbar, anything past
-    # Darkstat's row was clipped with zero way to reach it. Same underlying
-    # class of bug as the cmd_row disappearance earlier the same day, just
-    # a bigger instance of it. Real fix, not a bandage: a real scrollbar,
-    # wired to a canvas scrollregion that's kept honest by the embedded
-    # widget's own actual required size, not an assumed/guessed number.
-    content_scroll = tk.Scrollbar(
-        content_wrap, orient="vertical", command=content.yview,
-        bg=OVERLAY, troughcolor=BG, activebackground=TEAL,
-        bd=0, highlightthickness=0, width=12,
-    )
-    # Not packed yet -- starts hidden, _set_scrollbar_visible() below packs
-    # it in only when a view's content actually overflows the viewport.
-    content.configure(yscrollcommand=content_scroll.set)
-    content.pack(side="left", fill="both", expand=True, padx=(10, 0))
-
-    _content_bg = load_image(CONTENT_BG_PATH)
-    if _content_bg:
-        content.create_image(0, 0, anchor="nw", image=_content_bg)
-
-    def _set_scrollbar_visible(visible):
-        # "keep it clean and simple" -- only show the scrollbar on views
-        # that actually overflow (SOC, currently). Status and the smaller
-        # categories don't need one cluttering the edge.
-        if visible:
-            if not content_scroll.winfo_ismapped():
-                content_scroll.pack(side="right", fill="y")
-        else:
-            if content_scroll.winfo_ismapped():
-                content_scroll.pack_forget()
-
-    def _embed_content(widget, pad=16, scrollable=False):
-        # pad on all sides -- also what lets the watermark actually show
-        # (a widget filling the canvas edge-to-edge would hide it entirely).
-        item = content.create_window(pad, pad, anchor="nw", window=widget)
-        def _resize(event, item=item, pad=pad):
-            w = max(event.width - 2 * pad, 1)
-            content.itemconfigure(item, width=w)
-            if scrollable:
-                # Let the widget grow to whatever height its real content
-                # needs (not forced to the visible viewport) -- scrolling
-                # is what makes the overflow reachable instead of hidden.
-                widget.update_idletasks()
-                req_h = max(widget.winfo_reqheight(), event.height - 2 * pad)
-                content.configure(scrollregion=(0, 0, event.width, req_h + 2 * pad))
-                _set_scrollbar_visible(req_h + 2 * pad > event.height)
-            else:
-                h = max(event.height - 2 * pad, 1)
-                content.itemconfigure(item, height=h)
-                content.configure(scrollregion=(0, 0, event.width, event.height))
-                _set_scrollbar_visible(False)
-        content.bind("<Configure>", _resize)
-        if scrollable:
-            def _on_wheel(evt):
-                content.yview_scroll(-1 if (evt.num == 4 or evt.delta > 0) else 1, "units")
-            content.bind_all("<Button-4>", _on_wheel)
-            content.bind_all("<Button-5>", _on_wheel)
-            content.bind_all("<MouseWheel>", _on_wheel)
-        else:
-            content.unbind_all("<Button-4>")
-            content.unbind_all("<Button-5>")
-            content.unbind_all("<MouseWheel>")
-            _set_scrollbar_visible(False)
-
-    def _refresh_scrollregion(widget, pad=16):
-        # Called once after a category view finishes packing all of its
-        # rows -- _embed_content's own <Configure>-driven resize only
-        # fires on canvas resize, not when rows are added to an
-        # already-correctly-sized canvas (switching between categories
-        # doesn't resize anything, so nothing would otherwise trigger a
-        # recompute here).
-        widget.update_idletasks()
-        w = content.winfo_width()
-        viewport_h = content.winfo_height()
-        req_h = max(widget.winfo_reqheight(), viewport_h - 2 * pad)
-        content.configure(scrollregion=(0, 0, w, req_h + 2 * pad))
-        content.yview_moveto(0)
-        _set_scrollbar_visible(req_h + 2 * pad > viewport_h)
-
-    def _clear_content():
-        for w in content.winfo_children():
-            w.destroy()
-
-    # ── Output console (shared, bottom pane -- drag the sash above to resize) ─
-    # Real bug found+fixed 2026-08-29: the free-form "arc <cmd>" entry row
-    # that used to live below the console got silently squeezed out of
-    # existence once the console pane could shrink (confirmed via
-    # `xwininfo -tree` -- it stopped existing as a real X window at all,
-    # not just clipped). Removed rather than fought -- it only ever
-    # duplicated typing the same command in an actual terminal, and the
-    # user offered this as the preferred fallback themselves.
-    console_frame = tk.Frame(main_pane, bg=BG)
-    # minsize=110 is a real floor, not decoration -- the 2026-08-29
-    # cmd_row bug happened because a pane's content could demand more
-    # than the pane's actual allocated height with nothing stopping it;
-    # the fix there was removing the widget that could silently vanish,
-    # this floor is the second layer -- whatever's left (label + Text)
-    # only ever shrinks the Text's visible lines, never disappears.
-    main_pane.add(console_frame, minsize=110, height=190)
-
-    tk.Label(console_frame, text="output", font=small_font, bg=BG, fg=FG_MUTED).pack(anchor="w")
-
-    # Canvas + padded create_window, not a bare Text.pack(), 2026-09-19 --
-    # user's own follow-up mid-redesign: "background image needs to be
-    # visible either in both ctrl and output panes." Same technique as the
-    # content pane's _embed_content() above (Text is opaque, so the image
-    # only actually shows in the pad margin around it -- that's the same
-    # honest constraint documented there, not a new one), reusing
-    # content-bg.png rather than a 5th asset so the output pane reads as
-    # the same surface as the content pane, not a bolted-on extra.
-    console_canvas = tk.Canvas(console_frame, bg=SURFACE, highlightthickness=0)
-    console_canvas.pack(fill="both", expand=True)
-    # Reuses _content_bg (same file, content pane above already loaded it)
-    # rather than a second load_image() call -- one PhotoImage, usable on
-    # both canvases, instead of decoding+holding the same PNG twice.
-    if _content_bg:
-        console_canvas.create_image(0, 0, anchor="nw", image=_content_bg)
-
-    console = tk.Text(
-        console_canvas, bg=SURFACE, fg=FG, insertbackground=FG,
-        font=mono_font, relief="flat", padx=8, pady=6, wrap="word",
-    )
-    console.configure(state="disabled")
-    _console_pad = 5
-    _console_item = console_canvas.create_window(_console_pad, _console_pad, anchor="nw", window=console)
-
-    def _console_resize(event):
-        w = max(event.width - 2 * _console_pad, 1)
-        h = max(event.height - 2 * _console_pad, 1)
-        console_canvas.itemconfigure(_console_item, width=w, height=h)
-
-    console_canvas.bind("<Configure>", _console_resize)
-
-    def log(text, color=FG):
-        console.configure(state="normal")
-        console.insert("end", text + "\n")
-        console.tag_add(f"c{len(text)}", "end-2l", "end-1l")
-        console.tag_config(f"c{len(text)}", foreground=color)
-        console.see("end")
-        console.configure(state="disabled")
-
-    # Auto-adjust, 2026-09-19 -- user's own follow-up: "more room for
-    # output panel/pane or make it intuitive to autodetect/autoadjust."
-    # Console started squeezed to near its 110px floor by default (the
-    # first-added pane's height hint gets fully honored by PanedWindow,
-    # the second just gets whatever's left -- confirmed live, not assumed;
-    # see the trimmed body height hint above, which is the other half of
-    # this same fix). This is the other half: the FIRST time any command
-    # actually runs, grow the sash once so real output has real room to
-    # show without the user having to already know to drag it -- then
-    # never touch the sash again, so a deliberate manual resize afterward
-    # is never fought or silently undone.
-    _console_auto_expanded = {"done": False}
-
-    def _ensure_console_room():
-        if _console_auto_expanded["done"]:
-            return
-        root.update_idletasks()
-        total_h = main_pane.winfo_height()
-        if total_h <= 1:
-            return  # window not fully realized yet -- retry on the next run, don't mark done
+    @staticmethod
+    def load():
         try:
-            _, sash_y = main_pane.sash_coord(0)
+            return json.loads(INVENTORY_JSON.read_text())
+        except Exception:
+            return None
+
+    @staticmethod
+    def age_minutes(d):
+        try:
+            at = datetime.fromisoformat(d["scan"]["at"])
+            return (datetime.now(timezone.utc) - at).total_seconds() / 60
+        except Exception:
+            return None
+
+    @classmethod
+    def summary(cls, d):
+        """(text, color) for a one-line tile."""
+        if not d:
+            return "no inventory yet — open Inventory → scan now", GOLD
+        c = d.get("counts", {})
+        age = cls.age_minutes(d)
+        parts = [f"{len(d.get('assets', []))} assets", f"{c.get('ok', 0)} ok"]
+        for k in ("attention", "drift", "unknown"):
+            if c.get(k):
+                parts.append(f"{c[k]} {k}")
+        if d.get("untracked"):
+            parts.append(f"{len(d['untracked'])} unregistered")
+        text = "  ·  ".join(parts) + f"\nscan {fmt_age(age)}"
+        if c.get("drift"):
+            color = ROSE
+        elif d.get("untracked") or (age is not None and age > 90) or c.get("unknown", 0) > 3:
+            color = GOLD
+        else:
+            color = TEAL
+        return text, color
+
+
+class CloudLab:
+    """AWS lab state, from `arc aws-status` (one source of truth -- the old code
+    re-implemented the AWS calls here with a hardcoded account id). Cached 90s
+    and shared by every view that shows it, so navigating around never
+    multiplies AWS calls."""
+
+    TTL = 90
+
+    def __init__(self, runner):
+        self.runner = runner
+        self._lock = threading.Lock()
+        self._at, self._val = 0.0, ("checking…", FG)
+
+    def snapshot(self):
+        with self._lock:
+            if time.time() - self._at < self.TTL:
+                return self._val
+            ok, out = self.runner.run("arc aws-status", timeout=40)
+            inst = re.findall(r"·\s+(\S+?)(?:-cloud)?\s+(running|stopped|stopping|pending|terminated|\S+)", out)
+            if not ok or not inst:
+                self._val = ("unreachable (check aws credentials / network)", ROSE)
+            else:
+                spend = re.search(r"budget\s+\$([\d.]+)/(\d+)", out)
+                spend_s = f"${float(spend.group(1)):.2f}/{spend.group(2)}" if spend else "spend n/a"
+                text = "  ·  ".join(f"{n} {s}" for n, s in inst) + f"  ·  {spend_s}"
+                self._val = (text, TEAL if any(s == "running" for _, s in inst) else FG)
+            self._at = time.time()
+            return self._val
+
+
+# ── dialogs ──────────────────────────────────────────────────────────────────
+class Dialog:
+    """One modal-dialog helper (the old code copy-pasted three near-identical
+    popups, none modal -- so confirms could stack). Escape cancels."""
+
+    def __init__(self, app, title, resizable=False, geometry=None):
+        self.app = app
+        self.win = tk.Toplevel(app.root)
+        self.win.title(title)
+        self.win.configure(bg=BG)
+        self.win.resizable(resizable, resizable)
+        self.win.attributes("-topmost", True)
+        self.win.transient(app.root)
+        self.win.geometry(geometry or f"+{app.root.winfo_x() + 120}+{app.root.winfo_y() + 150}")
+        self.win.bind("<Escape>", lambda _e: self.close())
+        self.win.after(60, self._grab)
+
+    def _grab(self):
+        try:
+            self.win.grab_set()
+            self.win.focus_force()
         except tk.TclError:
-            return  # same -- leave "done" False so a later call can still try
-        _console_auto_expanded["done"] = True
-        new_sash_y = max(0, total_h - 260)
-        if new_sash_y < sash_y:
-            main_pane.sash_place(0, 0, new_sash_y)
+            pass                      # not viewable yet / already closed -- harmless
 
-    def run_async(cmd, timeout=30, on_done=None):
-        _ensure_console_room()
-        log(f"$ {cmd}", TEAL)
+    def label(self, text, fg=FG, font=None, wrap=None, pady=(0, 10)):
+        tk.Label(self.win, text=text, font=font or self.app.f.label, bg=BG, fg=fg,
+                 wraplength=wrap or 0, justify="left").pack(padx=20, pady=pady)
 
-        def worker():
-            ok, out = run(cmd, timeout=timeout)
-            def finish():
-                if out:
-                    log(out, FG if ok else ROSE)
-                log(f"[{'ok' if ok else 'failed'}]", PINE if ok else ROSE)
-                if on_done:
-                    on_done()
-            root.after(0, finish)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def launch_detached_async(cmd):
-        _ensure_console_room()
-        log(f"$ {cmd}  (opens its own window)", TEAL)
-        ok, msg = launch_detached(cmd)
-        log(f"[{'ok' if ok else 'failed'}] {msg}", PINE if ok else ROSE)
-
-
-    # ── Confirm modal ──────────────────────────────────────────────────────
-    def confirm(label, cmd, timeout, on_yes_done=None):
-        popup = tk.Toplevel(root)
-        popup.title("confirm")
-        popup.configure(bg=BG)
-        popup.resizable(False, False)
-        popup.attributes("-topmost", True)
-        popup.geometry(f"+{root.winfo_x()+120}+{root.winfo_y()+150}")
-
-        tk.Label(
-            popup, text=f"run: {label}?", font=label_font, bg=BG, fg=FG,
-        ).pack(padx=20, pady=(16, 4))
-        tk.Label(
-            popup, text=cmd, font=small_font, bg=BG, fg=FG_MUTED,
-        ).pack(padx=20, pady=(0, 14))
-
-        row = tk.Frame(popup, bg=BG)
+    def buttons(self, specs):
+        row = tk.Frame(self.win, bg=BG)
         row.pack(pady=(0, 16))
+        for text, fg, fn in specs:
+            ui.button(row, text, command=(lambda f=fn: (self.close(), f and f())), font=self.app.f.small,
+                      bg=SURFACE, fg=fg, hover_bg=OVERLAY, padx=12, pady=6).pack(side="left", padx=6)
 
-        def do_yes():
-            popup.destroy()
-            run_async(cmd, timeout=timeout, on_done=on_yes_done)
+    def close(self):
+        try:
+            self.win.grab_release()
+        except tk.TclError:
+            pass
+        self.win.destroy()
 
-        ui.button(row, "yes, run it", command=do_yes, font=small_font,
-                  bg=SURFACE, fg=ROSE, hover_bg=OVERLAY, padx=12, pady=6,
-                  ).pack(side="left", padx=6)
-        ui.button(row, "cancel", command=popup.destroy, font=small_font,
-                  bg=SURFACE, fg=FG_MUTED, hover_bg=OVERLAY, padx=12, pady=6,
-                  ).pack(side="left", padx=6)
 
-    # ── Status dashboard (live tiles) ──────────────────────────────────────
-    status_tiles = {}
-    # AWS lab status is polled on its own slower 90s timer, not the 15s
-    # status loop -- added 2026-08-31. Two AWS API calls (describe-instances
-    # + describe-budget) on every 15s refresh would add real, felt latency
-    # to the whole dashboard and needlessly hammers AWS for state that
-    # rarely changes second-to-second. The 15s loop just reads this cache.
-    aws_lab_cache = {"text": "checking…", "ok": True}
+# ── console pane ─────────────────────────────────────────────────────────────
+class ConsolePane:
+    """Shared output console. Colour is by named tag per colour (the old code
+    named tags by text LENGTH, so two equal-length lines shared -- and kept
+    overwriting -- one colour, and only the last line of a multi-line block was
+    tagged at all). Capped so a chatty command can't grow it without bound."""
 
-    def build_status_view():
-        _clear_content()
-        status_tiles.clear()
+    MAX_LINES = 3000
 
-        grid = tk.Frame(content, bg=SURFACE)
-        _embed_content(grid)
+    def __init__(self, app, parent):
+        f = app.f
+        tk.Label(parent, text="output", font=f.small, bg=BG, fg=FG_MUTED).pack(anchor="w")
+        # Canvas + padded create_window (same technique as the content pane): the Text is opaque,
+        # so the background art only shows in the pad margin around it -- by design.
+        self.canvas = tk.Canvas(parent, bg=SURFACE, highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        if app.content_bg:
+            self.canvas.create_image(0, 0, anchor="nw", image=app.content_bg)
+        self.text = tk.Text(self.canvas, bg=SURFACE, fg=FG, insertbackground=FG, font=f.mono,
+                            relief="flat", padx=8, pady=6, wrap="word", state="disabled")
+        self._pad = 5
+        self._item = self.canvas.create_window(self._pad, self._pad, anchor="nw", window=self.text)
+        self.canvas.bind("<Configure>", self._resize)
+        self._tags = {}
 
-        def tile(row, col, key, title):
-            # Tried ui.rounded_frame() here first -- reverted. Its Canvas
-            # sizes itself to content, not to whatever grid's "nsew" sticky
-            # actually allocates, so a multi-column grid of these went
-            # visibly uneven (row heights no longer matched between
-            # columns). Confirmed live via screenshot before reverting, not
-            # assumed. Flat Frame is the correct tool for a responsive
-            # grid; rounded_frame is proven for arc-break's simple
-            # single-column vertical stack, a genuinely different layout
-            # shape. Colors come from khaos-lab's fixed palette (no circadian).
-            # highlightthickness/highlightbackground -- a real, native
-            # Tkinter border (not a focus ring; Frame never takes focus,
-            # so this just always shows) instead of the flat, borderless
-            # rectangle every tile used before. Doesn't have
-            # ui.rounded_frame()'s grid-sizing problem since it's not a
-            # Canvas -- same width/height behavior as a plain Frame,
-            # just with an edge now.
-            f = tk.Frame(grid, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
+    def _resize(self, event):
+        self.canvas.itemconfigure(self._item, width=max(event.width - 2 * self._pad, 1),
+                                  height=max(event.height - 2 * self._pad, 1))
+
+    def _tag(self, color):
+        name = self._tags.get(color)
+        if name is None:
+            name = self._tags[color] = f"col_{len(self._tags)}"
+            self.text.tag_configure(name, foreground=color)
+        return name
+
+    def log(self, text, color=FG):
+        t = self.text
+        t.configure(state="normal")
+        start = t.index("end-1c")
+        t.insert("end", text + "\n")
+        t.tag_add(self._tag(color), start, "end-1c")
+        extra = int(t.index("end-1c").split(".")[0]) - self.MAX_LINES
+        if extra > 0:
+            t.delete("1.0", f"{extra + 1}.0")
+        t.see("end")
+        t.configure(state="disabled")
+
+
+# ── views ────────────────────────────────────────────────────────────────────
+class View:
+    """One screen. Owns its widgets and its poll jobs; destroy() stops the jobs
+    (so nothing keeps updating widgets that no longer exist)."""
+
+    scrollable = False
+
+    def __init__(self, app):
+        self.app = app
+        self.frame = None
+        self._jobs = []
+
+    def show(self):
+        self.frame = tk.Frame(self.app.content, bg=SURFACE)
+        self.app.embed(self.frame, scrollable=self.scrollable)
+        self.build()
+        if self.scrollable:
+            self.app.refresh_scroll(self.frame)
+
+    def build(self):
+        raise NotImplementedError
+
+    def alive(self):
+        try:
+            return self.frame is not None and bool(self.frame.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def poll(self, name, every_ms, work, apply):
+        self._jobs.append(name)
+        self.app.poller.start(name, every_ms, work, apply, self.alive)
+
+    def kick(self, name):
+        self.app.poller.kick(name)
+
+    def destroy(self):
+        for n in self._jobs:
+            self.app.poller.stop(n)
+        self._jobs = []
+        self.frame = None
+
+
+class TileView(View):
+    """A 2-column grid of live status tiles. Subclasses declare TILES and
+    checks() -> {key: callable}; each callable returns text or (text, colour).
+    Checks run in parallel and each tile is updated the moment ITS check
+    finishes (a refresh used to wait for the slowest one, so tiles stayed
+    "checking…" for the length of an AWS call). Colours are decided in the
+    worker thread -- never on the UI thread, where a lock held during a slow
+    call would freeze the window."""
+
+    scrollable = True
+    TILES = []            # (row, col, key, title)
+    EVERY = 15000
+    NAME = "tiles"
+
+    def build(self):
+        self.labels = {}
+        for row, col, key, title in self.TILES:
+            f = tk.Frame(self.frame, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
             f.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
-            grid.columnconfigure(col, weight=1)
-            tk.Label(f, text=title, font=small_font, bg=OVERLAY, fg=FG_MUTED).pack(
+            self.frame.columnconfigure(col, weight=1, uniform="tiles")
+            tk.Label(f, text=title, font=self.app.f.small, bg=OVERLAY, fg=FG_MUTED).pack(
                 anchor="w", padx=12, pady=(10, 2))
-            val = tk.Label(f, text="checking…", font=label_font, bg=OVERLAY, fg=FG, justify="left")
-            val.pack(anchor="w", padx=12, pady=(0, 10))
-            status_tiles[key] = val
+            val = tk.Label(f, text="checking…", font=self.app.f.label, bg=OVERLAY, fg=FG, justify="left",
+                           anchor="w")
+            val.pack(anchor="w", fill="x", padx=12, pady=(0, 10))
+            # wrap long values to the tile instead of clipping them off both edges
+            f.bind("<Configure>", lambda e, v=val: v.configure(wraplength=max(e.width - 30, 80)))
+            self.labels[key] = val
+        self.poll(self.NAME, self.EVERY, self.collect, lambda _r: None)
 
-        # VPN tile removed 2026-08-31 (ProtonVPN purged) -- reflowed the
-        # remaining 7 rather than leave a gap in the middle of the grid.
-        tile(0, 0, "dns", "DNS")
-        tile(0, 1, "break", "Break timer")
-        tile(1, 0, "disk", "Disk")
-        tile(1, 1, "services", "Failed services")
-        tile(2, 0, "uptime", "Uptime / load")
-        tile(2, 1, "selfheal", "Self-heal (arc-heal)")
-        tile(3, 0, "idsips", "IDS/IPS")
-        tile(3, 1, "calendar", "Upcoming (Orage)")
-        tile(4, 0, "awslab", "AWS Lab (gvm/soc-lab-cloud)")
+    def refresh(self):
+        self.kick(self.NAME)
 
-        refresh_status()
-        aws_lab_poll()
+    def checks(self):
+        raise NotImplementedError
 
-    def refresh_status():
-        def worker():
-            checks = {}
-            ok, out = run("arc dns status", timeout=8)
-            mode_line = next((l for l in out.splitlines() if "mode:" in l), "")
-            checks["dns"] = mode_line.split("mode:")[-1].strip() if mode_line else (out[:60] or "unavailable")
+    def color_for(self, key, val):
+        return FG
 
-            ok, out = run("arc break status", timeout=8)
-            checks["break"] = strip_banner(out, cmd="arc break status") or "unavailable"
+    def collect(self):
+        """Worker thread: run every check concurrently, posting each result to
+        the UI as it lands."""
+        def one(item):
+            key, fn = item
+            try:
+                r = fn()
+            except Exception:
+                r = "unavailable"
+            text, color = r if isinstance(r, tuple) else (r, None)
+            self.app.bridge.post(self._apply_one, key, text, color if color else self.color_for(key, text))
+        items = list(self.checks().items())
+        with cf.ThreadPoolExecutor(max_workers=len(items)) as ex:
+            list(ex.map(one, items))
 
-            ok, out = run("df -h / --output=used,avail,pcent", timeout=8)
+    def _apply_one(self, key, text, color):
+        lbl = self.labels.get(key)
+        if lbl is None or not self.alive():
+            return
+        lbl.configure(text=text, fg=color)
+        self.app.refresh_scroll(self.frame)
+
+
+class StatusView(TileView):
+    NAME = "status"
+    EVERY = 15000
+    TILES = [
+        (0, 0, "dns", "DNS"), (0, 1, "break", "Break timer"),
+        (1, 0, "disk", "Disk"), (1, 1, "services", "Failed services"),
+        (2, 0, "uptime", "Uptime / load"), (2, 1, "selfheal", "Self-heal (arc-heal)"),
+        (3, 0, "idsips", "IDS/IPS"), (3, 1, "calendar", "Upcoming (Orage)"),
+        (4, 0, "awslab", "AWS lab (gvm / soclab / wazuh)"), (4, 1, "inventory", "Inventory (arc inv)"),
+        (5, 0, "notify", "Notify stack (voice · bubbles · site)"),
+    ]
+
+    def checks(self):
+        r = self.app.runner.run
+
+        def dns():
+            ok, out = r("arc dns status", timeout=10)
+            line = next((l for l in out.splitlines() if "mode:" in l), "")
+            return line.split("mode:")[-1].strip() if line else (out[:60] or "unavailable")
+
+        def brk():
+            ok, out = r("arc break status", timeout=10)
+            return strip_banner(out, cmd="arc break status") or "unavailable"
+
+        def disk():
+            ok, out = r("df -h / --output=used,avail,pcent", timeout=8)
             lines = out.splitlines()
-            checks["disk"] = lines[-1].strip() if len(lines) > 1 else "unavailable"
+            return lines[-1].strip() if len(lines) > 1 else "unavailable"
 
-            ok1, out1 = run("systemctl --failed --no-legend", timeout=8)
-            ok2, out2 = run("systemctl --user --failed --no-legend", timeout=8)
-            n = len([l for l in (out1 + "\n" + out2).splitlines() if l.strip()])
-            checks["services"] = f"{n} failed" if n else "all healthy"
+        def services():
+            _, a = r("systemctl --failed --no-legend", timeout=8)
+            _, b = r("systemctl --user --failed --no-legend", timeout=8)
+            n = len([l for l in (a + "\n" + b).splitlines() if l.strip()])
+            return f"{n} failed" if n else "all healthy"
 
-            ok, out = run("uptime -p && uptime | grep -oP 'load average: \\K.*'", timeout=8)
-            checks["uptime"] = out.replace("\n", "  ·  ") or "unavailable"
+        def uptime():
+            ok, out = r("uptime -p && uptime | grep -oP 'load average: \\K.*'", timeout=8)
+            return out.replace("\n", "  ·  ") or "unavailable"
 
-            # Self-heal, on today's design principle: surface arc-heal's own
-            # last result right on the main dashboard instead of making the
-            # user remember to click into Security -- a plain file read, not
-            # a fresh `arc heal` run (that takes 5-10s+, too heavy for this
-            # 15s auto-refresh; the cron job already runs it every 3h, this
-            # just shows what it last found).
-            checks["selfheal"] = "no runs on record yet"
+        def selfheal():
+            # A plain read of arc-heal's last result, not a fresh run (that's 20s+ and cron already
+            # runs it every 3h) -- keeps the 15s refresh cheap.
             try:
                 text = HEAL_LOG_PATH.read_text()
-                ts_match = re.search(r"— (\d{8}T\d{6}Z)", text)
-                summary_match = re.search(r"Run took .*", text)
-                summary = summary_match.group(0) if summary_match else "unrecognized log format"
-                if ts_match:
-                    epoch = calendar.timegm(time.strptime(ts_match.group(1), "%Y%m%dT%H%M%SZ"))
-                    age_min = max(0, int((time.time() - epoch) / 60))
-                    age_str = f"{age_min}m ago" if age_min < 120 else f"{age_min // 60}h ago"
-                    checks["selfheal"] = f"{summary}  ·  {age_str}"
-                else:
-                    checks["selfheal"] = summary
             except Exception:
-                pass
+                return "no runs on record yet"
+            ts = re.search(r"— (\d{8}T\d{6}Z)", text)
+            sm = re.search(r"Run took .*", text)
+            summary = sm.group(0) if sm else "unrecognized log format"
+            if not ts:
+                return summary
+            epoch = calendar.timegm(time.strptime(ts.group(1), "%Y%m%dT%H%M%SZ"))
+            return f"{summary}  ·  {fmt_age(max(0, (time.time() - epoch) / 60))}"
 
-            # IDS/IPS -- the real, live security monitoring stack (Suricata
-            # engine + Sagan correlation + EveBox alert viewer), not the
-            # soc-lab training containers (those stay Security-category-only,
-            # manual-launch, never shown here). Plain status reads, cheap
-            # enough for the 15s auto-refresh -- native, so a glance at the
-            # dashboard covers what used to need a browser tab.
-            ok, out = run("systemctl is-active suricata", timeout=5)
-            suricata_state = out.strip() or "unknown"
-            ok, out = run("docker inspect --format '{{.State.Status}}' sagan", timeout=5)
-            sagan_state = out.strip() if ok else "missing"
-            ok, out = run("docker inspect --format '{{.State.Status}}' evebox", timeout=5)
-            evebox_state = out.strip() if ok else "missing"
-            checks["idsips"] = f"suricata {suricata_state}  ·  sagan {sagan_state}  ·  evebox {evebox_state}"
+        def idsips():
+            _, sur = r("systemctl is-active suricata", timeout=5)
+            ok1, sag = r("docker inspect --format '{{.State.Status}}' sagan", timeout=5)
+            ok2, eve = r("docker inspect --format '{{.State.Status}}' evebox", timeout=5)
+            return (f"suricata {sur.strip() or 'unknown'}  ·  sagan {sag.strip() if ok1 else 'missing'}"
+                    f"  ·  evebox {eve.strip() if ok2 else 'missing'}")
 
-            try:
-                upcoming = get_upcoming_events(limit=2)
-                checks["calendar"] = "\n".join(upcoming) if upcoming else "nothing scheduled"
-            except Exception:
-                checks["calendar"] = "unavailable"
+        def calendar_():
+            up = get_upcoming_events(limit=2)
+            return "\n".join(up) if up else "nothing scheduled"
 
-            def apply():
-                for key, val in checks.items():
-                    if key in status_tiles:
-                        color = FG
-                        if key == "services" and "failed" in val and "0 failed" not in val:
-                            color = ROSE
-                        if key == "selfheal":
-                            flagged = re.search(r"(\d+) flagged", val)
-                            healed = re.search(r"(\d+) healed", val)
-                            if flagged and int(flagged.group(1)) > 0:
-                                color = ROSE
-                            elif healed and int(healed.group(1)) > 0:
-                                color = TEAL
-                        if key == "idsips":
-                            # Exact-word checks, not substring -- "inactive"
-                            # contains the substring "active", which a naive
-                            # `"active" in val` would wrongly call healthy.
-                            healthy = (
-                                "suricata active" in val
-                                and val.count("running") == 2
-                            )
-                            color = TEAL if healthy else ROSE
-                        status_tiles[key].configure(text=val, fg=color)
-            root.after(0, apply)
+        def awslab():
+            return self.app.cloudlab.snapshot()
 
-        threading.Thread(target=worker, daemon=True).start()
+        def inventory():
+            return InventoryData.summary(InventoryData.load())
 
-    def aws_lab_poll():
-        def apply_cache():
-            if "awslab" not in status_tiles:
-                return
-            color = FG
-            if not aws_lab_cache["ok"]:
-                color = ROSE
-            elif aws_lab_cache.get("any_running"):
-                color = TEAL  # visible reminder something is live/billing
-            status_tiles["awslab"].configure(text=aws_lab_cache["text"], fg=color)
+        def notify():
+            _, out = r("systemctl --user is-active arc-pined arc-pine-bubbles notes-site", timeout=8)
+            s = out.split()
+            names = ["voice", "bubbles", "site"]
+            if len(s) != 3:
+                return "unavailable"
+            return "  ·  ".join(f"{n} {'ok' if v == 'active' else v}" for n, v in zip(names, s))
 
-        def worker():
-            conf_path = Path.home() / ".config/arc/aws-lab.conf"
-            if not conf_path.exists():
-                aws_lab_cache.update(text="not configured", ok=True, any_running=False)
-                root.after(0, apply_cache)
-                return
-            conf = {}
-            for line in conf_path.read_text().splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                conf[k] = v
-            region = conf.get("AWS_LAB_REGION", "us-east-1")
-            gvm_id = conf.get("GVM_INSTANCE_ID", "")
-            soclab_id = conf.get("SOCLAB_INSTANCE_ID", "")
-            wazuh_id = conf.get("WAZUH_INSTANCE_ID", "")
-            ok, out = run(
-                f"aws ec2 describe-instances --instance-ids {gvm_id} {soclab_id} {wazuh_id} "
-                f"--region {region} --query 'Reservations[*].Instances[*].{{N:Tags[?Key==`Name`]|[0].Value,S:State.Name}}' "
-                f"--output text",
-                timeout=15,
-            )
-            if not ok:
-                aws_lab_cache.update(text="unreachable (check aws configure / network)", ok=False, any_running=False)
-                root.after(0, apply_cache)
-                return
-            states = {}
-            for line in out.splitlines():
-                parts = line.split()
-                if len(parts) == 2:
-                    states[parts[0]] = parts[1]
-            gvm_s = states.get("gvm-cloud", "?")
-            soclab_s = states.get("soclab-cloud", "?")
-            wazuh_s = states.get("wazuh-cloud", "?")
-            ok2, out2 = run(
-                "aws budgets describe-budget --account-id 433985779144 "
-                "--budget-name aws-credits-100 --region us-east-1 "
-                "--query 'Budget.CalculatedSpend.ActualSpend.Amount' --output text",
-                timeout=15,
-            )
-            spend = f"${out2.strip()}/100" if ok2 else "spend n/a"
-            # "ok" here just means the check itself succeeded, not that
-            # nothing is running -- a running instance is normal/expected
-            # mid-session, not a fault. any_running just drives a visible
-            # color cue so it's never silently forgotten in the background.
-            aws_lab_cache.update(
-                text=f"gvm {gvm_s}  ·  soc-lab {soclab_s}  ·  wazuh {wazuh_s}  ·  {spend}",
-                ok=True,
-                any_running=(gvm_s == "running" or soclab_s == "running" or wazuh_s == "running"),
-            )
-            root.after(0, apply_cache)
+        return {"dns": dns, "break": brk, "disk": disk, "services": services, "uptime": uptime,
+                "selfheal": selfheal, "idsips": idsips, "calendar": calendar_,
+                "awslab": awslab, "inventory": inventory, "notify": notify}
 
-        threading.Thread(target=worker, daemon=True).start()
-        root.after(90000, aws_lab_poll)
+    def color_for(self, key, val):
+        if key == "services":
+            return ROSE if "failed" in val and not val.startswith("0 ") and val != "all healthy" else FG
+        if key == "selfheal":
+            fl, he = re.search(r"(\d+) flagged", val), re.search(r"(\d+) healed", val)
+            if fl and int(fl.group(1)) > 0:
+                return ROSE
+            if he and int(he.group(1)) > 0:
+                return TEAL
+            return FG
+        if key == "idsips":
+            # exact-word checks: "inactive" contains "active"
+            return TEAL if "suricata active" in val and val.count("running") == 2 else ROSE
+        if key == "notify":
+            return TEAL if val.count(" ok") == 3 else ROSE
+        return FG
 
-    # ── Cockpit view (2026-09-07) ────────────────────────────────────────────
-    # Network/pipeline/cloud/local overview -- distinct from the general
-    # Status dashboard above, and not a button list like the other
-    # categories. Every check here is real work (a subprocess, some of them
-    # real network calls), so it's polled on its own slower timer, same
-    # reasoning as aws_lab_poll -- doing this on the fast 15s status loop
-    # would add felt latency for data that doesn't change second to second.
-    cockpit_tiles = {}
 
-    def build_cockpit_view():
-        _clear_content()
-        cockpit_tiles.clear()
+class CockpitView(TileView):
+    NAME = "cockpit"
+    EVERY = 60000
+    TILES = [
+        (0, 0, "vpn", "VPN (ProtonVPN)"), (0, 1, "dns", "DNS + leak check"),
+        (1, 0, "netstats", "Network (wlan0, since boot)"), (1, 1, "eero", "Eero"),
+        (2, 0, "cloudlab", "Cloud lab (gvm / soclab / wazuh)"), (2, 1, "kismet", "Kismet (wireless recon)"),
+        (3, 0, "tailscale", "Tailscale (remote access)"), (3, 1, "site", "Private notes site"),
+    ]
 
-        grid = tk.Frame(content, bg=SURFACE)
-        _embed_content(grid)
+    def checks(self):
+        r = self.app.runner.run
 
-        def tile(row, col, key, title):
-            # highlightthickness/highlightbackground -- a real, native
-            # Tkinter border (not a focus ring; Frame never takes focus,
-            # so this just always shows) instead of the flat, borderless
-            # rectangle every tile used before. Doesn't have
-            # ui.rounded_frame()'s grid-sizing problem since it's not a
-            # Canvas -- same width/height behavior as a plain Frame,
-            # just with an edge now.
-            f = tk.Frame(grid, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
-            f.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
-            grid.columnconfigure(col, weight=1)
-            tk.Label(f, text=title, font=small_font, bg=OVERLAY, fg=FG_MUTED).pack(
-                anchor="w", padx=12, pady=(10, 2))
-            val = tk.Label(f, text="checking…", font=label_font, bg=OVERLAY, fg=FG, justify="left")
-            val.pack(anchor="w", padx=12, pady=(0, 10))
-            cockpit_tiles[key] = val
-
-        tile(0, 0, "vpn", "VPN (ProtonVPN)")
-        tile(0, 1, "dns", "DNS + leak check")
-        tile(1, 0, "netstats", "Network (wlan0, since boot)")
-        tile(1, 1, "eero", "Eero")
-        tile(2, 0, "cloudlab", "Cloud lab (gvm/soc-lab-cloud)")
-        tile(2, 1, "kismet", "Kismet (wireless recon)")
-
-        cockpit_poll()
-
-    def cockpit_poll():
-        def worker():
-            checks = {}
-
-            ok, out = run("arc vpn status", timeout=15)
+        def vpn():
+            ok, out = r("arc vpn status", timeout=20)
             m = re.search(r"Status:\s*(.+)", out)
-            checks["vpn"] = m.group(1).strip() if m else (out.strip()[:60] or "unavailable")
+            return m.group(1).strip() if m else (out.strip()[:60] or "unavailable")
 
-            ok, out = run("arc dns check", timeout=15)
-            daemon = re.search(r"daemon:\s*(\S+)", out)
-            routing = re.search(r"routing:\s*(.+)", out)
-            query = re.search(r"query:\s*(\S+)", out)
-            if daemon and query:
-                checks["dns"] = f"daemon {daemon.group(1)}  ·  query {query.group(1)}\n{(routing.group(1).strip() if routing else '')[:60]}"
-            else:
-                checks["dns"] = "unavailable"
+        def dns():
+            ok, out = r("arc dns check", timeout=20)
+            d, ro, q = (re.search(p, out) for p in (r"daemon:\s*(\S+)", r"routing:\s*(.+)", r"query:\s*(\S+)"))
+            if d and q:
+                return f"daemon {d.group(1)}  ·  query {q.group(1)}\n{(ro.group(1).strip() if ro else '')[:60]}"
+            return "unavailable"
 
-            ok, out = run("arc net stats", timeout=8)
-            wlan = next((l for l in out.splitlines() if "wlan0" in l), "")
-            checks["netstats"] = wlan.strip() or "unavailable"
+        def netstats():
+            ok, out = r("arc net stats", timeout=8)
+            return next((l.strip() for l in out.splitlines() if "wlan0" in l), "") or "unavailable"
 
-            ok, out = run("arc eero-summary", timeout=15)
+        def eero():
+            ok, out = r("arc eero-summary", timeout=20)
             if "auth: ok" in out:
                 d = {}
                 for line in out.splitlines():
                     if ":" in line:
                         k, v = line.split(":", 1)
                         d[k.strip()] = v.strip()
-                checks["eero"] = f"{d.get('internet', '?')}  ·  {d.get('clients', '?')} clients  ·  {d.get('nodes', '?')} node(s)\ndns {d.get('dns', '?')}  ·  {d.get('public_ip', '?')}"
-            elif "not signed in" in out:
-                checks["eero"] = "not signed in — arc eero"
-            else:
-                checks["eero"] = "unavailable"
+                return (f"{d.get('internet', '?')}  ·  {d.get('clients', '?')} clients  ·  {d.get('nodes', '?')} node(s)"
+                        f"\ndns {d.get('dns', '?')}  ·  {d.get('public_ip', '?')}")
+            return "not signed in — arc eero" if "not signed in" in out else "unavailable"
 
-            checks["cloudlab"] = aws_lab_cache.get("text", "checking…")
+        def cloudlab():
+            return self.app.cloudlab.snapshot()
 
-            ok, out = run("arc kismet status", timeout=8)
-            checks["kismet"] = strip_banner(out, cmd="arc kismet status") or "unavailable"
+        def kismet():
+            ok, out = r("arc kismet status", timeout=8)
+            return strip_banner(out, cmd="arc kismet status") or "unavailable"
 
-            def apply():
-                for key, val in checks.items():
-                    if key in cockpit_tiles:
-                        color = FG
-                        if key == "vpn":
-                            color = TEAL if "connected" in val.lower() and "disconnected" not in val.lower() else FG_MUTED
-                        if key == "dns" and "unavailable" in val:
-                            color = ROSE
-                        if key == "eero" and ("down" in val.lower() or "unavailable" in val.lower()):
-                            color = ROSE
-                        cockpit_tiles[key].configure(text=val, fg=color)
-            root.after(0, apply)
+        def tailscale():
+            ok, out = r("tailscale status --json", timeout=10)
+            d = json.loads(out)
+            me = d.get("Self", {})
+            peers = list((d.get("Peer") or {}).values())
+            on = [p for p in peers if p.get("Online")]
+            off = [p.get("HostName", "?").strip() for p in peers if not p.get("Online")]
+            head = f"{'online' if me.get('Online') else 'OFFLINE'}  ·  {len(on)}/{len(peers)} peers online"
+            return head + (f"\noffline: {', '.join(off)}" if off else "")
 
-        threading.Thread(target=worker, daemon=True).start()
-        root.after(60000, lambda: cockpit_poll() if current_cat.get() == "Cockpit" else None)
+        def site():
+            ok, out = r("arc site", timeout=20)
+            g = lambda k: (re.search(rf"^\s*{k}\s+(.+?)(?:\s{{2}}|$)", out, re.M) or [None, "?"])[1].strip()
+            return f"server {g('server')}  ·  tailnet {g('tailnet')}  ·  funnel {g('funnel')}"
 
-    # ── Logs view (2026-09-08) ───────────────────────────────────────────────
-    # Click a log, review real content, purge (clears the actual file on
-    # disk, not just the display) or keep (just close). Built after a real
-    # complaint: an arc-heal notification said "1 thing(s) healed... see the
-    # log" with zero detail, forcing a trip to a terminal to find out what.
-    # That got fixed at the source (arc-heal's own notification body, same
-    # commit as this) -- this view is the other half: a real place to check
-    # without a terminal at all, for this and every other log worth reviewing.
-    def _log_stat(path):
+        return {"vpn": vpn, "dns": dns, "netstats": netstats, "eero": eero, "cloudlab": cloudlab,
+                "kismet": kismet, "tailscale": tailscale, "site": site}
+
+    def color_for(self, key, val):
+        low = val.lower()
+        if key == "vpn":
+            return TEAL if "connected" in low and "disconnected" not in low else FG_MUTED
+        if key == "dns":
+            return ROSE if "unavailable" in low else FG
+        if key == "eero":
+            return ROSE if ("down" in low or "unavailable" in low) else FG
+        if key == "tailscale":
+            return ROSE if "unavailable" in low or "offline" in low.split("\n")[0] else (GOLD if "offline:" in low else TEAL)
+        if key == "site":
+            if "funnel off" not in low:
+                return ROSE                       # anything but "off" = possible public exposure
+            return TEAL if "server running" in low and "tailnet exposed" in low else FG_MUTED
+        return FG
+
+
+class InventoryView(View):
+    """register vs reality (arc inv): counts, what needs attention, the
+    unregistered queue, scan freshness, and a Scan button. Reads the generated
+    inventory.json; every mutation (adopt/ignore/retire/review) needs arguments,
+    so those stay in a terminal -- the view says so."""
+
+    scrollable = True
+    HEALTH_COLOR = {"ok": TEAL, "attention": GOLD, "drift": ROSE, "unknown": FG_MUTED, "info": FG_MUTED}
+    ORDER = {"drift": 0, "attention": 1, "unknown": 2}
+
+    def build(self):
+        f = self.app.f
+        top = tk.Frame(self.frame, bg=SURFACE)
+        top.pack(fill="x", padx=4, pady=(4, 6))
+        for text, fg, cmd, to in (("scan now", TEAL, "arc inv scan --quiet", 180), ("verify ledger", GOLD, "arc inv verify", 30),
+                                  ("list all", GOLD, "arc inv list", 30), ("history", GOLD, "arc inv history", 30)):
+            ui.button(top, text, command=lambda c=cmd, t=to: self.app.run_async(c, timeout=t, on_done=self.reload),
+                      font=f.small, bg=OVERLAY, fg=fg, hover_bg=BG, padx=12, pady=5).pack(side="right", padx=3)
+        # packed AFTER the buttons: when the row is narrow the label gets squeezed, never a button
+        self.fresh = tk.Label(top, text="", font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left")
+        self.fresh.pack(side="left", fill="x", expand=True)
+        top.bind("<Configure>", lambda e: self.fresh.configure(wraplength=max(e.width - 340, 120)))
+        self.counts = tk.Frame(self.frame, bg=SURFACE)
+        self.counts.pack(fill="x", padx=4, pady=(0, 6))
+        self.body = tk.Frame(self.frame, bg=SURFACE)
+        self.body.pack(fill="both", expand=True)
+        self.poll("inventory-view", 30000, InventoryData.load, self.render)
+
+    def reload(self):
+        if self.alive():
+            self.kick("inventory-view")
+
+    def _section(self, title):
+        tk.Label(self.body, text=title, font=self.app.f.small, bg=SURFACE, fg=GOLD, anchor="w").pack(
+            fill="x", padx=6, pady=(10, 3))
+
+    def _row(self, tag, tag_color, main, sub=""):
+        f = self.app.f
+        row = tk.Frame(self.body, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
+        row.pack(fill="x", pady=1, padx=4)
+        tk.Label(row, text=tag, font=f.small, bg=OVERLAY, fg=tag_color, width=10, anchor="w").pack(
+            side="left", padx=(8, 4), pady=5)
+        col = tk.Frame(row, bg=OVERLAY)
+        col.pack(side="left", fill="x", expand=True, pady=4)
+        tk.Label(col, text=main, font=f.label, bg=OVERLAY, fg=FG, anchor="w").pack(fill="x")
+        if sub:
+            tk.Label(col, text=sub, font=f.small, bg=OVERLAY, fg=FG_MUTED, anchor="w", justify="left",
+                     wraplength=430).pack(fill="x")
+
+    def render(self, d):
+        for w in self.counts.winfo_children():
+            w.destroy()
+        for w in self.body.winfo_children():
+            w.destroy()
+        f = self.app.f
+        if not d:
+            self.fresh.configure(text="no inventory yet — click scan now", fg=GOLD)
+            self.app.refresh_scroll(self.frame)
+            return
+        age = InventoryData.age_minutes(d)
+        stale = age is None or age > 90
+        led = d.get("ledger", {})
+        self.fresh.configure(
+            text=f"{len(d['assets'])} assets  ·  scanned {fmt_age(age)}"
+                 f"{'  (STALE — timer not firing?)' if stale else ''}  ·  ledger "
+                 f"{'verified' if led.get('verified') else 'BROKEN'} ({led.get('entries', 0)})",
+            fg=GOLD if stale or not led.get("verified") else FG_MUTED)
+        for k in ("ok", "attention", "drift", "unknown", "info"):
+            n = d.get("counts", {}).get(k, 0)
+            tk.Label(self.counts, text=f"{k} {n}", font=f.label, bg=SURFACE,
+                     fg=self.HEALTH_COLOR[k] if n else FG_MUTED).pack(side="left", padx=(6, 14))
+        if d.get("untracked"):
+            tk.Label(self.counts, text=f"unregistered {len(d['untracked'])}", font=f.label, bg=SURFACE,
+                     fg=GOLD).pack(side="left", padx=(6, 14))
+        bad = sorted((a for a in d["assets"] if a["health"] in self.ORDER),
+                     key=lambda a: (self.ORDER[a["health"]], a["id"]))
+        self._section(f"needs attention ({len(bad)})")
+        if not bad:
+            tk.Label(self.body, text="  nothing — every registered asset matches its desired state",
+                     font=f.small, bg=SURFACE, fg=TEAL, anchor="w").pack(fill="x", padx=6)
+        for a in bad[:40]:
+            self._row(a["health"], self.HEALTH_COLOR[a["health"]], a.get("name", a["id"]),
+                      "; ".join(a.get("problems") or []) or f"observed {a.get('observed', '?')} ({a.get('detail', '')})")
+        if len(bad) > 40:
+            tk.Label(self.body, text=f"  +{len(bad) - 40} more — arc inv drift", font=f.small, bg=SURFACE,
+                     fg=FG_MUTED, anchor="w").pack(fill="x", padx=6)
+        if d.get("untracked"):
+            self._section(f"unregistered — found by discovery, nobody wrote it down ({len(d['untracked'])})")
+            for u in d["untracked"][:20]:
+                self._row("untracked", GOLD, u["identity"], f"{u.get('detail', '')}  ·  adopt or ignore in a terminal: "
+                                                            f"arc inv adopt {u['identity']} --id … --kind …")
+        self._section("recent changes (tamper-evident ledger)")
+        for e in d.get("recent", [])[:8]:
+            self._row(e["ts"][5:16].replace("T", " "), FG_MUTED, f"{e['event']}  ·  {e['id'] or '—'}")
+        tk.Label(self.body, text="adopt / ignore / retire / review take arguments — run them in a terminal "
+                                 "(arc inv help). Register: ~/dev-notes/intel-ops/inventory/registry.toml",
+                 font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left", wraplength=500).pack(
+            fill="x", padx=6, pady=(12, 4))
+        self.app.refresh_scroll(self.frame)
+
+
+class LogsView(View):
+    """Click a log, review real content, purge (clears the actual file on disk,
+    not just the display) or keep. Built after a real complaint: a heal
+    notification said "1 thing healed... see the log" with zero detail."""
+
+    def build(self):
+        f = self.app.f
+        for src in LOG_SOURCES:
+            row = tk.Frame(self.frame, bg=OVERLAY)
+            row.pack(fill="x", padx=8, pady=5)
+            left = tk.Frame(row, bg=OVERLAY)
+            left.pack(side="left", fill="x", expand=True, padx=12, pady=10)
+            tk.Label(left, text=src["name"], font=f.label, bg=OVERLAY, fg=FG).pack(anchor="w")
+            stat = tk.Label(left, text=self._stat(src["path"]), font=f.small, bg=OVERLAY, fg=FG_MUTED)
+            stat.pack(anchor="w")
+            btns = tk.Frame(row, bg=OVERLAY)
+            btns.pack(side="right", padx=12)
+            ui.button(btns, "view", command=lambda s=src: self._view(s), font=f.small, bg=SURFACE, fg=TEAL,
+                      hover_bg=BG, padx=10, pady=5).pack(side="left", padx=4)
+            # ui.button captures `command` at creation (a Label has no -command), so it must be
+            # passed here -- a later .configure(command=...) can't work.
+            ui.button(btns, "purge", command=lambda s=src, l=stat: self._purge(s, l), font=f.small,
+                      bg=SURFACE, fg=ROSE, hover_bg=BG, padx=10, pady=5).pack(side="left", padx=4)
+
+    @staticmethod
+    def _stat(path):
         try:
             st = path.stat()
-            size = st.st_size
-            for unit in ("B", "KB", "MB", "GB"):
-                if size < 1024 or unit == "GB":
-                    size_s = f"{size:.0f}{unit}" if unit == "B" else f"{size/1024:.1f}{unit}"
-                    break
-                size /= 1024
-            mtime = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
-            return f"{size_s}  ·  {mtime}"
         except FileNotFoundError:
             return "not found"
         except PermissionError:
             return "permission denied"
+        size = float(st.st_size)
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024 or unit == "GB":
+                s = f"{size:.0f}B" if unit == "B" else f"{size:.1f}{unit}"
+                break
+            size /= 1024
+        return f"{s}  ·  {datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M')}"
 
-    def build_logs_view():
-        _clear_content()
-        wrap = tk.Frame(content, bg=SURFACE)
-        _embed_content(wrap)
+    def _tail(self, src):
+        run, p = self.app.runner.run, shlex.quote(str(src["path"]))
+        if src["kind"] == "sqlite":
+            ok, out = run(f'sqlite3 -separator " | " {p} "SELECT timestamp, app_name, summary, body '
+                          f'FROM notifications ORDER BY id DESC LIMIT 50;"', timeout=10)
+        else:
+            ok, out = run(f"tail -n 200 {p}", timeout=10)
+        return out if ok else f"(couldn't read {src['path']} — {out})"
 
-        for src in LOG_SOURCES:
-            row = tk.Frame(wrap, bg=OVERLAY)
-            row.pack(fill="x", padx=8, pady=5)
-
-            left = tk.Frame(row, bg=OVERLAY)
-            left.pack(side="left", fill="x", expand=True, padx=12, pady=10)
-            tk.Label(left, text=src["name"], font=label_font, bg=OVERLAY, fg=FG).pack(anchor="w")
-            stat_lbl = tk.Label(left, text=_log_stat(src["path"]), font=small_font, bg=OVERLAY, fg=FG_MUTED)
-            stat_lbl.pack(anchor="w")
-
-            btns = tk.Frame(row, bg=OVERLAY)
-            btns.pack(side="right", padx=12)
-
-            def make_view(s=src):
-                return lambda: _log_view_popup(s)
-
-            def make_purge(s=src, lbl=None):
-                return lambda: _log_purge_confirm(s, lambda: lbl.configure(text=_log_stat(s["path"])))
-
-            ui.button(btns, "view", command=make_view(), font=small_font,
-                      bg=SURFACE, fg=TEAL, hover_bg=BG, padx=10, pady=5,
-                      ).pack(side="left", padx=4)
-            # Real bug caught before shipping: ui.button() captures `command`
-            # in a closure at creation time (a plain tk.Label has no native
-            # -command option the way tk.Button does), so the old two-step
-            # "create, then .configure(command=...)" pattern silently can't
-            # work here -- pass it straight through at creation instead.
-            purge_btn = ui.button(btns, "purge", command=make_purge(src, stat_lbl),
-                                   font=small_font, bg=SURFACE, fg=ROSE,
-                                   hover_bg=BG, padx=10, pady=5)
-            purge_btn.pack(side="left", padx=4)
-
-    def _log_tail_text(path, n=200):
-        ok, out = run(f"tail -n {n} {path}", timeout=10)
-        return out if ok else f"(couldn't read {path} — {out})"
-
-    def _log_tail_sqlite(path, n=50):
-        ok, out = run(
-            f'sqlite3 -separator " | " {path} '
-            f'"SELECT timestamp, app_name, summary, body FROM notifications ORDER BY id DESC LIMIT {n};"',
-            timeout=10,
-        )
-        return out if ok else f"(couldn't read {path} — {out})"
-
-    def _log_view_popup(src):
-        popup = tk.Toplevel(root)
-        popup.title(src["name"])
-        popup.configure(bg=BG)
-        popup.geometry("900x600")
-        popup.attributes("-topmost", True)
-
-        tk.Label(
-            popup, text=f"{src['name']}  —  {src['path']}", font=small_font,
-            bg=BG, fg=FG_MUTED, anchor="w",
-        ).pack(fill="x", padx=14, pady=(12, 4))
-
-        text_frame = tk.Frame(popup, bg=BG)
-        text_frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
-        scroll = tk.Scrollbar(text_frame)
-        scroll.pack(side="right", fill="y")
-        box = tk.Text(
-            text_frame, bg=SURFACE, fg=FG, font=("JetBrains Mono", 10),
-            wrap="word", yscrollcommand=scroll.set, relief="flat",
-        )
+    def _view(self, src):
+        f = self.app.f
+        d = Dialog(self.app, src["name"], resizable=True, geometry="900x600")
+        tk.Label(d.win, text=f"{src['name']}  —  {src['path']}", font=f.small, bg=BG, fg=FG_MUTED,
+                 anchor="w").pack(fill="x", padx=14, pady=(12, 4))
+        tf = tk.Frame(d.win, bg=BG)
+        tf.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        sb = tk.Scrollbar(tf)
+        sb.pack(side="right", fill="y")
+        box = tk.Text(tf, bg=SURFACE, fg=FG, font=("JetBrains Mono", 10), wrap="word",
+                      yscrollcommand=sb.set, relief="flat")
         box.pack(side="left", fill="both", expand=True)
-        scroll.configure(command=box.yview)
+        sb.configure(command=box.yview)
         box.insert("1.0", "loading…")
         box.configure(state="disabled")
+        ui.button(d.win, "close", command=d.close, font=f.small, bg=SURFACE, fg=FG_MUTED, hover_bg=OVERLAY,
+                  padx=14, pady=8).pack(pady=(0, 12))
 
-        def worker():
-            tail_fn = _log_tail_sqlite if src["kind"] == "sqlite" else _log_tail_text
-            text = tail_fn(src["path"])
-
-            def apply():
+        def show(text):
+            try:
                 box.configure(state="normal")
                 box.delete("1.0", "end")
                 box.insert("1.0", text or "(empty)")
                 box.configure(state="disabled")
                 box.see("end")
-            root.after(0, apply)
+            except tk.TclError:
+                pass                      # dialog closed while loading
+        self.app.bg(lambda: self._tail(src), show)
 
-        threading.Thread(target=worker, daemon=True).start()
+    def _purge(self, src, stat_lbl):
+        d = Dialog(self.app, "confirm")
+        d.label(f"clear {src['name']}?")
+        d.label("This deletes the real file's content — cannot be undone.", fg=ROSE, font=self.app.f.small)
 
-        ui.button(popup, "close", command=popup.destroy, font=small_font,
-                  bg=SURFACE, fg=FG_MUTED, hover_bg=OVERLAY, padx=14, pady=8,
-                  ).pack(pady=(0, 12))
-
-    def _log_purge_failed(name, out):
-        popup = tk.Toplevel(root)
-        popup.title("purge failed")
-        popup.configure(bg=BG)
-        popup.resizable(False, False)
-        popup.attributes("-topmost", True)
-        popup.geometry(f"+{root.winfo_x()+120}+{root.winfo_y()+150}")
-        tk.Label(popup, text=f"couldn't clear {name}", font=label_font, bg=BG, fg=ROSE).pack(padx=20, pady=(16, 4))
-        tk.Label(
-            popup, text=(out or "")[:300] + ("\n\nlikely needs: arc sot install-sudoers" if "password" in (out or "") else ""),
-            font=small_font, bg=BG, fg=FG_MUTED, wraplength=380, justify="left",
-        ).pack(padx=20, pady=(0, 14))
-        ui.button(popup, "ok", command=popup.destroy, font=small_font,
-                  bg=SURFACE, fg=FG_MUTED, hover_bg=OVERLAY, padx=14, pady=6,
-                  ).pack(pady=(0, 16))
-
-    def _log_purge_confirm(src, on_done):
-        popup = tk.Toplevel(root)
-        popup.title("confirm")
-        popup.configure(bg=BG)
-        popup.resizable(False, False)
-        popup.attributes("-topmost", True)
-        popup.geometry(f"+{root.winfo_x()+120}+{root.winfo_y()+150}")
-
-        tk.Label(
-            popup, text=f"clear {src['name']}?", font=label_font, bg=BG, fg=FG,
-        ).pack(padx=20, pady=(16, 4))
-        tk.Label(
-            popup, text="This deletes the real file's content — cannot be undone.",
-            font=small_font, bg=BG, fg=ROSE,
-        ).pack(padx=20, pady=(0, 14))
-
-        row = tk.Frame(popup, bg=BG)
-        row.pack(pady=(0, 16))
-
-        def do_purge():
-            popup.destroy()
+        def go():
+            p = shlex.quote(str(src["path"]))
             if src["kind"] == "sqlite":
-                cmd = f'sqlite3 {src["path"]} "DELETE FROM notifications; VACUUM;"'
+                cmd = f'sqlite3 {p} "DELETE FROM notifications; VACUUM;"'
             elif src["sudo"]:
-                cmd = f"sudo -n truncate -s 0 {src['path']}"
+                cmd = f"sudo -n truncate -s 0 {p}"
             else:
-                cmd = f"truncate -s 0 {src['path']}"
+                cmd = f"truncate -s 0 {p}"
 
-            def worker():
-                ok, out = run(cmd, timeout=10)
-                def apply():
-                    on_done()
-                    if not ok:
-                        _log_purge_failed(src["name"], out)
-                root.after(0, apply)
-            threading.Thread(target=worker, daemon=True).start()
+            def done(res):
+                ok, out = res
+                if self.alive():
+                    stat_lbl.configure(text=self._stat(src["path"]))
+                if not ok:
+                    e = Dialog(self.app, "purge failed")
+                    e.label(f"couldn't clear {src['name']}", fg=ROSE)
+                    e.label((out or "")[:300] + ("\n\nlikely needs: arc sot install-sudoers"
+                                                 if "password" in (out or "") else ""),
+                            fg=FG_MUTED, font=self.app.f.small, wrap=380)
+                    e.buttons([("ok", FG_MUTED, None)])
+            self.app.bg(lambda: self.app.runner.run(cmd, timeout=15), done)
+        d.buttons([("yes, clear it", ROSE, go), ("cancel (keep)", FG_MUTED, None)])
 
-        ui.button(row, "yes, clear it", command=do_purge, font=small_font,
-                  bg=SURFACE, fg=ROSE, hover_bg=OVERLAY, padx=12, pady=6,
-                  ).pack(side="left", padx=6)
-        ui.button(row, "cancel (keep)", command=popup.destroy, font=small_font,
-                  bg=SURFACE, fg=FG_MUTED, hover_bg=OVERLAY, padx=12, pady=6,
-                  ).pack(side="left", padx=6)
 
-    # ── Find view (2026-09-10, v2 sweep) ────────────────────────────────────
-    # The literal answer to "surface dev-notes/hq-main/arc-lt-cmc" -- wires
-    # `arc find <query>` (cross-tree search: arc-lt-cmc + dev-notes +
-    # khaos-lab + vault/archive, already grouped/formatted, real content
-    # snippets with line numbers) directly into the panel. Same worker-
-    # thread + root.after(0, apply) marshal pattern as the Logs view's
-    # popup, just embedded in the main content pane instead of a Toplevel.
-    def build_find_view():
-        _clear_content()
-        wrap = tk.Frame(content, bg=SURFACE)
-        _embed_content(wrap, scrollable=True)
+class FindView(View):
+    """`arc find <query>` across arc-lt-cmc + dev-notes + khaos-lab +
+    vault/archive, plus `arc ref` -- the literal answer to "surface the notes"."""
 
-        top = tk.Frame(wrap, bg=SURFACE)
+    scrollable = True
+
+    def build(self):
+        f = self.app.f
+        top = tk.Frame(self.frame, bg=SURFACE)
         top.pack(fill="x", padx=4, pady=(4, 10))
-        tk.Label(
-            top, text="search arc-lt-cmc + dev-notes + khaos-lab + vault/archive",
-            font=small_font, bg=SURFACE, fg=FG_MUTED, anchor="w",
-        ).pack(fill="x", pady=(0, 6))
-
-        entry_row = tk.Frame(top, bg=SURFACE)
-        entry_row.pack(fill="x")
-        query_var = tk.StringVar()
-        entry = tk.Entry(
-            entry_row, textvariable=query_var, font=label_font,
-            bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat",
-        )
+        tk.Label(top, text="search arc-lt-cmc + dev-notes + khaos-lab + vault/archive", font=f.small, bg=SURFACE,
+                 fg=FG_MUTED, anchor="w").pack(fill="x", pady=(0, 6))
+        er = tk.Frame(top, bg=SURFACE)
+        er.pack(fill="x")
+        self.q = tk.StringVar()
+        entry = tk.Entry(er, textvariable=self.q, font=f.label, bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat")
         entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 8))
-
-        text_frame = tk.Frame(wrap, bg=BG)
-        text_frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-        scroll = tk.Scrollbar(text_frame)
-        scroll.pack(side="right", fill="y")
-        box = tk.Text(
-            text_frame, bg=SURFACE, fg=FG, font=("JetBrains Mono", 10),
-            wrap="word", yscrollcommand=scroll.set, relief="flat", height=24,
-        )
-        box.pack(side="left", fill="both", expand=True)
-        scroll.configure(command=box.yview)
-        box.insert("1.0", "type a query, press enter or click search")
-        box.configure(state="disabled")
-
-        def _show(text):
-            box.configure(state="normal")
-            box.delete("1.0", "end")
-            box.insert("1.0", text or "(no results)")
-            box.configure(state="disabled")
-            box.see("1.0")
-
-        def do_search(_evt=None):
-            q = query_var.get().strip()
-            if not q:
-                return
-            _show(f"searching for '{q}'…")
-
-            def worker():
-                ok, out = run(f"arc find {shlex.quote(q)}", timeout=20)
-                root.after(0, lambda: _show(out if ok else f"(search failed) {out}"))
-            threading.Thread(target=worker, daemon=True).start()
-
-        def do_ref():
-            _show("loading archived references…")
-
-            def worker():
-                ok, out = run("arc ref", timeout=15)
-                root.after(0, lambda: _show(out if ok else f"(failed) {out}"))
-            threading.Thread(target=worker, daemon=True).start()
-
-        entry.bind("<Return>", do_search)
-        ui.button(entry_row, "search", command=do_search, font=small_font,
-                  bg=OVERLAY, fg=TEAL, hover_bg=BG, padx=14, pady=6,
-                  ).pack(side="left", padx=(0, 6))
-        ui.button(entry_row, "browse refs (arc ref)", command=do_ref, font=small_font,
-                  bg=OVERLAY, fg=GOLD, hover_bg=BG, padx=14, pady=6,
-                  ).pack(side="left")
-
+        entry.bind("<Return>", lambda _e: self._search())
+        ui.button(er, "search", command=self._search, font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                  padx=14, pady=6).pack(side="left", padx=(0, 6))
+        ui.button(er, "browse refs (arc ref)", command=self._refs, font=f.small, bg=OVERLAY, fg=GOLD,
+                  hover_bg=BG, padx=14, pady=6).pack(side="left")
+        tf = tk.Frame(self.frame, bg=BG)
+        tf.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        sb = tk.Scrollbar(tf)
+        sb.pack(side="right", fill="y")
+        self.box = tk.Text(tf, bg=SURFACE, fg=FG, font=("JetBrains Mono", 10), wrap="word",
+                           yscrollcommand=sb.set, relief="flat", height=24)
+        self.box.pack(side="left", fill="both", expand=True)
+        sb.configure(command=self.box.yview)
+        self._show("type a query, press enter or click search")
         entry.focus_set()
-        _refresh_scrollregion(wrap)
 
-    # ── Category action view ───────────────────────────────────────────────
-    def _render_action_row(wrap, action, prefix=""):
-        # Real usability gap found 2026-08-30 (user report): the label
-        # sits far-left, the button far-right, nothing visually ties
-        # them together -- easy to lose track of which button belongs
-        # to which row once a category has more than a handful of
-        # actions (SOC has 18+). Fix: the whole row highlights together
-        # on hover, so you get a clear "this is the one" confirmation
-        # before you click, regardless of the horizontal gap.
-        #
-        # Extracted 2026-09-10 (v2 sweep) from build_category_view's own
-        # loop body so the new global search-results view can render
-        # identical rows for matches pulled from *any* category, not just
-        # one -- `prefix` (e.g. "SOC — ") disambiguates which category a
-        # hit came from when browsing filtered results.
-        # highlightthickness border, same technique as the Status tiles --
-        # doesn't touch the existing whole-row hover binding below at all
-        # (that only ever toggles bg/fg, never the border), just gives
-        # each row a real edge instead of a flat borderless rectangle.
-        row = tk.Frame(wrap, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
+    def _show(self, text):
+        if not self.alive():
+            return
+        self.box.configure(state="normal")
+        self.box.delete("1.0", "end")
+        self.box.insert("1.0", text or "(no results)")
+        self.box.configure(state="disabled")
+        self.box.see("1.0")
+
+    def _search(self):
+        q = self.q.get().strip()
+        if not q:
+            return
+        self._show(f"searching for '{q}'…")
+        self.app.bg(lambda: self.app.runner.run(f"arc find {shlex.quote(q)}", timeout=25),
+                    lambda res: self._show(res[1] if res[0] else f"(search failed) {res[1]}"))
+
+    def _refs(self):
+        self._show("loading archived references…")
+        self.app.bg(lambda: self.app.runner.run("arc ref", timeout=20),
+                    lambda res: self._show(res[1] if res[0] else f"(failed) {res[1]}"))
+
+
+class ActionsView(View):
+    """A category's button list (also used for global-search results, where
+    `prefix` says which category a hit came from)."""
+
+    scrollable = True
+
+    def __init__(self, app, actions, prefix_by_action=None, empty_text=None):
+        super().__init__(app)
+        self.actions, self.prefix, self.empty_text = actions, prefix_by_action or {}, empty_text
+
+    def build(self):
+        if not self.actions:
+            tk.Label(self.frame, text=self.empty_text or "nothing here", font=self.app.f.label, bg=SURFACE,
+                     fg=FG_MUTED, anchor="w", padx=10, pady=10).pack(fill="x")
+        for a in self.actions:
+            self._row(a, self.prefix.get(id(a), ""))
+
+    def _row(self, action, prefix):
+        # The whole row highlights together on hover: with the label far-left and the button
+        # far-right, nothing else ties them together once a category has many actions.
+        f = self.app.f
+        row = tk.Frame(self.frame, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
         row.pack(fill="x", pady=1)
-        label = tk.Label(
-            row, text=f"{prefix}{action.label}", font=label_font, bg=SURFACE, fg=FG,
-            anchor="w", padx=10, pady=6,
-        )
+        gated = ConfirmPolicy.required(action) and not action.detach
+        label = tk.Label(row, text=f"{prefix}{action.label}", font=f.label, bg=SURFACE, fg=FG, anchor="w",
+                         padx=10, pady=6)
         label.pack(side="left", fill="x", expand=True)
-
-        def make_cmd(a=action):
-            def go():
-                if a.detach:
-                    launch_detached_async(a.cmd)
-                elif a.confirm:
-                    confirm(a.label, a.cmd, a.timeout, on_yes_done=refresh_status)
-                else:
-                    run_async(a.cmd, timeout=a.timeout, on_done=refresh_status)
-            return go
-
-        btn = tk.Button(
-            row, text="run", command=make_cmd(), font=small_font,
-            bg=OVERLAY, fg=TEAL, activebackground=BG, activeforeground=TEAL,
-            relief="flat", bd=0, padx=14, pady=4, cursor="hand2",
-        )
+        btn = tk.Button(row, text="run…" if gated else "run", command=lambda a=action: self.app.run_action(a),
+                        font=f.small, bg=OVERLAY, fg=ROSE if gated else TEAL, activebackground=BG,
+                        activeforeground=TEAL, relief="flat", bd=0, padx=14, pady=4, cursor="hand2")
         btn.pack(side="right", padx=10, pady=6)
 
-        def _hover_on(_e, row=row, label=label):
-            row.configure(bg=OVERLAY)
-            label.configure(bg=OVERLAY)
-
-        def _hover_off(_e, row=row, label=label):
-            row.configure(bg=SURFACE)
-            label.configure(bg=SURFACE)
-
+        def hover(on):
+            bg = OVERLAY if on else SURFACE
+            row.configure(bg=bg)
+            label.configure(bg=bg)
         for w in (row, label, btn):
-            w.bind("<Enter>", _hover_on)
-            w.bind("<Leave>", _hover_off)
+            w.bind("<Enter>", lambda _e: hover(True))
+            w.bind("<Leave>", lambda _e: hover(False))
 
-    def build_category_view(name):
-        _clear_content()
 
-        wrap = tk.Frame(content, bg=SURFACE)
-        _embed_content(wrap, scrollable=True)
+# ── the app ──────────────────────────────────────────────────────────────────
+class App:
+    SPECIAL_VIEWS = {"Status": StatusView, "Cockpit": CockpitView, "Inventory": InventoryView,
+                     "Logs": LogsView, "Find": FindView}
 
-        for action in CATEGORIES[name]:
-            _render_action_row(wrap, action)
+    def __init__(self):
+        # className explicit: WM_CLASS was generic "Tk" (never "khaos-lab" as the .desktop
+        # StartupWMClass assumed) -- a correctness fix independent of the taskbar-icon bug.
+        self.root = root = tk.Tk(className="khaos-lab")
+        root.title("khaos☠️lab")
+        root.configure(bg=BG)
+        # 860x730: comfortably inside the real usable area (_NET_WORKAREA is 766px tall; the taskbar
+        # panel reserves the rest). No forced position -- xfwm4's own placement keeps the window on
+        # screen; the geometry watchdog below corrects it if it's ever dragged off-area.
+        root.geometry("860x730")
+        root.minsize(720, 480)
+        self.errors = []
+        root.report_callback_exception = self._on_callback_error
 
-        # Rows are all packed by now -- safe to measure the frame's real
-        # required height and size the scrollbar to match. Doing this
-        # inside the loop above would measure a partially-built frame.
-        _refresh_scrollregion(wrap)
+        self._taskbar_icon = load_image(TASKBAR_ICON_PATH)
+        if self._taskbar_icon:
+            root.iconphoto(True, self._taskbar_icon)
+        self.f = self._make_fonts()
 
-    def build_search_results_view(query):
-        # Global quick-jump (2026-09-10) -- flattens every category's
-        # Action list, filters by substring on the label (case-insensitive),
-        # renders with _render_action_row so results look/behave exactly
-        # like a normal category view, just sourced from everywhere at
-        # once. Special-view categories (Status/Cockpit/Logs/Find, empty
-        # lists in CATEGORIES) have nothing to match against -- expected,
-        # not a gap; they're each one click away in the sidebar regardless.
-        _clear_content()
-        wrap = tk.Frame(content, bg=SURFACE)
-        _embed_content(wrap, scrollable=True)
+        self.runner = Runner()
+        self.bridge = UiBridge(root)
+        self.poller = Poller(root, self.bridge)
+        self.cloudlab = CloudLab(self.runner)
+        self._busy = set()
+        self.view = None
+        self.current = "Status"
+        self._console_room_done = False
 
-        q = query.lower().strip()
-        hits = [
-            (cat, a) for cat, actions in CATEGORIES.items()
-            for a in actions if q in a.label.lower()
-        ]
+        self.content_bg = load_image(CONTENT_BG_PATH)
+        self._build_header()
+        self._build_panes()
+        self._build_sidebar()
+        self._bind_search()
+        root.bind("<Control-f>", lambda _e: (self.search_entry.focus_set(), "break")[1])
 
-        if not hits:
-            tk.Label(
-                wrap, text=f"no actions match '{query}'", font=label_font,
-                bg=SURFACE, fg=FG_MUTED, anchor="w", padx=10, pady=10,
-            ).pack(fill="x")
+        self.select("Status")
+        self._tick()
+        root.after(500, self._geometry_watchdog)   # give the WM time to finish its initial placement
+
+    # -- setup ---------------------------------------------------------------
+    @staticmethod
+    def _make_fonts():
+        try:
+            # DejaVu Sans for the title: JetBrains Mono has no glyph for the skull and Tk does no
+            # per-character font fallback (it rendered blank space).
+            return SimpleNamespace(
+                big=tkfont.Font(family="DejaVu Sans", size=14, weight="bold"),
+                label=tkfont.Font(family="JetBrains Mono", size=10),
+                small=tkfont.Font(family="JetBrains Mono", size=9),
+                mono=tkfont.Font(family="JetBrains Mono", size=9),
+                nav=tkfont.Font(family="JetBrains Mono", size=10))
+        except Exception:
+            d = tkfont.Font(size=10)
+            return SimpleNamespace(big=d, label=d, small=d, mono=d, nav=d)
+
+    def _build_header(self):
+        f, root = self.f, self.root
+        header = tk.Frame(root, bg=BG)
+        header.pack(fill="x", padx=14, pady=(14, 8))
+        # Background watermark via place() so the icon/title/clock (packed normally) stack on top
+        # of it and keep their own resize behaviour.
+        self._header_bg = load_image(HEADER_BG_PATH)
+        if self._header_bg:
+            tk.Label(header, image=self._header_bg, bg=BG).place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._header_icon = load_image(HEADER_ICON_PATH)
+        if self._header_icon:
+            tk.Label(header, image=self._header_icon, bg=BG, highlightthickness=2,
+                     highlightbackground=GOLD).pack(side="left", padx=(0, 10))
+        tk.Label(header, text="khaos", font=f.big, bg=BG, fg=GOLD).pack(side="left")
+        tk.Label(header, text="/", font=f.big, bg=BG, fg=FG_MUTED).pack(side="left")
+        tk.Label(header, text="lab", font=f.big, bg=BG, fg=TEAL).pack(side="left", padx=(0, 16))
+        self.clock_lbl = tk.Label(header, text="", font=f.small, bg=BG, fg=FG_MUTED)
+        self.clock_lbl.pack(side="right")
+        # The panel's palette is fixed on purpose; which Kataleya phase it is (choice/desire/
+        # still-pine/nyx) is still useful at a glance, in that phase's own accent.
+        self.phase_lbl = tk.Label(header, text="", font=f.small, bg=BG, fg=FG_MUTED)
+        self.phase_lbl.pack(side="right", padx=(0, 14))
+        # Global quick-jump: searches ACTION LABELS across every category (the Find view searches
+        # note CONTENT). Fixed width -- filling the strip crushed the header art.
+        self.search_var = tk.StringVar()
+        self.search_entry = tk.Entry(header, textvariable=self.search_var, font=f.small, width=28, bg=OVERLAY,
+                                     fg=FG, insertbackground=FG, relief="flat", highlightthickness=1,
+                                     highlightbackground=OVERLAY, highlightcolor=GOLD)
+        self.search_entry.pack(side="left", ipady=4, padx=(0, 16))
+        self._placeholder = "quick-jump: type an action name…   (ctrl+f)"
+        self._ph_active = True
+        self.search_entry.insert(0, self._placeholder)
+        self.search_entry.configure(fg=FG_MUTED)
+        self.search_entry.bind("<FocusIn>", self._search_focus_in)
+        self.search_entry.bind("<FocusOut>", self._search_focus_out)
+        tk.Frame(root, bg=OVERLAY, height=1).pack(fill="x", padx=14)
+
+    def _search_focus_in(self, _e=None):
+        if self._ph_active:
+            self.search_entry.delete(0, "end")
+            self.search_entry.configure(fg=FG)
+            self._ph_active = False
+
+    def _search_focus_out(self, _e=None):
+        if not self.search_var.get().strip():
+            self._ph_active = True
+            self.search_entry.delete(0, "end")
+            self.search_entry.insert(0, self._placeholder)
+            self.search_entry.configure(fg=FG_MUTED)
+
+    def _build_panes(self):
+        root = self.root
+        # Body/console split is a real drag-resizable PanedWindow (the console used to be fixed
+        # at 9 lines and could never grow). Sidebar/content is a second one.
+        self.main_pane = tk.PanedWindow(root, orient="vertical", bg=OVERLAY, sashwidth=6, sashrelief="flat",
+                                        bd=0, showhandle=False, opaqueresize=True)
+        self.main_pane.pack(fill="both", expand=True, padx=14, pady=10)
+        body = tk.Frame(self.main_pane, bg=BG)
+        # 400 is only the INITIAL split; the console auto-grows once on the first real output.
+        self.main_pane.add(body, minsize=240, height=400)
+        body_pane = tk.PanedWindow(body, orient="horizontal", bg=OVERLAY, sashwidth=6, sashrelief="flat",
+                                   bd=0, showhandle=False, opaqueresize=True)
+        body_pane.pack(fill="both", expand=True)
+        # Canvas, not Frame, so the watermark can sit behind the nav buttons.
+        self.sidebar = tk.Canvas(body_pane, bg=BG, width=150, highlightthickness=0)
+        body_pane.add(self.sidebar, minsize=110, width=150)
+        content_wrap = tk.Frame(body_pane, bg=SURFACE)
+        body_pane.add(content_wrap, minsize=300)
+        self.content = tk.Canvas(content_wrap, bg=SURFACE, highlightthickness=0)
+        # A real scrollbar wired to a scrollregion kept honest by the embedded widget's actual
+        # required size (fixes SOC being clipped with no way to reach the bottom rows). Shown
+        # only when a view actually overflows.
+        self.content_scroll = tk.Scrollbar(content_wrap, orient="vertical", command=self.content.yview, bg=OVERLAY,
+                                           troughcolor=BG, activebackground=TEAL, bd=0, highlightthickness=0, width=12)
+        self.content.configure(yscrollcommand=self.content_scroll.set)
+        self.content.pack(side="left", fill="both", expand=True, padx=(10, 0))
+        if self.content_bg:
+            self.content.create_image(0, 0, anchor="nw", image=self.content_bg)
+        console_frame = tk.Frame(self.main_pane, bg=BG)
+        # minsize=110 is a real floor: whatever's left only ever shrinks the Text, never hides it.
+        self.main_pane.add(console_frame, minsize=110, height=190)
+        self.console = ConsolePane(self, console_frame)
+
+    def _build_sidebar(self):
+        sb = self.sidebar
+        self._sidebar_bg = load_image(SIDEBAR_BG_PATH)
+        if self._sidebar_bg:
+            sb.create_image(0, 0, anchor="nw", image=self._sidebar_bg)
+        # Brand badge: a fixed strip at the top, drawn before the nav buttons and never covered by
+        # them (the art's own wordmark sits low in a tall image the button stack covers).
+        self._sidebar_icon = load_image(SIDEBAR_ICON_PATH)
+        if self._sidebar_icon:
+            sb.create_image(8, 6, anchor="nw", image=self._sidebar_icon)
+        sb.create_text(34, 16, anchor="w", text="khaos-lab", font=self.f.small, fill=GOLD)
+        sb.create_line(0, 30, 150, 30, fill=OVERLAY, width=1)
+        self.nav_buttons, self.nav_y = {}, {}
+        self.nav_accent = sb.create_rectangle(0, 0, 0, 0, fill=GOLD, width=0)   # active-row tick
+        y = 30
+        for cat in CATEGORIES:
+            b = ui.button(sb, cat, command=lambda c=cat: self.select(c), font=self.f.nav, bg=BG, fg=FG_MUTED,
+                          hover_bg=OVERLAY, hover_fg=GOLD, padx=14, pady=6)
+            b.configure(anchor="w")
+            sb.create_window(4, y, anchor="nw", window=b, width=146)
+            b.update_idletasks()
+            self.nav_y[cat] = (y, b.winfo_reqheight())
+            y += b.winfo_reqheight() + 1
+            self.nav_buttons[cat] = b
+            # Bound on each button (they cover most of the canvas), not bind_all: the content
+            # pane's scrollable views already use bind_all for their own wheel handling.
+            b.bind("<Button-4>", lambda _e: sb.yview_scroll(-1, "units"))
+            b.bind("<Button-5>", lambda _e: sb.yview_scroll(1, "units"))
+        # Scrollable, so every category stays reachable at any window height / sash position.
+        sb.configure(scrollregion=(0, 0, 150, y + 4))
+        sb.bind("<Button-4>", lambda _e: sb.yview_scroll(-1, "units"))
+        sb.bind("<Button-5>", lambda _e: sb.yview_scroll(1, "units"))
+
+    def _bind_search(self):
+        self.search_entry.bind("<KeyRelease>", self._do_search)
+        self.search_entry.bind("<Escape>", self._clear_search)
+
+    # -- content embedding ---------------------------------------------------
+    def _set_scrollbar(self, visible):
+        if visible and not self.content_scroll.winfo_ismapped():
+            self.content_scroll.pack(side="right", fill="y")
+        elif not visible and self.content_scroll.winfo_ismapped():
+            self.content_scroll.pack_forget()
+
+    def _on_wheel(self, evt):
+        if isinstance(evt.widget, tk.Text):
+            return                                     # a Text scrolls itself; don't also scroll the page
+        self.content.yview_scroll(-1 if (evt.num == 4 or evt.delta > 0) else 1, "units")
+
+    def embed(self, widget, pad=16, scrollable=False):
+        # pad on all sides is also what lets the watermark show through.
+        item = self.content.create_window(pad, pad, anchor="nw", window=widget)
+
+        def resize(event):
+            try:
+                self.content.itemconfigure(item, width=max(event.width - 2 * pad, 1))
+                if scrollable:
+                    # grow to the content's real height (not forced to the viewport) so the
+                    # overflow is reachable by scrolling instead of clipped
+                    widget.update_idletasks()
+                    req_h = max(widget.winfo_reqheight(), event.height - 2 * pad)
+                    self.content.configure(scrollregion=(0, 0, event.width, req_h + 2 * pad))
+                    self._set_scrollbar(req_h + 2 * pad > event.height)
+                else:
+                    self.content.itemconfigure(item, height=max(event.height - 2 * pad, 1))
+                    self.content.configure(scrollregion=(0, 0, event.width, event.height))
+                    self._set_scrollbar(False)
+            except tk.TclError:
+                pass                                   # widget replaced mid-resize
+        self.content.bind("<Configure>", resize)
+        self.content.update_idletasks()
+        resize(SimpleNamespace(width=self.content.winfo_width(), height=self.content.winfo_height()))
+        if scrollable:
+            for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+                self.content.bind_all(seq, self._on_wheel)
         else:
-            for cat, action in hits:
-                _render_action_row(wrap, action, prefix=f"{cat} — ")
+            for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+                self.content.unbind_all(seq)
+            self._set_scrollbar(False)
 
-        _refresh_scrollregion(wrap)
+    def refresh_scroll(self, widget, pad=16):
+        """Re-measure after rows are added to an already-sized canvas (a category switch doesn't
+        resize anything, so <Configure> alone would never fire)."""
+        try:
+            widget.update_idletasks()
+            w, vh = self.content.winfo_width(), self.content.winfo_height()
+            req_h = max(widget.winfo_reqheight(), vh - 2 * pad)
+            self.content.configure(scrollregion=(0, 0, w, req_h + 2 * pad))
+            self._set_scrollbar(req_h + 2 * pad > vh)
+        except tk.TclError:
+            pass
 
-    # ── Sidebar nav ─────────────────────────────────────────────────────────
-    nav_buttons = {}
-    nav_y_ranges = {}
-    current_cat = tk.StringVar(value="Status")
-    # A real active-tab indicator, 2026-09-19 -- selection used to be only
-    # a bg-color swap on the button itself (still is, kept below), which
-    # read as flat/generic. This is the same "terminal cursor bar" cue
-    # real hacker-style dashboards use: a solid accent tick along the left
-    # edge of whichever row is active, repositioned (not recreated) on
-    # every select() call.
-    nav_accent = sidebar.create_rectangle(0, 0, 0, 0, fill=GOLD, width=0)
-
-    def select(name):
-        current_cat.set(name)
-        for n, b in nav_buttons.items():
+    # -- routing -------------------------------------------------------------
+    def select(self, name):
+        self.current = name
+        for n, b in self.nav_buttons.items():
             b.set_look(bg=OVERLAY if n == name else BG, fg=GOLD if n == name else FG_MUTED)
-        if name in nav_y_ranges:
-            y, h = nav_y_ranges[name]
-            sidebar.coords(nav_accent, 0, y, 3, y + h)
-            sidebar.tag_raise(nav_accent)
-        if name == "Status":
-            build_status_view()
-        elif name == "Cockpit":
-            build_cockpit_view()
-        elif name == "Logs":
-            build_logs_view()
-        elif name == "Find":
-            build_find_view()
-        else:
-            build_category_view(name)
+        if name in self.nav_y:
+            y, h = self.nav_y[name]
+            self.sidebar.coords(self.nav_accent, 0, y, 3, y + h)
+            self.sidebar.tag_raise(self.nav_accent)
+        cls = self.SPECIAL_VIEWS.get(name)
+        self._show(cls(self) if cls else ActionsView(self, CATEGORIES[name]))
+        self.content.yview_moveto(0)
 
-    # create_window, not pack -- sidebar is a Canvas now (see above), so its
-    # children are positioned manually instead of auto-stacked. Starts at
-    # SIDEBAR_TOP, not 0, so the brand badge above keeps its own space.
-    # pady dropped 8->6, 2026-09-19: freed ~28px of the ~30px SIDEBAR_TOP
-    # cost across all 14 rows -- the badge (see above) otherwise pushed
-    # "Personal" off the bottom of this unscrollable Canvas even after the
-    # root.geometry bump below, which is already at its own real ceiling
-    # (confirmed live: this window sits 2px under the 766px _NET_WORKAREA
-    # limit from the 2026-08-29 regression, no safe room left to grow it
-    # further).
-    _nav_y = SIDEBAR_TOP
-    for cat in CATEGORIES:
-        b = ui.button(
-            sidebar, cat, command=lambda c=cat: select(c),
-            font=nav_font, bg=BG, fg=FG_MUTED, hover_bg=OVERLAY, hover_fg=GOLD,
-            padx=14, pady=6,
-        )
-        b.configure(anchor="w")
-        sidebar.create_window(4, _nav_y, anchor="nw", window=b, width=146)
-        b.update_idletasks()
-        nav_y_ranges[cat] = (_nav_y, b.winfo_reqheight())
-        _nav_y += b.winfo_reqheight() + 1
-        nav_buttons[cat] = b
-        # Bound directly on the button, not bind_all -- `content`'s own
-        # scrollable views (see _embed_content) already use bind_all for
-        # their own wheel handling, and Enter/Leave-driven bind_all here
-        # would stomp that global binding every time the mouse crossed
-        # between sidebar and content. A plain widget-local bind avoids
-        # the conflict entirely: each button is a real child covering
-        # most of the canvas, so the wheel event needs to be caught here,
-        # not just on the (mostly-covered) canvas background below.
-        b.bind("<Button-4>", lambda _e: sidebar.yview_scroll(-1, "units"))
-        b.bind("<Button-5>", lambda _e: sidebar.yview_scroll(1, "units"))
+    def _show(self, view):
+        if self.view:
+            self.view.destroy()
+        for w in self.content.winfo_children():
+            w.destroy()
+        self.view = view
+        view.show()
 
-    # Scrollable, 2026-09-19 -- rather than keep hand-tuning fixed pixel
-    # budgets (badge height / row padding / window geometry) against
-    # whatever the body/console split happens to be, which is a real
-    # zero-sum fight (trimming body's height for more console room, right
-    # below, would otherwise reclip the bottom categories again the same
-    # way the badge did earlier this pass), give the sidebar Canvas a real
-    # scrollregion + local wheel binding. This makes every category
-    # reachable regardless of window height or how the sash gets dragged,
-    # instead of staying correct only at one specific size.
-    sidebar.configure(scrollregion=(0, 0, 150, _nav_y + 4))
-    sidebar.bind("<Button-4>", lambda _e: sidebar.yview_scroll(-1, "units"))
-    sidebar.bind("<Button-5>", lambda _e: sidebar.yview_scroll(1, "units"))
-
-    # Wire the global quick-search now that select()/build_search_results_view
-    # both exist. Live on every keystroke (cheap in-memory filter, no
-    # subprocess) -- typing shows results immediately; clearing the box
-    # (or Escape) reverts to whatever category was actually selected in
-    # the sidebar, rather than leaving the last search result stuck on
-    # screen with no obvious way back.
-    def _do_global_search(_evt=None):
-        if _search_placeholder["active"]:
+    def _do_search(self, _evt=None):
+        if self._ph_active:
             return
-        q = search_var.get().strip()
-        if q:
-            for n, b in nav_buttons.items():
-                b.set_look(bg=BG, fg=FG_MUTED)
-            build_search_results_view(q)
+        q = self.search_var.get().strip().lower()
+        if not q:
+            self.select(self.current)
+            return
+        for b in self.nav_buttons.values():
+            b.set_look(bg=BG, fg=FG_MUTED)
+        hits = [(c, a) for c, acts in CATEGORIES.items() for a in acts if q in a.label.lower()]
+        self._show(ActionsView(self, [a for _, a in hits], {id(a): f"{c} — " for c, a in hits},
+                               empty_text=f"no actions match '{q}'"))
+
+    def _clear_search(self, _evt=None):
+        self.search_var.set("")
+        self.select(self.current)
+        self.root.focus_set()
+
+    # -- running things ------------------------------------------------------
+    def bg(self, work, done):
+        """Run work() in a thread, then done(result) on the main thread."""
+        def worker():
+            try:
+                res, err = work(), None
+            except Exception:
+                res, err = None, sys.exc_info()
+            if err:
+                self.bridge.post(lambda: self.root.report_callback_exception(*err))
+            else:
+                self.bridge.post(done, res)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def ensure_console_room(self):
+        """First time any command runs, grow the console sash once so real output has room without
+        the user needing to know to drag it -- then never touch it again (a deliberate manual
+        resize is never fought)."""
+        if self._console_room_done:
+            return
+        self.root.update_idletasks()
+        total = self.main_pane.winfo_height()
+        if total <= 1:
+            return                                     # not realized yet -- retry on the next run
+        try:
+            _, sash_y = self.main_pane.sash_coord(0)
+        except tk.TclError:
+            return
+        self._console_room_done = True
+        if max(0, total - 260) < sash_y:
+            self.main_pane.sash_place(0, 0, max(0, total - 260))
+
+    def run_async(self, cmd, timeout=30, on_done=None):
+        # Ignore a repeat while the identical command is still running: a double-click used to run
+        # a mutating action twice (`gvm cloud-start` bills).
+        if cmd in self._busy:
+            self.console.log(f"(already running — ignoring repeat: {cmd})", GOLD)
+            return
+        self._busy.add(cmd)
+        self.ensure_console_room()
+        self.console.log(f"$ {cmd}", TEAL)
+
+        def done(res):
+            ok, out = res
+            self._busy.discard(cmd)
+            if out:
+                self.console.log(out, FG if ok else ROSE)
+            self.console.log(f"[{'ok' if ok else 'failed'}]", PINE if ok else ROSE)
+            if on_done:
+                on_done()
+            if isinstance(self.view, StatusView) and self.view.alive():
+                self.view.refresh()
+        self.bg(lambda: self.runner.run(cmd, timeout=timeout), done)
+
+    def run_action(self, a):
+        if a.detach:
+            self.ensure_console_room()
+            self.console.log(f"$ {a.cmd}  (opens its own window)", TEAL)
+            ok, msg = self.runner.detach(a.cmd)
+            self.console.log(f"[{'ok' if ok else 'failed'}] {msg}", PINE if ok else ROSE)
+        elif ConfirmPolicy.required(a):
+            d = Dialog(self, "confirm")
+            d.label(f"run: {a.label}?")
+            d.label(a.cmd, fg=FG_MUTED, font=self.f.small, wrap=420, pady=(0, 14))
+            d.win.bind("<y>", lambda _e: (d.close(), self.run_async(a.cmd, a.timeout)))
+            d.buttons([("yes, run it", ROSE, lambda: self.run_async(a.cmd, a.timeout)), ("cancel", FG_MUTED, None)])
         else:
-            select(current_cat.get())
+            self.run_async(a.cmd, a.timeout)
 
-    def _clear_global_search(_evt=None):
-        search_var.set("")
-        select(current_cat.get())
-        root.focus_set()
+    # -- periodic loops ------------------------------------------------------
+    def _tick(self):
+        self.root.after(1000, self._tick)              # schedule first: one bad tick can't end the clock
+        try:
+            self.clock_lbl.configure(text=time.strftime("%H:%M:%S"))
+            name, color = ui.phase_info()
+            self.phase_lbl.configure(text=f"◐ {name}", fg=color)
+            self.runner.reap()
+        except Exception:
+            self.root.report_callback_exception(*sys.exc_info())
 
-    search_entry.bind("<KeyRelease>", _do_global_search)
-    search_entry.bind("<Escape>", _clear_global_search)
+    def _geometry_watchdog(self):
+        """Keep the window inside the real usable desktop area (`_NET_WORKAREA`, what the WM itself
+        publishes -- not a guessed panel size). A forced position once put the bottom edge under
+        the taskbar and silently hid the last widget. The xprop call runs off the UI thread."""
+        self.root.after(10000, self._geometry_watchdog)
+        self.bg(lambda: self.runner.run("xprop -root _NET_WORKAREA", timeout=3), self._apply_workarea)
 
-    select("Status")
+    def _apply_workarea(self, res):
+        ok, out = res
+        nums = [int(n) for n in re.findall(r"-?\d+", out)] if ok and out else []
+        if len(nums) < 4:
+            return
+        wx, wy, ww, wh = nums[:4]
+        r = self.root
+        r.update_idletasks()
+        x, y, w, h = r.winfo_x(), r.winfo_y(), r.winfo_width(), r.winfo_height()
+        nx = wx if x < wx else max(wx, wx + ww - w) if x + w > wx + ww else x
+        ny = wy if y < wy else max(wy, wy + wh - h) if y + h > wy + wh else y
+        if (nx, ny) != (x, y):
+            r.geometry(f"+{nx}+{ny}")
 
-    # ── Clock + auto status refresh ────────────────────────────────────────
-    def tick():
-        clock_lbl.configure(text=time.strftime("%H:%M:%S"))
-        _pn, _pc = ui.phase_info()
-        phase_lbl.configure(text=f"◐ {_pn}", fg=_pc)
-        root.after(1000, tick)
+    def _on_callback_error(self, exc, val, tb):
+        self.errors.append("".join(traceback.format_exception(exc, val, tb)))
+        traceback.print_exception(exc, val, tb)
 
-    def auto_refresh():
-        if current_cat.get() == "Status":
-            refresh_status()
-        root.after(15000, auto_refresh)
+    # -- lifecycle -----------------------------------------------------------
+    def run(self):
+        self.root.mainloop()
 
-    # Self-heal (2026-08-29): keep the window fully inside the real usable
-    # desktop area, not just the raw screen. A forced position once put
-    # this window's bottom edge under the taskbar panel, silently hiding
-    # the last-packed widget (see that day's GAMEPLAN entry) -- dropping
-    # the forced position fixed the one-time startup case, but nothing
-    # stopped the same class of problem recurring if the window's ever
-    # dragged (or a future WM/panel config change) puts it off-area
-    # again. Queries `_NET_WORKAREA` directly -- what the window manager
-    # itself publishes as the real usable area -- rather than guessing
-    # screen height minus an assumed panel size, which would silently go
-    # stale on a different monitor/panel setup. Runs periodically, not
-    # just once at launch, so this keeps correcting itself for as long
-    # as the window stays open.
-    def geometry_watchdog():
-        ok, out = run("xprop -root _NET_WORKAREA", timeout=3)
-        if ok and out:
-            nums = [int(n) for n in re.findall(r"-?\d+", out)]
-            if len(nums) >= 4:
-                wx, wy, ww, wh = nums[:4]
-                root.update_idletasks()
-                x, y = root.winfo_x(), root.winfo_y()
-                w, h = root.winfo_width(), root.winfo_height()
-                new_x, new_y = x, y
-                if x < wx:
-                    new_x = wx
-                elif x + w > wx + ww:
-                    new_x = max(wx, wx + ww - w)
-                if y < wy:
-                    new_y = wy
-                elif y + h > wy + wh:
-                    new_y = max(wy, wy + wh - h)
-                if (new_x, new_y) != (x, y):
-                    root.geometry(f"+{new_x}+{new_y}")
-        root.after(10000, geometry_watchdog)
+    def _pump(self, seconds):
+        end = time.time() + seconds
+        while time.time() < end:
+            self.root.update()
+            time.sleep(0.02)
 
-    tick()
-    root.after(15000, auto_refresh)
-    # 500ms delay on the first run -- gives the WM time to finish its own
-    # initial placement first (confirmed live 2026-08-27/29: xfwm4 doesn't
-    # finalize window position instantly on map).
-    root.after(500, geometry_watchdog)
+    def selftest(self):
+        """Open every view (and the global search), let their poll jobs run, and check nothing
+        raised in a Tk callback and no poll job outlived its view."""
+        print("khaos-lab selftest")
+        for name in CATEGORIES:
+            self.select(name)
+            self._pump(1.2 if name in ("Status", "Cockpit", "Inventory") else 0.25)
+            print(f"  view {name:<14} ok  (poll jobs: {', '.join(self.poller.active()) or 'none'})")
+        self._ph_active = False
+        for q in ("vpn", "zzz-no-such-action"):
+            self.search_var.set(q)
+            self._do_search()
+            self._pump(0.2)
+        print("  global search            ok")
+        self.select("Personal")
+        self._pump(0.3)
+        leaked = self.poller.active()
+        print(f"  poll jobs after leaving polled views: {leaked or 'none (no leak)'}")
+        ov = ConfirmPolicy.overrides(CATEGORIES)
+        print(f"  confirm-policy overrides (each must have a stated reason): {[o[1] for o in ov]}")
+        bad = self.errors or leaked
+        print("  " + ("FAILED" if bad else "all views built with no callback errors"))
+        for e in self.errors:
+            print(e)
+        self.root.destroy()
+        return 1 if bad else 0
 
-    root.mainloop()
+
+def main(argv):
+    app = App()
+    if "--selftest" in argv:
+        sys.exit(app.selftest())
+    app.run()
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

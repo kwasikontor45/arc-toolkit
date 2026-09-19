@@ -4449,9 +4449,10 @@ cmd_help() {
   echo -e "  ${D}arc ${C}evebox${N}                ${M}status of the EveBox triage-UI container${N}"
   echo -e "  ${D}arc ${C}evebox start/stop/restart/logs${N}  ${M}manage the container${N}"
   echo -e "  ${D}arc ${C}evebox open${N}           ${M}open the web UI (http://127.0.0.1:5636)${N}"
-  echo -e "  ${D}arc ${C}soc-lab${N}               ${M}status of the Splunk + SQL Server + Nessus lab containers${N}"
-  echo -e "  ${D}arc ${C}soc-lab start/stop/restart/logs${N}  ${M}manage all three containers (docker compose under the hood)${N}"
+  echo -e "  ${D}arc ${C}soc-lab${N}               ${M}status of the local Splunk lab container${N}"
+  echo -e "  ${D}arc ${C}soc-lab start/stop/restart/logs${N}  ${M}manage the Splunk lab container (docker compose under the hood)${N}"
   echo -e "  ${D}arc ${C}aws-status${N}             ${M}quick combined snapshot -- all three cloud instances (gvm/soclab/wazuh) + budget spend${N}"
+  echo -e "  ${D}arc ${C}aws-keep ${W}<gvm|soclab|wazuh> <on|off>${N}  ${M}deliberately exempt a running lab box from the idle auto-stop (auto-clears when stopped)${N}"
   echo -e "  ${D}arc ${C}wazuh cloud-start|stop|status|open${N}  ${M}wazuh-cloud (Wazuh SIEM, on-demand EC2)${N}"
   echo -e "  ${D}arc ${C}wazuh otx-sync${N}          ${M}pull AlienVault OTX pulses into wazuh-cloud's threat-intel lists${N}"
   echo -e "  ${D}arc ${C}gvm${N}                   ${M}GVM/OpenVAS -- local removed 2026-08-31, moving to on-demand AWS${N}"
@@ -5757,6 +5758,31 @@ cmd_aws_status() {
   echo -e "\n$HR"
 }
 
+cmd_aws_keep() {
+  # Deliberate "don't auto-stop this one" override for a lab box. arc-heal's idle backstop skips a
+  # RUNNING instance tagged KeepRunning=true; arc-heal clears the tag once the instance is stopped,
+  # so the override always ends with the session it was meant for.
+  _aws_lab_conf || { echo -e "$HR"; return 1; }
+  local box="${1:-}" mode="${2:-}" iid=""
+  case "$box" in
+    gvm) iid="$GVM_INSTANCE_ID" ;;
+    soclab) iid="$SOCLAB_INSTANCE_ID" ;;
+    wazuh) iid="${WAZUH_INSTANCE_ID:-}" ;;
+  esac
+  if [[ -z "$iid" || ! "$mode" =~ ^(on|off)$ ]]; then
+    echo -e "  usage: ${C}arc aws-keep <gvm|soclab|wazuh> <on|off>${N}  ${D}(on = arc-heal won't auto-stop it while running)${N}"
+    return 1
+  fi
+  if [[ "$mode" == "on" ]]; then
+    aws ec2 create-tags --resources "$iid" --tags Key=KeepRunning,Value=true --region "$AWS_LAB_REGION" >/dev/null 2>&1 \
+      && echo -e "  ${Y}!${N}  ${box}-cloud will NOT be auto-stopped while running (cleared automatically once it's stopped). Remember it bills hourly." \
+      || echo -e "  ${R}✗${N}  could not set the tag"
+  else
+    aws ec2 delete-tags --resources "$iid" --tags Key=KeepRunning --region "$AWS_LAB_REGION" >/dev/null 2>&1 \
+      && echo -e "  ${G}✓${N}  ${box}-cloud is back under the idle-stop backstop" || echo -e "  ${R}✗${N}  could not clear the tag"
+  fi
+}
+
 cmd_gvm() {
   local sub="${1:-}"
   _aws_lab_conf || { echo -e "$HR"; return 1; }
@@ -6323,6 +6349,7 @@ case "${1:-}" in
   evebox)         cmd_evebox "${@:2}" ;;
   soc-lab)        cmd_soclab "${@:2}" ;;
   aws-status)     cmd_aws_status ;;
+  aws-keep)       cmd_aws_keep "${@:2}" ;;
   gvm)            cmd_gvm "${@:2}" ;;
   wazuh)          cmd_wazuh "${@:2}" ;;
   zap)            cmd_zap "${@:2}" ;;

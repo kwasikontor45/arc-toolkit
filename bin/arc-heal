@@ -54,11 +54,11 @@ _notify() { /home/architect-of-chaos/.local/bin/arc-pine-notify "$1" arc-heal "$
 # entirely). No more Docker container to restart, no SSH key, no EC2 lookup --
 # PythonAnywhere manages the process itself. This is now a plain reachability
 # check through the real request path: py-bite.kwasikontor.dev -> Cloudflare
-# Page Rule redirect -> b6ones6aw.pythonanywhere.com.
+# Worker `py-bite-proxy` (transparent reverse proxy) -> b6ones6aw.pythonanywhere.com.
 check_py_bite() {
   local http; http=$(curl -skL -o /dev/null -w "%{http_code}" --max-time 8 "https://py-bite.kwasikontor.dev" 2>/dev/null)
   if [[ "$http" == "200" ]]; then note "OK::py-bite::site 200"; return; fi
-  note "FLAG::py-bite::site returned HTTP ${http:-no response} -- check PythonAnywhere dashboard (b6ones6aw) and the Cloudflare Page Rule"
+  note "FLAG::py-bite::site returned HTTP ${http:-no response} -- check the PythonAnywhere Web tab (b6ones6aw: reload/renew the app) and the py-bite-proxy Worker"
 }
 
 check_local_stack() {
@@ -346,6 +346,22 @@ check_aws_lab_idle() {
     [[ -z "$info" ]] && continue
     local state launch
     state=$(echo "$info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('State',''))" 2>/dev/null)
+    # 2026-09-19: KeepRunning means "leave this RUNNING till further notice". On a STOPPED
+    # instance the notice is over -- but the tag survives stop/start, silently disabling this very
+    # backstop for the next time it's started and forgotten (all three lab boxes were found stopped
+    # with the tag still set). Clear it; set it again on purpose with: arc aws-keep <box> on
+    if [[ "$state" == "stopped" ]]; then
+      local stale_keep
+      stale_keep=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$iid" "Name=key,Values=KeepRunning" \
+        --region "$AWS_LAB_REGION" --query 'Tags[0].Value' --output text 2>/dev/null)
+      if [[ "$stale_keep" == "true" ]]; then
+        if aws ec2 delete-tags --resources "$iid" --tags Key=KeepRunning --region "$AWS_LAB_REGION" >/dev/null 2>&1; then
+          note "HEALED::aws-lab-keeprunning::${label}-cloud is stopped but still carried KeepRunning=true (would have exempted it from the idle backstop) -- cleared"
+        else
+          note "FLAG::aws-lab-keeprunning::${label}-cloud stopped with a stale KeepRunning tag, clearing failed -- aws ec2 delete-tags --resources $iid --tags Key=KeepRunning"
+        fi
+      fi
+    fi
     [[ "$state" != "running" ]] && continue
     # Explicit human override, added 2026-08-31: a KeepRunning=true tag
     # means the user deliberately left this instance running on purpose

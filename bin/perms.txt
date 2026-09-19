@@ -25,6 +25,7 @@
 711 arc-lynis-check
 700 arc-mic
 775 arc-nextdns-healthcheck
+775 arc-notify-theme
 775 arc-otx-fetch.py
 755 arc-pine
 711 arc-pine-bubbles

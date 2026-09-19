@@ -1145,7 +1145,7 @@ def main():
             # assumed. Flat Frame is the correct tool for a responsive
             # grid; rounded_frame is proven for arc-break's simple
             # single-column vertical stack, a genuinely different layout
-            # shape. Still gets the circadian palette for free either way.
+            # shape. Colors come from khaos-lab's fixed palette (no circadian).
             # highlightthickness/highlightbackground -- a real, native
             # Tkinter border (not a focus ring; Frame never takes focus,
             # so this just always shows) instead of the flat, borderless

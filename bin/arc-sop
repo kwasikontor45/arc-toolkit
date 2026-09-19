@@ -528,13 +528,23 @@ def hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
+SOP_EXCLUDE_DIRS = {"inventory"}
+
+
 def sop_files():
     """Yield (relative_path, absolute_path) for all SOP files."""
     if not INTEL_OPS.exists():
         return
     for f in INTEL_OPS.rglob("*"):
-        if f.is_file() and ".git/" not in str(f.relative_to(INTEL_OPS)):
-            yield f.relative_to(INTEL_OPS), f
+        rel = f.relative_to(INTEL_OPS)
+        if not f.is_file() or ".git/" in str(rel):
+            continue
+        # inventory/ has its own integrity mechanism (git history + arc-inv's hash-chained ledger,
+        # `arc inv verify`), and ledger.jsonl is appended by every 30-min scan -- hashing it here
+        # would leave the SOP baseline permanently "stale" and train everyone to ignore it.
+        if rel.parts and rel.parts[0] in SOP_EXCLUDE_DIRS:
+            continue
+        yield rel, f
 
 
 def cmd_baseline():

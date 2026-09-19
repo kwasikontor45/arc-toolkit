@@ -27,6 +27,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+import wave
 from datetime import datetime, time as dtime
 from pathlib import Path
 
@@ -286,11 +287,35 @@ def play_sound(sound_file):
     _paplay_force_unmuted(sound_file)
 
 
+def _wake_sink():
+    """Play ~0.5s of silence so the output device is open and powered before
+    real audio arrives. A SUSPENDED sink (right after boot, or once idled)
+    swallowed the first notification's speech entirely -- it only spoke if
+    something else had played audio just before. Called in parallel with
+    piper's synthesis (seconds long), so it costs no added latency."""
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            path = tmp.name
+        with wave.open(path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(22050)
+            w.writeframes(b"\x00\x00" * 11025)
+        subprocess.run(["paplay", path], capture_output=True, timeout=5)
+    except Exception:
+        pass
+    finally:
+        if path:
+            Path(path).unlink(missing_ok=True)
+
+
 def speak(text):
     if not PIPER_BIN.exists() or not PIPER_VOICE.exists():
         return
     if not text.strip():
         return
+    threading.Thread(target=_wake_sink, daemon=True).start()
     wav_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:

@@ -21,6 +21,7 @@ user static arc-aide-watch.service
 user static arc-break.service
 user enabled arc-dns-boot.service
 user enabled arc-pine-bubbles.service
+user enabled arc-pined.service
 user static arc-quiet-clean.service
 user static arc-remote-backup-tunnel.service
 user enabled arc-vpn-autoconnect.service

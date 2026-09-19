@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Arc Pine (notification voice + bubbles)
+Comment=Starts arc-pined (speaks notifications) and arc-pine-bubbles. Also kept alive by systemd user units + arc heal.
+Exec=systemctl --user start arc-pined.service arc-pine-bubbles.service
+Icon=/home/architect-of-chaos/.local/share/arc-pine/icon.png
+X-GNOME-Autostart-Delay=3
+NoDisplay=false
+Hidden=false

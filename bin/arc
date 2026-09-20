@@ -4432,7 +4432,7 @@ cmd_help() {
   echo -e "  ${D}arc ${C}wire${N}                  ${M}wire dual-push for current repo (primary + k6)${N}"
   echo -e "  ${D}arc ${C}mirror${N}                ${M}push current repo → k6 contingency account${N}"
   echo -e "  ${D}arc ${C}mirrors${N}               ${M}status/run/log of the automated sync-mirrors job (all repos, k45→k6)${N}"
-  echo -e "  ${D}arc ${C}deploy${N} ${W}[athena|kontor-studio]${N}      ${M}build + push to Cloudflare Pages — token fixed 2026-09-14, kontor-studio needs Pages permission added to it first${N}"
+  echo -e "  ${D}arc ${C}deploy${N} ${W}[athena|kontor-studio|phoenix]${N}      ${M}build + push to Cloudflare Pages — token fixed 2026-09-14, kontor-studio needs Pages permission added to it first${N}"
   echo -e "  ${D}arc ${C}audit${N}                 ${M}full git audit: fetch, status, ahead/behind${N}"
   echo -e "  ${D}arc ${C}rename${N}                ${M}bulk rename: kebab/camel/snake/numbers-to-words${N}"
   echo -e "  ${D}arc ${C}aws${N}                   ${M}SSH into py-bite EC2 — config: ~/.config/arc/aws.conf${N}"
@@ -6294,8 +6294,22 @@ cmd_deploy() {
         && echo -e "  ${G}✓${N}  kontor-studio deployed → kontor.studio" \
         || echo -e "  ${R}✗${N}  deploy failed"
       ;;
+    phoenix)
+      # Personal routine app (static SPA, state stays in the visitor's own browser). Bundle is public once
+      # deployed: no personal data may live in src/ (appointments are kept out on purpose), noindex + CSP set
+      # via public/_headers. First run creates the Pages project; later runs just redeploy.
+      cd ~/khaos-lab/phoenix || { echo -e "  ${R}✗${N}  phoenix repo not found at ~/khaos-lab/phoenix"; return 1; }
+      echo -e "  ${C}building phoenix${N} …"
+      npm run build 2>&1 | tail -3 || { echo -e "  ${R}✗${N}  build failed"; return 1; }
+      CLOUDFLARE_API_TOKEN="$CF_TOKEN" npx wrangler pages project create phoenix --production-branch main >/dev/null 2>&1 || true
+      echo -e "  ${C}deploying to CF Pages${N} …"
+      CLOUDFLARE_API_TOKEN="$CF_TOKEN" npx wrangler pages deploy dist \
+        --project-name phoenix --branch main --commit-dirty=true \
+        && echo -e "  ${G}✓${N}  phoenix deployed → phoenix.pages.dev (custom domain: add phoenix.kontor.studio in the Pages dashboard)" \
+        || echo -e "  ${R}✗${N}  deploy failed"
+      ;;
     *)
-      echo -e "  ${R}unknown target:${N} $target  —  try ${C}arc deploy athena${N} or ${C}arc deploy kontor-studio${N}"
+      echo -e "  ${R}unknown target:${N} $target  —  try ${C}arc deploy athena${N}, ${C}kontor-studio${N} or ${C}phoenix${N}"
       ;;
   esac
 }

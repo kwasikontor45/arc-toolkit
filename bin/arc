@@ -4716,9 +4716,20 @@ cmd_rename() {
 cmd_aws() {
   local sub="${1:-}"
   local conf="$HOME/.config/arc/aws.conf"
-  local AWS_HOST="34.225.113.167" AWS_USER="ubuntu" AWS_KEY="$HOME/.ssh/py-bite.pem"
+  # No real default host/user/key here (2026-09-22 fix) -- arc-toolkit is public and this used
+  # to hardcode the actual live EC2 IP as a fallback, meaning it worked with zero local config,
+  # but also meant anyone cloning the public repo saw a real, reachable instance address. aws.conf
+  # is gitignored (see .gitignore) and was already the documented override point for this exact
+  # purpose; it just wasn't actually required before. Same fail-loud pattern AWS_KEY already used
+  # right below, extended to cover AWS_HOST/AWS_USER too instead of only the key path.
+  local AWS_HOST="" AWS_USER="" AWS_KEY="$HOME/.ssh/py-bite.pem"
   [[ -f "$conf" ]] && source "$conf"
   AWS_KEY="${AWS_KEY/#\~/$HOME}"
+  if [[ -z "$AWS_HOST" || -z "$AWS_USER" ]]; then
+    echo -e "  ${R}✗${N}  AWS_HOST/AWS_USER not set"
+    echo -e "  ${D}set them in: ~/.config/arc/aws.conf${N}"
+    return 1
+  fi
   if [[ ! -f "$AWS_KEY" ]]; then
     echo -e "  ${R}✗${N}  key not found: $AWS_KEY"
     echo -e "  ${D}update: ~/.config/arc/aws.conf${N}"
@@ -5752,7 +5763,11 @@ cmd_aws_status() {
       echo -e "  ${D}·${N}  ${label}  ${state:-unknown}"
     fi
   done
-  local spend; spend=$(aws budgets describe-budget --account-id 433985779144 --budget-name aws-credits-100 \
+  # AWS_LAB_ACCOUNT_ID from aws-lab.conf (2026-09-22 fix) -- was hardcoded here, a real account
+  # ID sitting in the public arc-toolkit repo. Not a credential on its own, but no reason to leave
+  # it in public source when the gitignored lab config is right here doing the same job for
+  # everything else AWS-lab-related (instance IDs, region, SSH key).
+  local spend; spend=$(aws budgets describe-budget --account-id "$AWS_LAB_ACCOUNT_ID" --budget-name aws-credits-100 \
     --region us-east-1 --query 'Budget.CalculatedSpend.ActualSpend.Amount' --output text 2>/dev/null)
   echo -e "\n  ${C}budget${N}  \$${spend:-?}/100"
   echo -e "\n$HR"

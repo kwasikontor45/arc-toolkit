@@ -1007,15 +1007,40 @@ class CockpitView(TileView):
         r = self.app.runner.run
 
         def vpn():
+            # 2026-09-22, user's follow-up: "add additional details for vpn and dns info...
+            # place/point of current connection." `arc vpn status` already returns Server/
+            # Protocol/Load -- this tile was discarding all three, showing only the bare
+            # "Connected" word. Server is the actual point of connection (ProtonVPN's own
+            # naming, e.g. "US-FREE#22 in Seattle, United States").
             ok, out = r("arc vpn status", timeout=20)
-            m = re.search(r"Status:\s*(.+)", out)
-            return m.group(1).strip() if m else (out.strip()[:60] or "unavailable")
+            status = re.search(r"Status:\s*(.+)", out)
+            if not status:
+                return out.strip()[:60] or "unavailable"
+            head = status.group(1).strip()
+            server = re.search(r"Server:\s*(.+)", out)
+            protocol = re.search(r"Protocol:\s*(.+)", out)
+            load = re.search(r"Load:\s*(.+)", out)
+            if not server:
+                return head  # disconnected -- no point of connection to show
+            if protocol:
+                head += f"  ·  {protocol.group(1).strip()}"
+            line2 = server.group(1).strip()
+            if load:
+                line2 += f"  ·  {load.group(1).strip()} load"
+            return f"{head}\n{line2}"
 
         def dns():
+            # Same follow-up -- `query:` here was regex-captured as just the first token ("OK"),
+            # silently dropping the "(<resolving IP>)" that arc dns check already prints right
+            # next to it. That IP is DNS's own point-of-connection equivalent (which NextDNS
+            # anycast edge actually answered), so it's worth keeping instead of throwing away.
             ok, out = r("arc dns check", timeout=20)
-            d, ro, q = (re.search(p, out) for p in (r"daemon:\s*(\S+)", r"routing:\s*(.+)", r"query:\s*(\S+)"))
+            d = re.search(r"daemon:\s*(\S+)", out)
+            ro = re.search(r"routing:\s*(.+)", out)
+            q = re.search(r"query:\s*(\S+)(?:\s*\(([^)]+)\))?", out)
             if d and q:
-                return f"daemon {d.group(1)}  ·  query {q.group(1)}\n{(ro.group(1).strip() if ro else '')[:60]}"
+                qtext = q.group(1) + (f" ({q.group(2)})" if q.group(2) else "")
+                return f"daemon {d.group(1)}  ·  query {qtext}\n{(ro.group(1).strip() if ro else '')[:60]}"
             return "unavailable"
 
         def netstats():
@@ -1413,6 +1438,8 @@ class App:
         self.view = None
         self.current = "Status"
         self._console_room_done = False
+        self._maximized = False
+        self._pre_max_geometry = None
 
         self.content_bg = load_image(CONTENT_BG_PATH)
         self._build_header()
@@ -1457,6 +1484,24 @@ class App:
         tk.Label(header, text="khaos", font=f.big, bg=BG, fg=GOLD).pack(side="left")
         tk.Label(header, text="/", font=f.big, bg=BG, fg=FG_MUTED).pack(side="left")
         tk.Label(header, text="lab", font=f.big, bg=BG, fg=TEAL).pack(side="left", padx=(0, 16))
+        # Window controls (min/max/close), 2026-09-22 -- user's own follow-up: "its tricky to
+        # find max/min/close buttons". Real cause, confirmed via xwininfo: this WM theme is
+        # currently drawing essentially zero titlebar chrome for this window (the client and
+        # its WM frame came back pixel-identical -- no reserved space for WM-drawn buttons at
+        # all), a desktop/WM theme characteristic, not something khaos-lab's own code was ever
+        # doing. Fixing the WM theme system-wide is out of scope here (it'd affect every window
+        # on the desktop); drawing khaos-lab's own controls, scoped to just this app, is the
+        # same pattern any custom-chrome app uses regardless of what the WM does. Packed before
+        # clock/phase below so it claims the rightmost slot (pack(side="right") stacks in the
+        # order packed -- first claims the far edge).
+        ctrl = tk.Frame(header, bg=BG)
+        ctrl.pack(side="right", padx=(10, 0))
+        ui.button(ctrl, "─", command=root.iconify, font=f.small, bg=BG, fg=FG_MUTED,
+                  hover_bg=OVERLAY, hover_fg=FG, padx=8, pady=2).pack(side="left")
+        ui.button(ctrl, "▢", command=self._toggle_maximize, font=f.small, bg=BG, fg=FG_MUTED,
+                  hover_bg=OVERLAY, hover_fg=FG, padx=8, pady=2).pack(side="left")
+        ui.button(ctrl, "✕", command=root.destroy, font=f.small, bg=BG, fg=FG_MUTED,
+                  hover_bg=ROSE, hover_fg=FG, padx=8, pady=2).pack(side="left")
         self.clock_lbl = tk.Label(header, text="", font=f.small, bg=BG, fg=FG_MUTED)
         self.clock_lbl.pack(side="right")
         # The panel's palette is fixed on purpose; which Kataleya phase it is (choice/desire/
@@ -1755,6 +1800,33 @@ class App:
         ny = wy if y < wy else max(wy, wy + wh - h) if y + h > wy + wh else y
         if (nx, ny) != (x, y):
             r.geometry(f"+{nx}+{ny}")
+
+    def _toggle_maximize(self):
+        # Real bug caught before shipping, 2026-09-22: tried Tk's '-zoomed' attribute first
+        # (the standard X11 EWMH maximize toggle) -- confirmed via a direct non-UI test
+        # (set it True, re-read it, checked winfo geometry) that it's a silent no-op on this
+        # WM: geometry unchanged, state still reports False right after setting True. Falls
+        # back to the same _NET_WORKAREA technique _geometry_watchdog below already uses
+        # successfully -- save the current geometry once, size to the real usable desktop
+        # area to "maximize", restore the saved geometry to toggle back. Async via self.bg,
+        # same pattern as the watchdog, so the xprop call can't stall a button click.
+        if self._maximized:
+            self.root.geometry(self._pre_max_geometry)
+            self._maximized = False
+            return
+        self.root.update_idletasks()
+        r = self.root
+        self._pre_max_geometry = f"{r.winfo_width()}x{r.winfo_height()}+{r.winfo_x()}+{r.winfo_y()}"
+        self.bg(lambda: self.runner.run("xprop -root _NET_WORKAREA", timeout=3), self._apply_maximize)
+
+    def _apply_maximize(self, res):
+        ok, out = res
+        nums = [int(n) for n in re.findall(r"-?\d+", out)] if ok and out else []
+        if len(nums) < 4:
+            return
+        wx, wy, ww, wh = nums[:4]
+        self.root.geometry(f"{ww}x{wh}+{wx}+{wy}")
+        self._maximized = True
 
     def _on_callback_error(self, exc, val, tb):
         self.errors.append("".join(traceback.format_exception(exc, val, tb)))

@@ -146,8 +146,21 @@ date "+%Y-%m-%d %H:%M" > "$STAMP"
 # was found 13 days stale 2026-08-15 since nothing kept it in sync; wiring it
 # in here so it never silently drifts again. athena.kdbx and misc-kspm/ are
 # Persistent-only and deliberately untouched.
+#
+# Real bug found 2026-09-22: this list still had 'notes-site' in it, but
+# $USB/notes-site (the source this loop rsyncs FROM) was deliberately deleted
+# from the USB entirely on 2026-09-19 when the private site moved to
+# local-disk-only (see the notes-site exclude above, and the surviving
+# Persistent/notes-site/ destination dir, now orphaned -- deliberately left
+# alone here, not deleted, since removing data isn't this fix's job). This
+# is why every backup since the 19th silently reported "FAILED — check disk
+# space / USB health" on every single run: the real cause was a stale
+# directory reference, not disk or USB health at all. The generic failure
+# message hid this for 3 days -- rsync's own stderr was being thrown away
+# (2>/dev/null below); logging any errors here properly is next on the list
+# if this class of silent-misdiagnosis bug matters enough to invest in.
 echo -e "  ${C}→${N}  Persistent/ (Tails emergency-boot view)..."
-PERSISTENT_DIRS=(archive arc-portable arc-sop dev-notes forge khaos-lab manifests notes-site)
+PERSISTENT_DIRS=(archive arc-portable arc-sop dev-notes forge khaos-lab manifests)
 persistent_failed=0
 for d in "${PERSISTENT_DIRS[@]}"; do
   rsync -a --delete "$USB/$d/" "$USB/Persistent/$d/" 2>/dev/null || persistent_failed=1

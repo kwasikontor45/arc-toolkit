@@ -131,6 +131,15 @@ cp -a "$HOME/.config/arc/greeting.sh" "$HOME/.config/arc/motd" "$HOME/.config/ar
 crontab -l > "$USB/arc-portable/docs/crontab.txt" 2>/dev/null
 echo -e "  ${G}✓${N}  arc-portable refreshed (excludes: LUKS keyfile, SOP db, gate-owner-uid, last-known-ip — machine-specific by design)"
 
+# Real bug found 2026-09-22: the stamp was only ever written at the very end,
+# after the Persistent/ mirror below -- a slow or interrupted (e.g. timed out)
+# Persistent/ step meant the compliance check (`arc day`) reported the whole
+# backup as missing even though every critical sync above had genuinely
+# already succeeded. Stamp here, right after the primary syncs that actually
+# matter for disaster recovery; stamped again below so a full run's timestamp
+# still reflects the Persistent/ mirror too when that step also completes.
+date "+%Y-%m-%d %H:%M" > "$STAMP"
+
 # Tails Persistent Storage view -- Tails only bind-mounts $USB/Persistent/<name>
 # into a live Tails session, not the top-level paths above. This is the
 # emergency-boot copy (no internet, corrupted Timeshift, no other backups) --

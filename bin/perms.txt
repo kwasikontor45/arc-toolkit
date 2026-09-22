@@ -45,6 +45,7 @@
 700 arc-sudo-session
 711 arc-suricata-watch
 664 _arc_ui.py
+775 arc-verify-not-scaffold
 775 arc-vpn-watch
 664 _arc_watch_common.py
 775 arc-yara-check

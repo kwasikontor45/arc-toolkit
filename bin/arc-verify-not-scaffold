@@ -1,0 +1,60 @@
+#!/bin/bash
+# arc-verify-not-scaffold -- fail loudly if a release build's entry point is still an
+# untouched framework starter template, not real app code.
+#
+# Real incident, 2026-09-22: an Expo starter's default App.js ("Open up App.js to start
+# working on your app!") got built into a real, signed APK and published as if it were
+# Kataleya -- caught after the fact, not before. This is the "before" check that incident
+# was missing: run it as part of any release/build step, before `eas build`, `bubblewrap
+# build`, `npm run build`, etc. Exits 1 (and prints exactly why) if the entry file still
+# matches a known, unedited scaffold fingerprint. Exits 0 otherwise -- a false negative
+# (real app code that happens not to match any fingerprint here) is expected and fine;
+# a false positive (real, edited app code wrongly flagged) should never happen, since
+# every fingerprint below is an exact, verbatim string from the *unedited* template.
+#
+# Usage: arc-verify-not-scaffold <file> [file...]
+#   arc-verify-not-scaffold App.js
+#   arc-verify-not-scaffold src/App.jsx index.html
+#
+# Add fingerprints here as new scaffold types get used -- one grep pattern per known
+# "nothing built here yet" template.
+
+set -u
+
+FINGERPRINTS=(
+  "Open up App.js to start working on your app"                    # Expo blank template
+  "Edit src/App.js and save to reload"                              # older Create React App
+  "Edit src/App.jsx and save to test HMR"                           # Vite react template
+  "create-react-native-app"                                          # legacy CRNA placeholder
+  "Welcome to your new ExpoRouter app"                              # Expo router template
+)
+
+R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; N='\033[0m'
+
+if [[ $# -eq 0 ]]; then
+  echo -e "${R}usage:${N} arc-verify-not-scaffold <file> [file...]" >&2
+  exit 2
+fi
+
+fail=0
+for f in "$@"; do
+  if [[ ! -f "$f" ]]; then
+    echo -e "${Y}!${N}  $f -- not found, skipping"
+    continue
+  fi
+  hit=""
+  for fp in "${FINGERPRINTS[@]}"; do
+    if grep -qF "$fp" "$f" 2>/dev/null; then
+      hit="$fp"
+      break
+    fi
+  done
+  if [[ -n "$hit" ]]; then
+    echo -e "${R}✗${N}  $f still matches an untouched template (\"${hit}\") -- this is scaffold code, not a real app. Refusing to treat this as ready to build/ship."
+    fail=1
+  else
+    echo -e "${G}✓${N}  $f -- no known scaffold fingerprint found"
+  fi
+done
+
+exit $fail

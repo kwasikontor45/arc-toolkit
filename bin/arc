@@ -6379,6 +6379,7 @@ case "${1:-}" in
   soc-lab)        cmd_soclab "${@:2}" ;;
   aws-status)     cmd_aws_status ;;
   aws-keep)       cmd_aws_keep "${@:2}" ;;
+  verify-not-scaffold) ~/.local/bin/arc-verify-not-scaffold "${@:2}" ;;
   gvm)            cmd_gvm "${@:2}" ;;
   wazuh)          cmd_wazuh "${@:2}" ;;
   zap)            cmd_zap "${@:2}" ;;

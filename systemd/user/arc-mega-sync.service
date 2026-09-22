@@ -1,0 +1,6 @@
+[Unit]
+Description=arc sync -- vault to MEGA cloud backup
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/arc sync

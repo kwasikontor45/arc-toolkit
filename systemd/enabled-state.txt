@@ -18,10 +18,12 @@ system enabled arc-lynis-check.timer
 system enabled arc-nextdns-healthcheck.timer
 system enabled arc-rkhunter-check.timer
 user static arc-aide-watch.service
+user static arc-backup.service
 user static arc-book-build.service
 user static arc-break.service
 user enabled arc-dns-boot.service
 user static arc-inv-scan.service
+user static arc-mega-sync.service
 user static arc-notify-theme.service
 user enabled arc-pine-bubbles.service
 user enabled arc-pined.service
@@ -32,8 +34,10 @@ user enabled arc-vpn-autoconnect.service
 user static arc-vpn-watch.service
 user static arc-yara-check.service
 user enabled arc-aide-watch.timer
+user enabled arc-backup.timer
 user enabled arc-book-build.timer
 user enabled arc-inv-scan.timer
+user enabled arc-mega-sync.timer
 user enabled arc-notify-theme.timer
 user enabled arc-quiet-clean.timer
 user enabled arc-site-build.timer

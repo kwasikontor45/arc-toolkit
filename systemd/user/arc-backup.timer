@@ -1,0 +1,12 @@
+[Unit]
+Description=Run arc backup daily -- real gap found 2026-09-22: this was 100% manual-only, no
+Description=automation at all, the exact single-point-of-human-memory failure an IR/DR plan
+Description=exists to remove. Catches up missed runs (laptop off, USB unplugged, etc.) via Persistent=true.
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=arc backup -- dev-notes/khaos-lab/manifests/arc-portable + Persistent mirror to USB vault
+After=storage-mount.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/arc backup

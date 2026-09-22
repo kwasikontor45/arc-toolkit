@@ -40,7 +40,10 @@ TREES = {
 }
 
 SKIP_DIR_NAMES = {".git", "node_modules", "__pycache__", ".arc-notes", "master-archive"}
-DASHBOARD_SOURCE = HOME / "khaos-lab" / "resources-in-place.md"
+# refs/, not khaos-lab/ directly, since 2026-09-22 -- the user moved a batch of loose ref docs
+# into a locked-down ~/khaos-lab/refs/ (0700) that day; this hardcoded path went stale silently
+# (DASHBOARD_SOURCE.exists() just went False, no error) until caught here.
+DASHBOARD_SOURCE = HOME / "khaos-lab" / "refs" / "resources-in-place.md"
 
 FAVICON_SOURCE = HOME / ".local/share/arc/notes-site-favicon.png"
 FAVICON_TAG = ""
@@ -393,8 +396,8 @@ def inventory_blueprint_body():
                  for e in inv.get("recent", [])[:15])
     out.append(f'<div class="panel"><span class="tag">recent changes (tamper-evident ledger)</span><table><tr><th>when</th><th>event</th><th>asset</th></tr>{ev}</table></div>')
     links = []
-    for label, path in (("airplane-mode-connections.md", HOME / "khaos-lab" / "airplane-mode-connections.md"),
-                        ("resources-in-place.md", HOME / "khaos-lab" / "resources-in-place.md"),
+    for label, path in (("airplane-mode-connections.md", HOME / "khaos-lab" / "refs" / "airplane-mode-connections.md"),
+                        ("resources-in-place.md", HOME / "khaos-lab" / "refs" / "resources-in-place.md"),
                         ("inventory procedures (README)", HOME / "dev-notes" / "intel-ops" / "inventory" / "README.md")):
         if path.exists():
             links.append(f'<p><a href="notes/{slug_for(path)}">{label}</a></p>')

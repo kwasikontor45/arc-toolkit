@@ -1,0 +1,13 @@
+[Unit]
+Description=Run arc sync (MEGA cloud backup) daily, offset an hour after arc-backup.timer so the
+Description=vault is freshly synced before it uploads. Real gap found 2026-09-22: no automation
+Description=existed at all -- last real run before this fix depended entirely on someone
+Description=remembering. Persistent=true catches up missed runs.
+
+[Timer]
+OnCalendar=*-*-* 05:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

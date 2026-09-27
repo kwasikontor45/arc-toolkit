@@ -1408,7 +1408,7 @@ class HelpView(View):
         row.pack(fill="x", padx=14, pady=(0, 12))
         ui.button(row, "focus quick-jump  ·  Ctrl+F", command=self._focus_search, font=f.small,
                   bg=OVERLAY, fg=GOLD, hover_bg=BORDER, padx=10, pady=6).pack(side="left", padx=(0, 8))
-        ui.button(row, "full CLI reference  ·  arc help", command=lambda: self.app.run_async("arc help", timeout=15),
+        ui.button(row, "full CLI reference  ·  arc help all", command=lambda: self.app.run_async("arc help all", timeout=15),
                   font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BORDER, padx=10, pady=6).pack(side="left")
 
         tk.Label(self.frame, text="WORKSPACES", font=f.small, bg=SURFACE, fg=FG_MUTED,
@@ -1432,8 +1432,9 @@ class HelpView(View):
                      bg=BG, fg=TEAL, anchor="w").pack(fill="x")
             for widget in (card, *card.winfo_children()):
                 widget.bind("<Button-1>", lambda _e, n=name: self.app.select(n))
-                widget.bind("<Enter>", lambda _e, c=card: c.configure(bg=OVERLAY, highlightbackground=GOLD))
-                widget.bind("<Leave>", lambda _e, c=card: c.configure(bg=BG, highlightbackground=BORDER))
+                widget.configure(cursor="hand2")
+                widget.bind("<Enter>", lambda _e, c=card: self._card_hover(c, True))
+                widget.bind("<Leave>", lambda _e, c=card: self._card_hover(c, False))
             self._cards.append(card)
         self._layout_cards(grid, 580)
         tk.Label(self.frame, text="Guarded actions ask before changing system state. Results and errors appear in the output console below.",
@@ -1452,6 +1453,13 @@ class HelpView(View):
     def _focus_search(self):
         self.app.search_entry.focus_set()
         self.app.search_entry.icursor("end")
+
+    @staticmethod
+    def _card_hover(card, on):
+        bg = OVERLAY if on else BG
+        card.configure(bg=bg, highlightbackground=GOLD if on else BORDER)
+        for child in card.winfo_children():
+            child.configure(bg=bg)
 
 
 class ActionsView(View):

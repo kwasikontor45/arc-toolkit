@@ -4693,7 +4693,12 @@ cmd_help() {
             matches++
           }
         }
-        END { if (!matches) print "  no commands matched that search" }
+        END {
+          if (!matches) {
+            print "  no commands matched that search"
+            exit 1
+          }
+        }
       '
       return
       ;;

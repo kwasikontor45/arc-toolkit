@@ -17,7 +17,9 @@ fragments live under `/etc`, root-owned) — those need an explicit `arc sot sna
 `arc help` opens the short command map. Drill into a workspace with `arc help network`
 or `arc help security`, search command names and descriptions with `arc help find backup`,
 or open the full legacy reference with `arc help all`. The index stays compact as the
-command catalog grows; topic pages reuse the detailed reference entries.
+command catalog grows; topic pages reuse the detailed reference entries. See
+[HELP-CHEATSHEET.md](HELP-CHEATSHEET.md) for a quick-start card covering the CLI,
+khaos-lab navigation, and Glow pager.
 
 | Command | What it does |
 |---|---|

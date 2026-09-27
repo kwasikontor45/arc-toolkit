@@ -348,7 +348,7 @@ def cmd_start(description: str):
         snippet = all_lines[-15:]
     glow = shutil.which("glow")
     if glow:
-        subprocess.run([glow, "-"], input="\n".join(snippet), text=True)
+        subprocess.run([glow, "--pager", "-"], input="\n".join(snippet), text=True)
     else:
         print("\n".join(snippet))
     print(f"{D}({len(header_lines)} dated entries on record — full history: glow {gp}){N}")

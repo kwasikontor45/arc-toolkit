@@ -14,6 +14,11 @@ fragments live under `/etc`, root-owned) — those need an explicit `arc sot sna
 
 ## Using it
 
+`arc help` opens the short command map. Drill into a workspace with `arc help network`
+or `arc help security`, search command names and descriptions with `arc help find backup`,
+or open the full legacy reference with `arc help all`. The index stays compact as the
+command catalog grows; topic pages reuse the detailed reference entries.
+
 | Command | What it does |
 |---|---|
 | `arc sot` | Show this help |

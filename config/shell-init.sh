@@ -13,6 +13,13 @@ export NVM_DIR="$HOME/.nvm"
 
 alias reload='if [ -n "$ZSH_VERSION" ]; then source ~/.zshrc; else source ~/.bashrc; fi'
 
+# Glow otherwise prints a whole document into terminal scrollback. Make the
+# everyday `glow file.md` path open a stable, scrollable reader instead.
+# To opt out for one call, use `command glow --pager=false ...`.
+glow() {
+  command glow --pager "$@"
+}
+
 arc() {
   case "${1:-}" in
     shell)

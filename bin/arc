@@ -1531,7 +1531,7 @@ cmd_eero_logs() {
   fi
 
   if command -v glow &>/dev/null; then
-    glow "$EERO_LOG"
+    glow --pager "$EERO_LOG"
   else
     less "$EERO_LOG"
   fi
@@ -1865,10 +1865,10 @@ cmd_hq() {
 
   # Named file views
   case "$arg" in
-    ops|opsec) glow "$HQ/opsec-hardening.md"; return ;;
-    ref)       glow "$HQ/reference.md"; return ;;
+    ops|opsec) glow --pager "$HQ/opsec-hardening.md"; return ;;
+    ref)       glow --pager "$HQ/reference.md"; return ;;
     "")        ;;  # fall through to dashboard
-    *)         glow "$HQ/${arg}.md" 2>/dev/null \
+    *)         glow --pager "$HQ/${arg}.md" 2>/dev/null \
                  || echo -e "  ${R}✗${N}  not found: $HQ/${arg}.md"
                return ;;
   esac
@@ -4396,7 +4396,7 @@ cmd_users() {
 }
 
 # ── Help ───────────────────────────────────────────────────────────────────────
-cmd_help() {
+cmd_help_full() {
   echo -e "$HR"
   echo -e "  ${C}${B}arc${N}  —  your system architect"
   echo -e "$HR"
@@ -4610,9 +4610,128 @@ cmd_help() {
   echo -e "  ${D}arc ${C}shell bash${N}            ${M}switch default shell to bash${N}"
   echo -e "  ${D}arc ${C}shell zsh${N}             ${M}switch default shell to zsh${N}"
   echo -e "  ${D}arc ${C}reload${N}                ${M}reload shell rc (zshrc or bashrc)${N}"
-  echo -e "  ${D}arc ${C}help${N}                  ${M}this screen${N}"
+  echo -e "  ${D}arc ${C}help${W} [topic]${N}        ${M}workspace index or focused help${N}"
+  echo -e "  ${D}arc ${C}help all${N}             ${M}complete command reference${N}"
 
   echo -e "\n$HR"
+}
+
+# ── Help index ────────────────────────────────────────────────────────────────
+# Keep the default screen small as the command set grows. The full command
+# inventory stays in one place (cmd_help_full); topic views extract one of its
+# existing sections so descriptions don't have to be maintained twice.
+cmd_help() {
+  local topic="${1:-}" section=""
+  if [[ -z "$topic" ]]; then
+    echo -e "$HR"
+    echo -e "  ${C}${B}arc${N}  —  command center"
+    echo -e "  ${D}Find a workspace below, then open its focused help.${N}"
+    echo -e "$HR"
+    echo -e "\n  ${Y}WORKSPACES${N}"
+    echo -e "  ${D}daily${N}       ${M}backup, startup, notifications, break timer${N}"
+    echo -e "  ${D}dev${N}         ${M}repos, deploys, cloud labs, containers${N}"
+    echo -e "  ${D}system${N}      ${M}health, storage, updates, cleanup${N}"
+    echo -e "  ${D}security${N}    ${M}accounts, audits, firewall, SOPs${N}"
+    echo -e "  ${D}logs${N}        ${M}system and security records${N}"
+    echo -e "  ${D}network${N}     ${M}VPN, DNS, router, remote access${N}"
+    echo -e "  ${D}identity${N}    ${M}SSH keys and authentication${N}"
+    echo -e "  ${D}reference${N}   ${M}notes, search, inventory, private site${N}"
+    echo -e "  ${D}fixes${N}       ${M}common desktop and application repairs${N}"
+    echo -e "  ${D}shell${N}       ${M}shell settings and help controls${N}"
+    echo -e "\n  ${Y}QUICK START${N}"
+    echo -e "  ${C}arc${N}                  ${M}live system overview${N}"
+    echo -e "  ${C}arc day${N}              ${M}morning startup checks${N}"
+    echo -e "  ${C}arc health${N}           ${M}disk, memory, and encryption status${N}"
+    echo -e "  ${C}arc help network${N}     ${M}show one workspace's commands${N}"
+    echo -e "  ${C}arc help find vpn${N}    ${M}search command names and descriptions${N}"
+    echo -e "  ${C}arc help all${N}         ${M}show the complete reference${N}"
+    echo -e "\n  ${D}Usage: arc help <workspace>  ·  topics are listed above${N}"
+    echo -e "$HR"
+    return
+  fi
+
+  case "${topic,,}" in
+    all|full) cmd_help_full; return ;;
+    find|search)
+      local query="${*:2}"
+      if [[ -z "$query" ]]; then
+        echo -e "  ${D}Usage: arc help find <word>${N}"
+        echo -e "  ${D}Example: arc help find backup${N}"
+        return 2
+      fi
+      echo -e "$HR"
+      echo -e "  ${C}${B}arc help find${N}  —  ${M}${query}${N}"
+      echo -e "$HR"
+      cmd_help_full | awk -v query="$query" '
+        BEGIN {
+          matches = 0
+          heading = ""
+          heading_printed = 0
+          term_count = split(tolower(query), terms, /[[:space:]]+/)
+        }
+        {
+          clean = $0
+          gsub(/\033\[[0-9;]*[[:alpha:]]/, "", clean)
+          sub(/^[[:space:]]+/, "", clean)
+          sub(/[[:space:]]+$/, "", clean)
+          if (clean ~ /^(daily workflow|development|system maintenance|security|logs|network|identity & auth|reference|fixes & patches|shell)$/) {
+            heading = clean
+            heading_printed = 0
+            next
+          }
+          line = tolower(clean)
+          matched = 1
+          for (i = 1; i <= term_count; i++) {
+            if (terms[i] != "" && index(line, terms[i]) == 0) matched = 0
+          }
+          if (matched) {
+            if (!heading_printed && heading != "") {
+              printf "\n  %s\n", heading
+              heading_printed = 1
+            }
+            print
+            matches++
+          }
+        }
+        END { if (!matches) print "  no commands matched that search" }
+      '
+      return
+      ;;
+    daily|day|workflow) section="daily workflow" ;;
+    dev|development|cloud) section="development" ;;
+    system|maintenance) section="system maintenance" ;;
+    security|sec) section="security" ;;
+    logs|log) section="logs" ;;
+    network|net) section="network" ;;
+    identity|auth) section="identity & auth" ;;
+    reference|ref) section="reference" ;;
+    fixes|fix|patches) section="fixes & patches" ;;
+    shell) section="shell" ;;
+    *)
+      echo -e "  ${R}Unknown help topic:${N} $topic"
+      echo -e "  ${D}Run 'arc help' for the index, 'arc help find <word>' to search, or 'arc help all' for everything.${N}"
+      return 2
+      ;;
+  esac
+
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc help${N}  —  ${M}${section}${N}"
+  echo -e "$HR"
+  cmd_help_full | awk -v wanted="$section" '
+    BEGIN { show = 0 }
+    {
+      clean = $0
+      gsub(/\033\[[0-9;]*[[:alpha:]]/, "", clean)
+      sub(/^[[:space:]]+/, "", clean)
+      sub(/[[:space:]]+$/, "", clean)
+      if (clean ~ /^(daily workflow|development|system maintenance|security|logs|network|identity & auth|reference|fixes & patches|shell)$/) {
+        if (show) exit
+        if (clean == wanted) show = 1
+        next
+      }
+      if (show && clean !~ /^[-─—=]+$/) print
+    }
+  '
 }
 
 # ── Notifications ──────────────────────────────────────────────────────────────
@@ -6403,7 +6522,7 @@ case "${1:-}" in
   sudo)            arc-sudo-session "${@:2}" ;;
   mic)             arc-mic "${2:-status}" ;;
   shell|reload)   echo -e "  ${D}arc ${1} runs as a shell function — reload your rc file first${N}" ;;
-  help|-h|--help) cmd_help ;;
+  help|-h|--help) cmd_help "${@:2}" ;;
   '')             cmd_status ;;
   *)              echo -e "${R}unknown:${N} $1  —  try ${C}arc help${N}"; exit 1 ;;
 esac

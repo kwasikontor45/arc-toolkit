@@ -422,6 +422,7 @@ class ConfirmPolicy:
 
 
 CATEGORIES = {
+    "Help": [],       # command-center guide and category jump-off
     "Status": [],     # special view: live host/security dashboard
     "Cockpit": [],    # special view: network / cloud / remote-access overview
     "Inventory": [],  # special view: register vs reality (arc inv), added 2026-09-19
@@ -1365,6 +1366,94 @@ class FindView(View):
                     lambda res: self._show(res[1] if res[0] else f"(failed) {res[1]}"))
 
 
+class HelpView(View):
+    """A command-center front door: explain the panel, then jump to real menus.
+
+    Counts and destinations come directly from CATEGORIES so this guide doesn't
+    maintain a second list of runnable actions.
+    """
+
+    scrollable = True
+
+    DESCRIPTIONS = {
+        "Status": "Live workstation health and security snapshot",
+        "Cockpit": "At-a-glance network, cloud, and remote-access controls",
+        "Inventory": "Track registered assets and find drift or untracked items",
+        "Logs": "Review recent system, security, and self-heal activity",
+        "Find": "Search your notes and archived references",
+        "Network": "VPN, DNS, router, and network-monitoring actions",
+        "Reference": "Build and open your private reference library",
+        "Phone": "Inspect and manage Android devices over ADB",
+        "Security": "SOPs, firewall, account, and security checks",
+        "SOC": "Local and cloud security labs, dashboards, and scanners",
+        "Cloud": "On-demand cloud labs and instance controls",
+        "Dev": "Repository, deployment, and development workflows",
+        "Remote Access": "Desktop sharing, tunnels, and backup access",
+        "Maintenance": "Backups, cleanup, updates, and system repair",
+        "Personal": "Personal utilities and daily workflow actions",
+    }
+
+    def build(self):
+        f = self.app.f
+        hero = tk.Frame(self.frame, bg=BG, highlightthickness=1, highlightbackground=BORDER)
+        hero.pack(fill="x", pady=(0, 12))
+        tk.Label(hero, text="COMMAND CENTER  /  HELP", font=f.small, bg=BG, fg=TEAL,
+                 anchor="w").pack(fill="x", padx=14, pady=(12, 3))
+        tk.Label(hero, text="What do you need to do?", font=f.big, bg=BG, fg=FG,
+                 anchor="w").pack(fill="x", padx=14, pady=(0, 4))
+        tk.Label(hero, text="Choose a workspace below, or use quick-jump to find an action across the toolkit.",
+                 font=f.small, bg=BG, fg=FG_MUTED, anchor="w", wraplength=580,
+                 justify="left").pack(fill="x", padx=14, pady=(0, 10))
+        row = tk.Frame(hero, bg=BG)
+        row.pack(fill="x", padx=14, pady=(0, 12))
+        ui.button(row, "focus quick-jump  ·  Ctrl+F", command=self._focus_search, font=f.small,
+                  bg=OVERLAY, fg=GOLD, hover_bg=BORDER, padx=10, pady=6).pack(side="left", padx=(0, 8))
+        ui.button(row, "full CLI reference  ·  arc help", command=lambda: self.app.run_async("arc help", timeout=15),
+                  font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BORDER, padx=10, pady=6).pack(side="left")
+
+        tk.Label(self.frame, text="WORKSPACES", font=f.small, bg=SURFACE, fg=FG_MUTED,
+                 anchor="w").pack(fill="x", pady=(0, 5))
+        grid = tk.Frame(self.frame, bg=SURFACE)
+        grid.pack(fill="x")
+        grid.bind("<Configure>", lambda e: self._layout_cards(grid, e.width))
+        self._cards = []
+        for name in CATEGORIES:
+            if name == "Help":
+                continue
+            actions = CATEGORIES[name]
+            count = len(actions)
+            subtitle = self.DESCRIPTIONS.get(name, "Open this workspace")
+            card = tk.Frame(grid, bg=BG, highlightthickness=1, highlightbackground=BORDER,
+                            padx=10, pady=8, cursor="hand2")
+            tk.Label(card, text=name.upper(), font=f.small, bg=BG, fg=GOLD, anchor="w").pack(fill="x")
+            tk.Label(card, text=subtitle, font=f.small, bg=BG, fg=FG_MUTED, anchor="w",
+                     justify="left", wraplength=240, height=2).pack(fill="x", pady=(3, 5))
+            tk.Label(card, text=(f"{count} actions  →" if count else "overview  →"), font=f.small,
+                     bg=BG, fg=TEAL, anchor="w").pack(fill="x")
+            for widget in (card, *card.winfo_children()):
+                widget.bind("<Button-1>", lambda _e, n=name: self.app.select(n))
+                widget.bind("<Enter>", lambda _e, c=card: c.configure(bg=OVERLAY, highlightbackground=GOLD))
+                widget.bind("<Leave>", lambda _e, c=card: c.configure(bg=BG, highlightbackground=BORDER))
+            self._cards.append(card)
+        self._layout_cards(grid, 580)
+        tk.Label(self.frame, text="Guarded actions ask before changing system state. Results and errors appear in the output console below.",
+                 font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", wraplength=580,
+                 justify="left").pack(fill="x", pady=(12, 4))
+
+    def _layout_cards(self, grid, width):
+        if not hasattr(self, "_cards"):
+            return
+        columns = 2 if width < 650 else 3
+        for index, card in enumerate(self._cards):
+            card.grid(row=index // columns, column=index % columns, sticky="nsew", padx=(0, 7), pady=(0, 7))
+        for col in range(columns):
+            grid.grid_columnconfigure(col, weight=1, uniform="help-card")
+
+    def _focus_search(self):
+        self.app.search_entry.focus_set()
+        self.app.search_entry.icursor("end")
+
+
 class ActionsView(View):
     """A category's button list (also used for global-search results, where
     `prefix` says which category a hit came from)."""
@@ -1408,7 +1497,7 @@ class ActionsView(View):
 
 # ── the app ──────────────────────────────────────────────────────────────────
 class App:
-    SPECIAL_VIEWS = {"Status": StatusView, "Cockpit": CockpitView, "Inventory": InventoryView,
+    SPECIAL_VIEWS = {"Help": HelpView, "Status": StatusView, "Cockpit": CockpitView, "Inventory": InventoryView,
                      "Logs": LogsView, "Find": FindView}
 
     def __init__(self):
@@ -1447,6 +1536,7 @@ class App:
         self._build_sidebar()
         self._bind_search()
         root.bind("<Control-f>", lambda _e: (self.search_entry.focus_set(), "break")[1])
+        root.bind("<F1>", lambda _e: (self.select("Help"), "break")[1])
 
         self.select("Status")
         self._tick()

@@ -216,6 +216,7 @@ def session_id() -> str:
     # non-agent context, always describe the real shell/terminal instead.
     sid = (
         os.environ.get("KIMI_SESSION_ID")
+        or os.environ.get("CODEX_SESSION_ID")
         or os.environ.get("CLAUDE_CODE_SESSION_ID")
         or os.environ.get("CLAUDE_CODE_BRIDGE_SESSION_ID")
         or ""
@@ -230,6 +231,8 @@ def agent_id() -> str:
     # confirmed live 2026-07-26: a human running `arc sop ack` by hand still
     # had CLAUDE_SESSION_ID set (from .bashrc/.zshrc, see session_id() above)
     # and got misreported as "Agent claude". Don't repeat that.
+    if os.environ.get("CODEX_SESSION_ID"):
+        return "codex"
     if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_CODE_BRIDGE_SESSION_ID"):
         return "claude"
     if os.environ.get("KIMI_SESSION_ID"):
@@ -249,7 +252,7 @@ def agent_id() -> str:
 
 
 def is_agent_id(aid: str) -> bool:
-    return aid in ("claude", "kimi") or bool(os.environ.get("AGENT_ID"))
+    return aid in ("claude", "codex", "kimi") or bool(os.environ.get("AGENT_ID"))
 
 
 def run(cmd: list, check: bool = False, capture: bool = True) -> tuple:

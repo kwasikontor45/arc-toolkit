@@ -48,6 +48,15 @@ file, nothing is fetched at runtime. Internet is only touched by `arc sot snapsh
 snapshot` also mirrors the full repo (real git history, not just a file copy) to the encrypted
 USB vault — `arc sot bootstrap /path/to/mirror` clones from that instead of GitHub.
 
+The Khaos Lab Inventory view reads `arc-inv`'s generated report. Drift rows have a **fix guide**
+that explains recorded goal vs. latest probe, offers a read-only record inspection, and never
+changes a resource or inventory entry by itself. A failed reachability probe is not proof that a
+provider resource is absent.
+
+For Codex SOP gating, `arc-sop` uses Codex's injected `CODEX_SESSION_ID`. The PreToolUse hook
+passes its authoritative payload `session_id` to `arc-sop gate-check`; keep both sides aligned so
+an acknowledgment from one session cannot silently authorize another.
+
 ## What's NOT in here, on purpose
 
 Credential files, API tokens, LUKS keyfiles, SQLite state/history databases, `.env` files docker

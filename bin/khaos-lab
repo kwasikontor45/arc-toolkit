@@ -56,6 +56,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -841,7 +842,7 @@ class ConsolePane:
         bar = tk.Frame(parent, bg=BG)
         bar.pack(fill="x", pady=(0, 4))
         tk.Label(bar, text="LIVE OUTPUT", font=f.small, bg=BG, fg=app.phase_accent).pack(side="left")
-        tk.Label(bar, text="drag the bright rail to resize  ·  wheel to scroll", font=f.small,
+        tk.Label(bar, text="hover, then drag the divider to resize  ·  wheel to scroll", font=f.small,
                  bg=BG, fg=FG_MUTED).pack(side="right")
         # Canvas + padded create_window (same technique as the content pane): the Text is opaque,
         # so the background art only shows in the pad margin around it -- by design.
@@ -2113,6 +2114,8 @@ class App:
         self._console_room_done = False
         self._sidebar_visible = True
         self._sidebar_auto_hidden = False
+        self._console_user_resized = False
+        self._sash_dragging = False
         self.phase_name, self.phase_accent = ui.phase_info()
         self._last_ambient = None
         self._ambient_current = dict(_BASE_PALETTE)
@@ -2143,13 +2146,14 @@ class App:
             # per-character font fallback (it rendered blank space).
             return SimpleNamespace(
                 big=tkfont.Font(family="DejaVu Sans", size=16, weight="bold"),
+                identity=tkfont.Font(family="DejaVu Sans", size=9),
                 label=tkfont.Font(family="JetBrains Mono", size=11),
                 small=tkfont.Font(family="JetBrains Mono", size=10),
                 mono=tkfont.Font(family="JetBrains Mono", size=10),
                 nav=tkfont.Font(family="JetBrains Mono", size=11))
         except Exception:
             d = tkfont.Font(size=10)
-            return SimpleNamespace(big=d, label=d, small=d, mono=d, nav=d)
+            return SimpleNamespace(big=d, identity=d, label=d, small=d, mono=d, nav=d)
 
     def _build_header(self):
         f, root = self.f, self.root
@@ -2170,7 +2174,12 @@ class App:
         tk.Label(header, text="/", font=f.big, bg=BG, fg=FG_MUTED).pack(side="left")
         self.brand_accent = tk.Label(header, text="lab", font=f.big, bg=BG, fg=self.phase_accent)
         self.brand_accent.pack(side="left", padx=(0, 16))
-        tk.Label(header, text="local-workshop/workstation", font=f.small, bg=BG, fg=FG_MUTED).pack(side="left")
+        studio_link = tk.Label(header, text="kontor.studio", font=f.small, bg=BG, fg=TEAL,
+                               cursor="hand2", underline=True)
+        studio_link.pack(side="left")
+        studio_link.bind("<Button-1>", lambda _e: webbrowser.open("https://kontor.studio"))
+        studio_link.bind("<Enter>", lambda _e: studio_link.configure(fg=GOLD))
+        studio_link.bind("<Leave>", lambda _e: studio_link.configure(fg=TEAL))
         self.clock_lbl = tk.Label(header, text="", font=f.small, bg=BG, fg=FG_MUTED)
         self.clock_lbl.pack(side="right")
         # The panel's palette is fixed on purpose; which Kataleya phase it is (choice/desire/
@@ -2230,6 +2239,7 @@ class App:
             self.body_pane.add(self.sidebar_frame, before=self.content_wrap, minsize=188, width=216)
             self._sidebar_visible = True
             self._sidebar_auto_hidden = False
+        self.root.after_idle(self._fit_console_pane)
 
     def _build_panes(self):
         root = self.root
@@ -2238,14 +2248,16 @@ class App:
         self.main_pane = tk.PanedWindow(root, orient="vertical", bg=BORDER, sashwidth=11,
                                         sashpad=2, sashrelief="raised", bd=0, showhandle=True,
                                         handlepad=4, handlesize=18, opaqueresize=True,
-                                        cursor="sb_v_double_arrow")
+                                        cursor="arrow")
         self.main_pane.pack(fill="both", expand=True, padx=18, pady=(5, 0))
         body = tk.Frame(self.main_pane, bg=BG)
         self.main_pane.add(body, minsize=240, height=520)
         body_pane = self.body_pane = tk.PanedWindow(body, orient="horizontal", bg=BORDER, sashwidth=9,
                                                      sashpad=2, sashrelief="raised", bd=0, showhandle=True,
                                                      handlepad=4, handlesize=16, opaqueresize=True,
-                                                     cursor="sb_h_double_arrow")
+                                                     cursor="arrow")
+        self._bind_splitter_feedback(self.main_pane, "vertical")
+        self._bind_splitter_feedback(body_pane, "horizontal")
         body_pane.pack(fill="both", expand=True)
         # Canvas, not Frame, so the watermark can sit behind the nav buttons.
         self.sidebar_frame = tk.Frame(body_pane, bg=BG, width=216)
@@ -2288,6 +2300,50 @@ class App:
         self.status_phase = tk.Label(self.statusbar, text="", font=self.f.small, bg=BG, fg=self.phase_accent)
         self.status_phase.pack(side="right")
 
+    def _bind_splitter_feedback(self, pane, orientation):
+        """Light the sash on hover and keep the pointer in its normal shape."""
+        pane.bind("<Motion>", lambda event, p=pane, o=orientation: self._splitter_motion(p, o, event))
+        pane.bind("<Leave>", lambda _event, p=pane: p.configure(bg=BORDER))
+        if orientation == "vertical":
+            pane.bind("<ButtonPress-1>", self._splitter_press)
+            pane.bind("<ButtonRelease-1>", self._splitter_release)
+
+    def _splitter_motion(self, pane, orientation, event):
+        try:
+            x, y = pane.sash_coord(0)
+            width = int(pane.cget("sashwidth"))
+            point, sash = ((event.y, y) if orientation == "vertical" else (event.x, x))
+            on_sash = abs(point - sash) <= width + 3
+        except (tk.TclError, TypeError):
+            on_sash = False
+        pane.configure(bg=self.phase_accent if on_sash else BORDER)
+
+    def _splitter_press(self, event):
+        try:
+            _x, y = self.main_pane.sash_coord(0)
+            self._sash_dragging = abs(event.y - y) <= int(self.main_pane.cget("sashwidth")) + 3
+        except (tk.TclError, TypeError):
+            self._sash_dragging = False
+
+    def _splitter_release(self, _event):
+        if self._sash_dragging:
+            self._console_user_resized = True
+            self._sash_dragging = False
+
+    def _fit_console_pane(self):
+        """Keep output proportional on resize until the user chooses a sash position."""
+        if self._console_user_resized:
+            return
+        try:
+            total = self.main_pane.winfo_height()
+            if total <= 1:
+                return
+            console_h = min(250, max(110, round(total * 0.25)))
+            console_h = min(console_h, max(86, total - 240))
+            self.main_pane.sash_place(0, 0, max(0, total - console_h))
+        except tk.TclError:
+            pass
+
     def _build_sidebar(self):
         sb = self.sidebar
         # Quiet identity header: a fine Mercury staff echoes the website SVG
@@ -2300,7 +2356,14 @@ class App:
         sb.create_line(24, 24, 36, 33, 24, 42, 12, 51, 24, 61,
                        fill=self.phase_accent, width=1.7, smooth=True, splinesteps=28)
         sb.create_text(49, 28, anchor="w", text="khaos / lab", font=self.f.label, fill=FG)
-        sb.create_text(49, 49, anchor="w", text="MERCURY · LOCAL", font=self.f.small, fill=FG_MUTED)
+        sb.create_text(49, 49, anchor="w", text="b6ones6aw-418☠️", font=self.f.identity, fill=FG_MUTED)
+        dev_link = sb.create_text(49, 65, anchor="w", text="kwasikontor.dev",
+                                  font=self.f.small, fill=TEAL, underline=True, tags=("dev_link",))
+        sb.tag_bind("dev_link", "<Button-1>", lambda _e: webbrowser.open("https://kwasikontor.dev"))
+        sb.tag_bind("dev_link", "<Enter>", lambda _e: (sb.itemconfigure(dev_link, fill=GOLD),
+                                                          sb.configure(cursor="hand2")))
+        sb.tag_bind("dev_link", "<Leave>", lambda _e: (sb.itemconfigure(dev_link, fill=TEAL),
+                                                          sb.configure(cursor="arrow")))
         sb.create_line(12, 81, 202, 81, fill=BORDER, width=1)
         sb.create_text(13, 91, anchor="nw", text="WORKSPACES", font=self.f.small, fill=FG_MUTED)
         self.nav_buttons, self.nav_y = {}, {}
@@ -2443,22 +2506,14 @@ class App:
         threading.Thread(target=worker, daemon=True).start()
 
     def ensure_console_room(self):
-        """First time any command runs, grow the console sash once so real output has room without
-        the user needing to know to drag it -- then never touch it again (a deliberate manual
-        resize is never fought)."""
+        """Fit the shared output area before writing the first command line."""
         if self._console_room_done:
             return
         self.root.update_idletasks()
-        total = self.main_pane.winfo_height()
-        if total <= 1:
-            return                                     # not realized yet -- retry on the next run
-        try:
-            _, sash_y = self.main_pane.sash_coord(0)
-        except tk.TclError:
+        if self.main_pane.winfo_height() <= 1:
             return
         self._console_room_done = True
-        if max(0, total - 260) < sash_y:
-            self.main_pane.sash_place(0, 0, max(0, total - 260))
+        self._fit_console_pane()
 
     def run_async(self, cmd, timeout=30, on_done=None):
         if not self.require_ops_gate(cmd):

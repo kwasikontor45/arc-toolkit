@@ -5953,14 +5953,24 @@ cmd_gvm() {
         return 1
       fi
       mkdir -p "$backup_dir"
-      local stamp; stamp=$(date +%Y%m%dT%H%M%SZ)
+      local stamp dump_path tmp_dump
+      stamp=$(date +%Y%m%dT%H%M%SZ)
+      dump_path="$backup_dir/gvmd-${stamp}.sql"
+      tmp_dump=$(mktemp "$backup_dir/.gvmd-${stamp}.XXXXXX.part") || {
+        echo -e "  ${R}✗${N}  could not create a temporary backup on the USB vault — leaving gvm-cloud running"
+        return 1
+      }
       echo -e "  ${D}pg_dump gvmd database...${N}"
-      if _aws_lab_ssh "$GVM_INSTANCE_ID" "sudo docker compose -f ~/compose.yaml exec -T -u postgres pg-gvm pg_dump gvmd" > "$backup_dir/gvmd-${stamp}.sql" 2>/dev/null \
-         && [[ -s "$backup_dir/gvmd-${stamp}.sql" ]]; then
-        echo -e "  ${G}✓${N}  backed up → $backup_dir/gvmd-${stamp}.sql"
+      if _aws_lab_ssh "$GVM_INSTANCE_ID" "sudo docker compose -f ~/compose.yaml exec -T -u postgres pg-gvm pg_dump gvmd" > "$tmp_dump" 2>/dev/null \
+         && grep -q '^-- PostgreSQL database dump' "$tmp_dump" \
+         && grep -q '^CREATE TABLE ' "$tmp_dump" \
+         && chmod 600 "$tmp_dump" \
+         && mv -- "$tmp_dump" "$dump_path"; then
+        echo -e "  ${G}✓${N}  validated database dump → $dump_path"
       else
-        echo -e "  ${Y}!${N}  backup empty/failed — stopping anyway, but check manually"
-        rm -f "$backup_dir/gvmd-${stamp}.sql"
+        rm -f -- "$tmp_dump"
+        echo -e "  ${R}✗${N}  backup failed validation — gvm-cloud remains running; vault data is preserved and billing continues until a valid dump is saved"
+        return 1
       fi
       _aws_lab_ssh "$GVM_INSTANCE_ID" "sudo docker compose -f ~/compose.yaml stop" >/dev/null 2>&1
       aws ec2 stop-instances --instance-ids "$GVM_INSTANCE_ID" --region "$AWS_LAB_REGION" >/dev/null 2>&1

@@ -11,6 +11,7 @@ app. Reads the same history.db that arc-pined writes to.
 
 import sqlite3
 import sys
+import time
 import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
@@ -23,10 +24,8 @@ import _arc_ui as ui
 DB_PATH     = pine.DB_PATH
 ICON_PATH   = Path.home() / ".local/share/arc-pine/icon.png"
 
-# Same theme palette arc-pine-bubbles renders with -- kept in one place
-# there, mirrored here just for the Settings preview swatches (this
-# viewer's own chrome always stays Rose Pine Moon regardless of the
-# selected bubble theme -- only the popups themselves change).
+# Bubble themes arc-pine-bubbles renders with. These swatches preview popup
+# choices; the console itself follows the shared live circadian palette.
 THEMES = {
     "rose-pine-moon": {"bg": "#2a273f", "accent": "#eb6f92", "fg": "#e0def4"},
     "nord":           {"bg": "#3b4252", "accent": "#bf616a", "fg": "#eceff4"},
@@ -39,16 +38,14 @@ THEMES = {
     "circadian":      {"bg": "#232136", "accent": "#c4a7e7", "fg": "#e0def4"},
 }
 
-# Circadian -- launch-time snapshot, matching arc-break/khaos-lab
-# (_arc_ui.py). This viewer's own chrome now drifts with real time of
-# day, same design language as Kataleya's circadian engine -- not a
-# fixed Rose Pine Moon default anymore.
+# Circadian startup palette; ArcPine refreshes it from _arc_ui.py every minute.
 _circadian = ui.circadian()
 BG       = _circadian["bg"]
 SURFACE  = _circadian["surface"]
 OVERLAY  = _circadian["overlay"]
 FG       = _circadian["fg"]
 FG_MUTED = _circadian["fg_muted"]
+BORDER   = ui._lerp_hex(SURFACE, FG_MUTED, 0.28)
 GOLD     = ui.GOLD
 ROSE     = ui.ROSE
 PINE     = ui.PINE
@@ -79,9 +76,16 @@ def db_exec(sql, params=()):
 class ArcPine(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("arc · pine")
-        self.geometry("480x560")
+        self.title("khaos☠️pine · notification console")
+        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
+        width = min(980, max(560, int(screen_w * 0.82)))
+        height = min(820, max(480, int(screen_h * 0.82)))
+        self.geometry(f"{width}x{height}")
+        self.minsize(min(440, max(360, screen_w - 32)), min(420, max(360, screen_h - 48)))
         self.configure(bg=BG)
+        self._palette = {"BG": BG, "SURFACE": SURFACE, "OVERLAY": OVERLAY,
+                         "BORDER": BORDER, "FG": FG, "FG_MUTED": FG_MUTED}
+        self._last_palette_minute = None
 
         if ICON_PATH.exists():
             try:
@@ -97,14 +101,24 @@ class ArcPine(tk.Tk):
         self.view = "history"
 
         self._build_ui()
+        self._ttk_style = ttk.Style(self)
+        try:
+            self._ttk_style.theme_use("clam")
+        except tk.TclError:
+            pass
+        self._style_combobox()
         self.refresh()
+        self.after(1000, self._tick_circadian)
 
     def _build_ui(self):
         top = tk.Frame(self, bg=BG)
-        top.pack(fill="x", padx=10, pady=10)
-
-        tk.Label(top, text="arc pine", font=("JetBrains Mono", 14, "bold"),
-                 bg=BG, fg=GOLD).pack(side="left")
+        top.pack(fill="x", padx=16, pady=(12, 5))
+        brand = tk.Frame(top, bg=BG)
+        brand.pack(side="left")
+        tk.Label(brand, text="khaos / pine", font=("JetBrains Mono", 14, "bold"),
+                 bg=BG, fg=GOLD).pack(anchor="w")
+        tk.Label(brand, text="NOTIFICATION CONSOLE", font=("JetBrains Mono", 8),
+                 bg=BG, fg=FG_MUTED).pack(anchor="w", pady=(1, 0))
 
         # Snooze is set from the CLI (arc-pine-snooze) with nothing in this
         # GUI that visibly reflects it -- found during a 2026-09-10 bug
@@ -115,22 +129,34 @@ class ArcPine(tk.Tk):
                                     bg=BG, fg=ROSE)
 
         self.settings_btn = ui.button(
-            top, "⚙", command=lambda: self.set_view("settings"),
+            top, "Settings", command=lambda: self.set_view("settings"),
             font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL, hover_bg=OVERLAY,
-            padx=8, pady=4,
+            padx=10, pady=5,
         )
         self.settings_btn.pack(side="right", padx=(4, 0))
 
         self.insights_btn = ui.button(
-            top, "📊", command=lambda: self.set_view("insights"),
+            top, "Insights", command=lambda: self.set_view("insights"),
             font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL, hover_bg=OVERLAY,
-            padx=8, pady=4,
+            padx=10, pady=5,
         )
         self.insights_btn.pack(side="right", padx=(4, 0))
 
-        self.search_entry = tk.Entry(top, textvariable=self.search_var, font=("JetBrains Mono", 10),
-                                      bg=SURFACE, fg=FG, insertbackground=FG, relief="flat")
-        self.search_entry.pack(side="right", fill="x", expand=True)
+        self.history_btn = ui.button(
+            top, "History", command=lambda: self.set_view("history"),
+            font=("JetBrains Mono", 9), bg=OVERLAY, fg=TEAL, hover_bg=OVERLAY,
+            padx=10, pady=5,
+        )
+        self.history_btn.pack(side="right", padx=(4, 0))
+
+        search_row = tk.Frame(self, bg=BG)
+        search_row.pack(fill="x", padx=16, pady=(4, 10))
+        self.search_entry = tk.Entry(search_row, textvariable=self.search_var, font=("JetBrains Mono", 10),
+                                      bg=SURFACE, fg=FG, insertbackground=FG, relief="flat",
+                                      highlightthickness=1, highlightbackground=BORDER,
+                                      highlightcolor=TEAL)
+        self.search_entry.pack(fill="x", ipady=7)
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x", padx=16, pady=(0, 6))
         self.search_entry.focus()
 
         # Body: history/insights/settings views share the same slot, only
@@ -138,6 +164,17 @@ class ArcPine(tk.Tk):
         # no extra Toplevel/dialog clutter.
         self.body = tk.Frame(self, bg=BG)
         self.body.pack(fill="both", expand=True)
+
+        self.statusbar = tk.Frame(self, bg=BG)
+        self.statusbar.pack(fill="x", padx=16, pady=(5, 11))
+        self.status_marker = tk.Frame(self.statusbar, bg=TEAL, width=3)
+        self.status_marker.pack(side="left", fill="y", padx=(0, 8))
+        self.status_lbl = tk.Label(self.statusbar, text="", font=("JetBrains Mono", 8),
+                                   bg=BG, fg=FG_MUTED, anchor="w")
+        self.status_lbl.pack(side="left")
+        self.phase_lbl = tk.Label(self.statusbar, text="", font=("JetBrains Mono", 8),
+                                  bg=BG, fg=TEAL, anchor="e")
+        self.phase_lbl.pack(side="right")
 
         self._build_history_view()
         self._build_insights_view()
@@ -161,8 +198,18 @@ class ArcPine(tk.Tk):
         self._update_nav_buttons()
 
     def _update_nav_buttons(self):
-        self.settings_btn.set_look(bg=OVERLAY if self.view == "settings" else SURFACE)
-        self.insights_btn.set_look(bg=OVERLAY if self.view == "insights" else SURFACE)
+        for name, button in (("history", self.history_btn), ("insights", self.insights_btn),
+                             ("settings", self.settings_btn)):
+            button.set_look(bg=OVERLAY if self.view == name else SURFACE,
+                            fg=TEAL if self.view == name else FG_MUTED)
+
+    def _style_combobox(self):
+        self._ttk_style.configure("ArcPine.TCombobox", fieldbackground=SURFACE,
+                                  background=OVERLAY, foreground=FG, bordercolor=BORDER,
+                                  lightcolor=BORDER, darkcolor=BORDER, arrowcolor=TEAL)
+        self._ttk_style.map("ArcPine.TCombobox",
+                            fieldbackground=[("readonly", SURFACE), ("focus", OVERLAY)],
+                            foreground=[("readonly", FG)])
 
     def _build_history_view(self):
         self.history_view = tk.Frame(self.body, bg=BG)
@@ -172,22 +219,29 @@ class ArcPine(tk.Tk):
         container = tk.Frame(self.history_view, bg=BG)
         container.pack(fill="both", expand=True, padx=10)
 
-        canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas = self.history_canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
+        scrollbar = tk.Scrollbar(container, orient="vertical", command=canvas.yview,
+                                 bg=OVERLAY, troughcolor=BG, activebackground=TEAL,
+                                 bd=0, highlightthickness=0, width=11)
         self.list_frame = tk.Frame(canvas, bg=BG)
+        self._card_text_labels = []
 
         self.list_frame.bind(
             "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
-        canvas.create_window((0, 0), window=self.list_frame, anchor="nw", width=440)
+        self.list_window = canvas.create_window((8, 0), window=self.list_frame, anchor="nw", width=1)
         canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.bind("<Configure>", self._resize_history)
+        canvas.bind("<MouseWheel>", self._history_wheel)
+        canvas.bind("<Button-4>", lambda _e: canvas.yview_scroll(-1, "units"))
+        canvas.bind("<Button-5>", lambda _e: canvas.yview_scroll(1, "units"))
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
         # Bottom action bar
         bottom = tk.Frame(self.history_view, bg=BG)
-        bottom.pack(fill="x", padx=10, pady=10)
+        bottom.pack(fill="x", padx=16, pady=(5, 10))
 
         BTN = dict(font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL, hover_bg=OVERLAY, padx=8, pady=4)
 
@@ -197,6 +251,65 @@ class ArcPine(tk.Tk):
 
         self.count_lbl = tk.Label(bottom, text="", font=("JetBrains Mono", 9), bg=BG, fg=FG_MUTED)
         self.count_lbl.pack(side="right")
+
+    def _resize_history(self, event):
+        width = max(1, event.width - 16)
+        self.history_canvas.itemconfigure(self.list_window, width=width)
+        for label in self._card_text_labels:
+            try:
+                label.configure(wraplength=max(240, width - 24))
+            except tk.TclError:
+                pass
+        bbox = self.history_canvas.bbox("all")
+        if bbox:
+            self.history_canvas.configure(scrollregion=bbox)
+
+    def _history_wheel(self, event):
+        delta = -1 if event.delta > 0 else 1
+        self.history_canvas.yview_scroll(delta * max(1, abs(event.delta) // 120), "units")
+        return "break"
+
+    def _settings_wheel(self, event):
+        if getattr(event, "num", None) == 4:
+            delta, steps = -1, 1
+        elif getattr(event, "num", None) == 5:
+            delta, steps = 1, 1
+        else:
+            delta, steps = (-1 if event.delta > 0 else 1), max(1, abs(event.delta) // 120)
+        self.settings_canvas.yview_scroll(delta * steps, "units")
+        return "break"
+
+    def _rules_wheel(self, event):
+        if getattr(event, "num", None) == 4:
+            delta, steps = -1, 1
+        elif getattr(event, "num", None) == 5:
+            delta, steps = 1, 1
+        else:
+            delta, steps = (-1 if event.delta > 0 else 1), max(1, abs(event.delta) // 120)
+        self.rules_canvas.yview_scroll(delta * steps, "units")
+        return "break"
+
+    def _bind_history_wheel(self, widget):
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(sequence, self._history_wheel, add="+")
+        for child in widget.winfo_children():
+            self._bind_history_wheel(child)
+
+    def _bind_settings_wheel(self, widget):
+        if widget is getattr(self, "rules_canvas", None):
+            self._bind_rules_wheel(widget)
+            self._bind_rules_wheel(self.rules_list)
+            return
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(sequence, self._settings_wheel, add="+")
+        for child in widget.winfo_children():
+            self._bind_settings_wheel(child)
+
+    def _bind_rules_wheel(self, widget):
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(sequence, self._rules_wheel, add="+")
+        for child in widget.winfo_children():
+            self._bind_rules_wheel(child)
 
     def _build_insights_view(self):
         self.insights_view = tk.Frame(self.body, bg=BG)
@@ -254,14 +367,36 @@ class ArcPine(tk.Tk):
         self.settings_view = tk.Frame(self.body, bg=BG)
         # not packed yet -- history view shows first
 
+        scroll_wrap = tk.Frame(self.settings_view, bg=BG)
+        scroll_wrap.pack(fill="both", expand=True, padx=10, pady=(4, 0))
+        self.settings_canvas = tk.Canvas(scroll_wrap, bg=BG, highlightthickness=0)
+        settings_scroll = tk.Scrollbar(scroll_wrap, orient="vertical", command=self.settings_canvas.yview,
+                                       bg=OVERLAY, troughcolor=BG, activebackground=TEAL,
+                                       bd=0, highlightthickness=0, width=11)
+        self.settings_content = tk.Frame(self.settings_canvas, bg=BG)
+        self.settings_window = self.settings_canvas.create_window(
+            (8, 0), window=self.settings_content, anchor="nw", width=1)
+        self.settings_content.bind(
+            "<Configure>", lambda _e: self.settings_canvas.configure(
+                scrollregion=self.settings_canvas.bbox("all")))
+        self.settings_canvas.bind(
+            "<Configure>", lambda e: self.settings_canvas.itemconfigure(
+                self.settings_window, width=max(1, e.width - 16)))
+        self.settings_canvas.configure(yscrollcommand=settings_scroll.set)
+        self.settings_canvas.bind("<MouseWheel>", self._settings_wheel)
+        self.settings_canvas.bind("<Button-4>", lambda _e: self.settings_canvas.yview_scroll(-1, "units"))
+        self.settings_canvas.bind("<Button-5>", lambda _e: self.settings_canvas.yview_scroll(1, "units"))
+        self.settings_canvas.pack(side="left", fill="both", expand=True)
+        settings_scroll.pack(side="right", fill="y")
+
         pad = dict(padx=14, pady=(14, 4))
 
         def section(text):
-            tk.Label(self.settings_view, text=text, font=("JetBrains Mono", 10, "bold"),
+            tk.Label(self.settings_content, text=text, font=("JetBrains Mono", 10, "bold"),
                       bg=BG, fg=GOLD, anchor="w").pack(fill="x", **pad)
 
         def row():
-            r = tk.Frame(self.settings_view, bg=BG)
+            r = tk.Frame(self.settings_content, bg=BG)
             r.pack(fill="x", padx=14, pady=2)
             return r
 
@@ -272,7 +407,8 @@ class ArcPine(tk.Tk):
         tk.Label(r, text="theme", font=("JetBrains Mono", 9), bg=BG, fg=FG, width=16, anchor="w").pack(side="left")
         self.theme_var = tk.StringVar()
         theme_menu = ttk.Combobox(r, textvariable=self.theme_var, values=list(THEMES.keys()),
-                                   state="readonly", font=("JetBrains Mono", 9), width=18)
+                                   state="readonly", font=("JetBrains Mono", 9), width=18,
+                                   style="ArcPine.TCombobox")
         theme_menu.pack(side="left")
         theme_menu.bind("<<ComboboxSelected>>", lambda e: self._save_setting("bubble_theme", self.theme_var.get()))
 
@@ -344,16 +480,20 @@ class ArcPine(tk.Tk):
 
         # -- Per-app rules --
         section("per-app rules")
-        tk.Label(self.settings_view, text="apps seen in history, plus any you add below",
+        tk.Label(self.settings_content, text="apps seen in history, plus any you add below",
                  font=("JetBrains Mono", 8), bg=BG, fg=FG_MUTED, anchor="w").pack(fill="x", padx=14)
 
-        rules_container = tk.Frame(self.settings_view, bg=BG)
+        rules_container = tk.Frame(self.settings_content, bg=BG)
         rules_container.pack(fill="both", expand=True, padx=14, pady=(6, 0))
-        rules_canvas = tk.Canvas(rules_container, bg=BG, highlightthickness=0, height=160)
-        rules_scroll = ttk.Scrollbar(rules_container, orient="vertical", command=rules_canvas.yview)
+        rules_canvas = self.rules_canvas = tk.Canvas(rules_container, bg=BG, highlightthickness=0, height=160)
+        rules_scroll = tk.Scrollbar(rules_container, orient="vertical", command=rules_canvas.yview,
+                                   bg=OVERLAY, troughcolor=BG, activebackground=TEAL,
+                                   bd=0, highlightthickness=0, width=9)
         self.rules_list = tk.Frame(rules_canvas, bg=BG)
         self.rules_list.bind("<Configure>", lambda e: rules_canvas.configure(scrollregion=rules_canvas.bbox("all")))
-        rules_canvas.create_window((0, 0), window=self.rules_list, anchor="nw", width=400)
+        rules_window = rules_canvas.create_window((0, 0), window=self.rules_list, anchor="nw", width=1)
+        rules_canvas.bind("<Configure>", lambda e: rules_canvas.itemconfigure(
+            rules_window, width=max(1, e.width - 4)))
         rules_canvas.configure(yscrollcommand=rules_scroll.set)
         rules_canvas.pack(side="left", fill="both", expand=True)
         rules_scroll.pack(side="right", fill="y")
@@ -377,8 +517,9 @@ class ArcPine(tk.Tk):
         ui.button(r, "+", command=add_app, font=("JetBrains Mono", 9), bg=SURFACE, fg=TEAL,
                   hover_bg=OVERLAY, padx=8, pady=0).pack(side="left")
 
-        tk.Label(self.settings_view, text="changes apply live -- no restart needed",
+        tk.Label(self.settings_content, text="changes apply live -- no restart needed",
                  font=("JetBrains Mono", 8), bg=BG, fg=FG_MUTED).pack(anchor="w", padx=14, pady=(10, 10))
+        self._bind_settings_wheel(self.settings_content)
 
     def _known_apps(self):
         rows = db_query("SELECT DISTINCT app_name FROM notifications ORDER BY app_name")
@@ -416,6 +557,7 @@ class ArcPine(tk.Tk):
             tk.Checkbutton(r, text="speak", variable=speak_var, command=on_toggle,
                            font=("JetBrains Mono", 9), bg=BG, fg=FG, selectcolor=SURFACE,
                            activebackground=BG, activeforeground=FG).pack(side="left")
+        self._bind_rules_wheel(self.rules_list)
 
     def _load_settings_into_ui(self):
         self.config = pine.load_config()
@@ -434,15 +576,74 @@ class ArcPine(tk.Tk):
         pine.save_config(self.config)
 
     def _update_snooze_indicator(self):
-        if pine.is_snoozed(pine.load_config()):
+        snoozed = pine.is_snoozed(pine.load_config())
+        if snoozed:
             self.snooze_lbl.pack(side="left", padx=(10, 0))
         else:
             self.snooze_lbl.pack_forget()
+        if hasattr(self, "status_lbl"):
+            total = db_query("SELECT COUNT(*) as c FROM notifications")
+            count = total[0]["c"] if total else 0
+            self.status_lbl.configure(text=f"{count} saved  ·  {'snoozed' if snoozed else 'live'}")
+
+    def _tick_circadian(self):
+        minute = int(time.time() // 60)
+        if minute != self._last_palette_minute:
+            self._last_palette_minute = minute
+            self._apply_circadian_palette()
+        self._update_snooze_indicator()
+        self.after(30000, self._tick_circadian)
+
+    def _apply_circadian_palette(self):
+        """Let the console colors drift with the shared, continuous day cycle."""
+        ambient = ui.circadian()
+        palette = {
+            "BG": ambient["bg"], "SURFACE": ambient["surface"],
+            "OVERLAY": ambient["overlay"],
+            "BORDER": ui._lerp_hex(ambient["surface"], ambient["fg_muted"], 0.28),
+            "FG": ambient["fg"], "FG_MUTED": ambient["fg_muted"],
+        }
+        role_map = {self._palette[key]: value for key, value in palette.items()}
+        self._palette = palette
+        globals().update(palette)
+        globals()["URGENCY_COLOR"] = {0: FG_MUTED, 1: TEAL, 2: ROSE}
+        _phase, accent = ui.phase_info()
+        self.phase_lbl.configure(text=f"{ambient['phase'].upper()}  ·  {time.strftime('%H:%M')}", fg=accent)
+        self.status_marker.configure(bg=accent)
+
+        def repaint(widget):
+            if callable(getattr(widget, "retime", None)):
+                try:
+                    widget.retheme(bg=role_map.get(widget.cget("bg"), widget.cget("bg")),
+                                   hover_bg=OVERLAY)
+                except tk.TclError:
+                    pass
+            else:
+                for option in ("background", "foreground", "insertbackground", "highlightbackground",
+                               "highlightcolor", "activebackground", "activeforeground", "selectbackground",
+                               "troughcolor"):
+                    try:
+                        value = widget.cget(option)
+                        if value in role_map:
+                            widget.configure(**{option: role_map[value]})
+                    except (tk.TclError, TypeError):
+                        pass
+            try:
+                for child in widget.winfo_children():
+                    repaint(child)
+            except tk.TclError:
+                pass
+
+        self.configure(bg=BG)
+        repaint(self)
+        self._update_nav_buttons()
+        self._style_combobox()
 
     def refresh(self):
         self._update_snooze_indicator()
         for w in self.list_frame.winfo_children():
             w.destroy()
+        self._card_text_labels.clear()
 
         q = self.search_var.get().strip()
         if q:
@@ -463,13 +664,15 @@ class ArcPine(tk.Tk):
 
         total = db_query("SELECT COUNT(*) as c FROM notifications")
         self.count_lbl.configure(text=f"{total[0]['c'] if total else 0} total")
+        self._update_snooze_indicator()
+        self._bind_history_wheel(self.list_frame)
 
     def _add_card(self, row):
         # highlightthickness border -- a real edge without Canvas
         # rounding's per-card performance cost at this scale (up to 200
         # cards), same technique used in khaos-lab's tiles/action rows.
-        card = tk.Frame(self.list_frame, bg=SURFACE, highlightthickness=1, highlightbackground=BG)
-        card.pack(fill="x", pady=3)
+        card = tk.Frame(self.list_frame, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
+        card.pack(fill="x", pady=4, padx=1)
 
         color = URGENCY_COLOR.get(row["urgency"], TEAL)
 
@@ -480,14 +683,17 @@ class ArcPine(tk.Tk):
         tk.Label(header, text=row["timestamp"], font=("JetBrains Mono", 8),
                  bg=SURFACE, fg=FG_MUTED).pack(side="right")
 
-        tk.Label(card, text=row["summary"], font=("JetBrains Mono", 10),
-                 bg=SURFACE, fg=FG, anchor="w", wraplength=420, justify="left"
-                 ).pack(fill="x", padx=8, pady=(2, 0))
+        wrap = max(240, self.history_canvas.winfo_width() - 52)
+        summary_lbl = tk.Label(card, text=row["summary"], font=("JetBrains Mono", 10),
+                               bg=SURFACE, fg=FG, anchor="w", wraplength=wrap, justify="left")
+        summary_lbl.pack(fill="x", padx=8, pady=(2, 0))
+        self._card_text_labels.append(summary_lbl)
 
         if row["body"]:
-            tk.Label(card, text=row["body"], font=("JetBrains Mono", 9),
-                     bg=SURFACE, fg=FG_MUTED, anchor="w", wraplength=420, justify="left"
-                     ).pack(fill="x", padx=8, pady=(0, 4))
+            body_lbl = tk.Label(card, text=row["body"], font=("JetBrains Mono", 9),
+                                bg=SURFACE, fg=FG_MUTED, anchor="w", wraplength=wrap, justify="left")
+            body_lbl.pack(fill="x", padx=8, pady=(0, 4))
+            self._card_text_labels.append(body_lbl)
 
         actions = tk.Frame(card, bg=SURFACE)
         actions.pack(fill="x", padx=8, pady=(0, 6))

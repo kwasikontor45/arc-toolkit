@@ -22,7 +22,7 @@
 # `arc sec yara <path>` still scans anything explicit on demand, full
 # ruleset, for when you deliberately want to check one specific file/dir.
 #
-# Ruleset: Yara-Rules/rules (public, cloned to ~/khaos-lab/soc-lab/yara-rules).
+# Ruleset: Yara-Rules/rules (public; installed data at ~/.local/share/arc-toolkit/yara-rules).
 # One upstream include (webshells/WShell_THOR_Webshells.yar) is skipped in
 # our local index.yar -- ClamAV's own on-access scanner quarantined that
 # file the moment it landed on disk, because the rule's body literally

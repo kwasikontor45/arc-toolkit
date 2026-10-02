@@ -50,6 +50,8 @@ The Status dashboard also shows Waydroid beside the notification-stack tile. It 
 
 GVM database exports from `arc gvm cloud-stop` are stored on the encrypted USB vault at `/mnt/storage/Persistent/khaos-lab/gvm-lab/backups/`. The command refuses to stop the cloud lab when that backup destination is unavailable, so large cloud dumps do not accumulate on the workstation disk.
 
+The scheduled YARA scanner uses its installed ruleset snapshot at `~/.local/share/arc-toolkit/yara-rules/`; this keeps the rule data available without retaining the upstream rules repository checkout. Refresh the data from the Yara-Rules/rules remote when you intentionally update signatures.
+
 ## Offline / no-internet
 
 The source machine never depends on the network for day-to-day use — every script is a local

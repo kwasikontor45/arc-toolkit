@@ -215,6 +215,50 @@ def fmt_age(minutes):
     return f"{minutes // 60}h ago"
 
 
+def sop_setup_command(cmd):
+    """Allow only the small SOP workflow that can inspect or unlock operations.
+
+    Everything else launched from the panel is gated centrally in App.run_async.
+    Keep parsing strict so shell suffixes cannot ride along with an allowed command.
+    """
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return False
+    if words[:2] != ["arc", "sop"]:
+        return False
+    if len(words) == 4 and words[:3] == ["arc", "sop", "start"]:
+        return bool(words[3].strip())
+    return len(words) == 3 and words[2] in {
+        "ack", "ack-today", "check", "gate-check", "verify", "status", "violations",
+    }
+
+
+def panel_preflight_command(cmd):
+    """Commands that must remain usable to read or satisfy the gate."""
+    if sop_setup_command(cmd):
+        return True
+    try:
+        return shlex.split(cmd) == ["arc", "help", "all"]
+    except ValueError:
+        return False
+
+
+def panel_command_allowed(cmd, gate_open):
+    """Allow SOP recovery/readiness actions while locked; gate every other command."""
+    return gate_open or panel_preflight_command(cmd)
+
+
+def check_sop_gate(timeout=5):
+    """Use arc-sop's authoritative same-session gate check."""
+    try:
+        p = subprocess.run(["arc-sop", "gate-check"], capture_output=True, text=True,
+                           timeout=timeout)
+        return p.returncode == 0, strip_ansi((p.stdout or p.stderr).strip())
+    except Exception as e:
+        return False, f"SOP gate check unavailable: {e}"
+
+
 # ── execution core ───────────────────────────────────────────────────────────
 class Runner:
     """The ONE way this app runs commands.
@@ -424,6 +468,7 @@ class ConfirmPolicy:
 
 CATEGORIES = {
     "Help": [],       # command-center guide and category jump-off
+    "SOP": [],        # read the rules, review GAMEPLAN, start + acknowledge a session
     "Status": [],     # special view: live host/security dashboard
     "Cockpit": [],    # special view: network / cloud / remote-access overview
     "Inventory": [],  # special view: register vs reality (arc inv), added 2026-09-19
@@ -1305,6 +1350,8 @@ class InventoryView(View):
             self.app.console.log("copied safe inventory inspect command", TEAL)
 
         def open_register():
+            if not self.app.require_ops_gate("open inventory register"):
+                return
             cmd = f"xdg-open {shlex.quote(str(INVENTORY_REGISTRY))}"
             ok, result = self.app.runner.detach(cmd)
             self.app.console.log("opened inventory register" if ok else result, TEAL if ok else ROSE)
@@ -1540,6 +1587,8 @@ class LogsView(View):
         d.label("This deletes the real file's content — cannot be undone.", fg=ROSE, font=self.app.f.small)
 
         def go():
+            if not self.app.require_ops_gate(f"purge {src['name']}"):
+                return
             p = shlex.quote(str(src["path"]))
             if src["kind"] == "sqlite":
                 cmd = f'sqlite3 {p} "DELETE FROM notifications; VACUUM;"'
@@ -1619,6 +1668,121 @@ class FindView(View):
                     lambda res: self._show(res[1] if res[0] else f"(failed) {res[1]}"))
 
 
+class SopView(View):
+    """The panel's compliance checkpoint and the safe path to unlock operations."""
+
+    scrollable = True
+
+    def build(self):
+        f = self.app.f
+        card = tk.Frame(self.frame, bg=BG, highlightthickness=1, highlightbackground=BORDER)
+        card.pack(fill="x", padx=8, pady=8)
+        tk.Label(card, text="SOP / DAILY OPERATIONS GATE", font=f.small, bg=BG, fg=TEAL,
+                 anchor="w").pack(fill="x", padx=14, pady=(12, 4))
+        self.gate_label = tk.Label(card, text="checking gate…", font=f.big, bg=BG, fg=GOLD,
+                                   anchor="w")
+        self.gate_label.pack(fill="x", padx=14, pady=(0, 3))
+        self.detail_label = tk.Label(card, text="", font=f.small, bg=BG, fg=FG_MUTED,
+                                     anchor="w", justify="left", wraplength=680)
+        self.detail_label.pack(fill="x", padx=14, pady=(0, 12))
+
+        docs = tk.Frame(self.frame, bg=SURFACE)
+        docs.pack(fill="x", padx=8, pady=(0, 8))
+        ui.button(docs, "read latest GAMEPLAN", command=lambda: self._read_doc(
+            "GAMEPLAN · latest 100 lines", HOME / "dev-notes/intel-ops/GAMEPLAN.md", tail=100),
+            font=f.small, bg=OVERLAY, fg=GOLD, hover_bg=BG, padx=12, pady=7).pack(side="left", padx=5)
+        ui.button(docs, "read SOT", command=lambda: self._read_doc(
+            "SOURCE OF TRUTH · SOT.md", HOME / "dev-notes/intel-ops/SOT.md"),
+            font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG, padx=12, pady=7).pack(side="left", padx=5)
+        ui.button(docs, "check gate", command=self.refresh_gate, font=f.small, bg=OVERLAY, fg=FG,
+                  hover_bg=BG, padx=12, pady=7).pack(side="right", padx=5)
+
+        start = tk.Frame(self.frame, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
+        start.pack(fill="x", padx=8, pady=(0, 8))
+        tk.Label(start, text="START A TASK", font=f.small, bg=OVERLAY, fg=FG_MUTED,
+                 anchor="w").pack(fill="x", padx=12, pady=(10, 4))
+        row = tk.Frame(start, bg=OVERLAY)
+        row.pack(fill="x", padx=12, pady=(0, 10))
+        self.task_text = tk.StringVar()
+        self.task_entry = tk.Entry(row, textvariable=self.task_text, font=f.label, bg=BG, fg=FG,
+                                   insertbackground=FG, relief="flat")
+        self.task_entry.pack(side="left", fill="x", expand=True, ipady=7, padx=(0, 8))
+        self.task_entry.insert(0, "briefly name today's work…")
+        self.task_entry.bind("<FocusIn>", self._clear_placeholder)
+        self.task_entry.bind("<Return>", lambda _e: self.start_task())
+        ui.button(row, "log + acknowledge", command=self.start_task, font=f.small, bg=OVERLAY,
+                  fg=TEAL, hover_bg=BG, padx=12, pady=7).pack(side="right")
+
+        ui.button(self.frame, "run full SOP compliance check", command=lambda: self.app.run_async(
+            "arc sop check", timeout=20, on_done=self.refresh_gate), font=f.small, bg=SURFACE,
+            fg=FG, hover_bg=OVERLAY, padx=12, pady=7).pack(anchor="w", padx=12, pady=(0, 8))
+        tk.Label(self.frame, text="If the gate is locked, panel operations are blocked. Reading these documents and starting this task remain available.",
+                 font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left",
+                 wraplength=720).pack(fill="x", padx=12, pady=(0, 10))
+        self.refresh_gate()
+
+    def _clear_placeholder(self, _event=None):
+        if self.task_text.get() == "briefly name today's work…":
+            self.task_text.set("")
+
+    def refresh_gate(self):
+        if not self.alive():
+            return
+        ok, detail = check_sop_gate()
+        self.gate_label.configure(text="OPERATIONS OPEN" if ok else "OPERATIONS LOCKED",
+                                  fg=TEAL if ok else ROSE)
+        self.detail_label.configure(text=detail or ("This session is cleared." if ok else
+                                                     "Read the current plan, then log and acknowledge."))
+
+    def start_task(self):
+        description = self.task_text.get().strip()
+        if description == "briefly name today's work…":
+            description = ""
+        if not description:
+            self.app.console.log("enter a short task name before unlocking operations", GOLD)
+            self.task_entry.focus_set()
+            return
+        self.app.run_async(f"arc sop start {shlex.quote(description)}", timeout=20,
+                           on_done=self.refresh_gate)
+
+    def _read_doc(self, title, path, tail=None):
+        d = Dialog(self.app, title, resizable=True, geometry="940x650")
+        tk.Label(d.win, text=f"read-only source  ·  {path}", font=self.app.f.small,
+                 bg=BG, fg=FG_MUTED, anchor="w").pack(fill="x", padx=14, pady=(12, 5))
+        frame = tk.Frame(d.win, bg=BG)
+        frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        scroll = tk.Scrollbar(frame)
+        scroll.pack(side="right", fill="y")
+        text = tk.Text(frame, bg=SURFACE, fg=FG, font=self.app.f.mono, wrap="word",
+                       yscrollcommand=scroll.set, relief="flat")
+        text.pack(side="left", fill="both", expand=True)
+        scroll.configure(command=text.yview)
+        text.insert("1.0", "loading…")
+        text.configure(state="disabled")
+        ui.button(d.win, "close", command=d.close, font=self.app.f.small, bg=OVERLAY,
+                  fg=FG_MUTED, hover_bg=BG, padx=14, pady=7).pack(pady=(0, 12))
+
+        def load():
+            try:
+                content = path.read_text(errors="replace")
+                if tail is not None:
+                    content = "\n".join(content.splitlines()[-tail:])
+                return content
+            except Exception as e:
+                return f"Could not read {path}: {e}"
+
+        def show(content):
+            try:
+                text.configure(state="normal")
+                text.delete("1.0", "end")
+                text.insert("1.0", content or "(empty)")
+                text.configure(state="disabled")
+                text.see("1.0")
+            except tk.TclError:
+                pass
+        self.app.bg(load, show)
+
+
 class HelpView(View):
     """A command-center front door: explain the panel, then jump to real menus.
 
@@ -1629,6 +1793,7 @@ class HelpView(View):
     scrollable = True
 
     DESCRIPTIONS = {
+        "SOP": "Read SOT/GAMEPLAN, satisfy the gate, and review compliance",
         "Status": "Live workstation health and security snapshot",
         "Cockpit": "At-a-glance network, cloud, and remote-access controls",
         "Inventory": "Track registered assets and find drift or untracked items",
@@ -1662,7 +1827,8 @@ class HelpView(View):
         row.pack(fill="x", padx=14, pady=(0, 12))
         ui.button(row, "focus quick-jump  ·  Ctrl+F", command=self._focus_search, font=f.small,
                   bg=OVERLAY, fg=GOLD, hover_bg=BORDER, padx=10, pady=6).pack(side="left", padx=(0, 8))
-        ui.button(row, "full CLI reference  ·  arc help all", command=lambda: self.app.run_async("arc help all", timeout=15),
+        ui.button(row, "full CLI reference  ·  arc help all", command=lambda: self.app.run_async(
+            "arc help all", timeout=15),
                   font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BORDER, padx=10, pady=6).pack(side="left")
 
         tk.Label(self.frame, text="WORKSPACES", font=f.small, bg=SURFACE, fg=FG_MUTED,
@@ -1759,7 +1925,7 @@ class ActionsView(View):
 
 # ── the app ──────────────────────────────────────────────────────────────────
 class App:
-    SPECIAL_VIEWS = {"Help": HelpView, "Status": StatusView, "Cockpit": CockpitView, "Inventory": InventoryView,
+    SPECIAL_VIEWS = {"Help": HelpView, "SOP": SopView, "Status": StatusView, "Cockpit": CockpitView, "Inventory": InventoryView,
                      "Logs": LogsView, "Find": FindView}
 
     def __init__(self):
@@ -1800,7 +1966,8 @@ class App:
         root.bind("<Control-f>", lambda _e: (self.search_entry.focus_set(), "break")[1])
         root.bind("<F1>", lambda _e: (self.select("Help"), "break")[1])
 
-        self.select("Status")
+        gate_open, _ = check_sop_gate()
+        self.select("Status" if gate_open else "SOP")
         self._tick()
         root.after(500, self._geometry_watchdog)   # give the WM time to finish its initial placement
 
@@ -2085,6 +2252,8 @@ class App:
             self.main_pane.sash_place(0, 0, max(0, total - 260))
 
     def run_async(self, cmd, timeout=30, on_done=None):
+        if not self.require_ops_gate(cmd):
+            return
         # Ignore a repeat while the identical command is still running: a double-click used to run
         # a mutating action twice (`gvm cloud-start` bills).
         if cmd in self._busy:
@@ -2107,6 +2276,8 @@ class App:
         self.bg(lambda: self.runner.run(cmd, timeout=timeout), done)
 
     def run_action(self, a):
+        if not self.require_ops_gate(a.cmd):
+            return
         if a.detach:
             self.ensure_console_room()
             self.console.log(f"$ {a.cmd}  (opens its own window)", TEAL)
@@ -2120,6 +2291,21 @@ class App:
             d.buttons([("yes, run it", ROSE, lambda: self.run_async(a.cmd, a.timeout)), ("cancel", FG_MUTED, None)])
         else:
             self.run_async(a.cmd, a.timeout)
+
+    def require_ops_gate(self, cmd):
+        """Fail closed for panel operations; leave only SOP recovery actions available."""
+        if panel_preflight_command(cmd):
+            return True
+        ok, detail = check_sop_gate()
+        if panel_command_allowed(cmd, ok):
+            return True
+        self.console.log("⛔ BLOCKED — operations are locked until this session satisfies the SOP gate.", ROSE)
+        if detail:
+            self.console.log(detail, GOLD)
+        self.console.log("Open SOP to read SOT/GAMEPLAN, then log + acknowledge a task.", FG_MUTED)
+        if self.current != "SOP":
+            self.select("SOP")
+        return False
 
     # -- periodic loops ------------------------------------------------------
     def _tick(self):
@@ -2214,7 +2400,37 @@ class App:
         print(f"  poll jobs after leaving polled views: {leaked or 'none (no leak)'}")
         ov = ConfirmPolicy.overrides(CATEGORIES)
         print(f"  confirm-policy overrides (each must have a stated reason): {[o[1] for o in ov]}")
-        bad = self.errors or leaked
+        gate_cases = (
+            ("arc inv scan", False, False),
+            ("arc inv scan", True, True),
+            ("arc sop start 'test task'", False, True),
+            ("arc sop check", False, True),
+            ("arc sop baseline", False, False),
+            ("arc sop start 'task' && arc clean", False, False),
+        )
+        gate_ok = all(panel_command_allowed(cmd, opened) == expected
+                      for cmd, opened, expected in gate_cases)
+        original_gate = globals()["check_sop_gate"]
+        blocked_logs, launches = [], []
+        fake = SimpleNamespace(current="Status", _busy=set(),
+                               console=SimpleNamespace(log=lambda text, _color=None: blocked_logs.append(text)),
+                               select=lambda name: setattr(fake, "current", name),
+                               ensure_console_room=lambda: None,
+                               bg=lambda _work, _done: launches.append("launched"))
+        fake.require_ops_gate = lambda cmd: App.require_ops_gate(fake, cmd)
+        globals()["check_sop_gate"] = lambda timeout=5: (False, "gate NOT satisfied (selftest)")
+        try:
+            App.run_async(fake, "arc inv scan")
+            locked_action_blocked = not launches and fake.current == "SOP"
+            App.run_action(fake, Action("test operation", "arc inv scan"))
+            locked_button_blocked = not launches
+            App.run_async(fake, "arc sop start 'selftest task'")
+            recovery_action_available = len(launches) == 1
+        finally:
+            globals()["check_sop_gate"] = original_gate
+        gate_ok = gate_ok and locked_action_blocked and locked_button_blocked and recovery_action_available
+        print(f"  SOP operation gate        {'ok' if gate_ok else 'FAILED'} (locked ops denied; setup retained)")
+        bad = self.errors or leaked or not gate_ok
         print("  " + ("FAILED" if bad else "all views built with no callback errors"))
         for e in self.errors:
             print(e)

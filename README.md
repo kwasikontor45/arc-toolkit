@@ -15,6 +15,10 @@ fragments live under `/etc`, root-owned) — those need an explicit `arc sot sna
 `arc day` gives a short startup reminder when today's SOP acknowledgment is missing, then continues
 the readiness checks without waiting for keyboard input. Use `arc sop ack` to record the required
 acknowledgment; the separate Codex operation gate still enforces it before protected tool actions.
+The Khaos Lab panel checks that same session-scoped gate before running action buttons, opening the
+inventory editor, or clearing logs. Read-only dashboards and document views stay available while
+locked. The SOP workspace can read the latest GAMEPLAN/SOT, run compliance checks, and use
+`arc sop start "<task>"` to log and acknowledge the session.
 
 ## Using it
 

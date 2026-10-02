@@ -11,6 +11,14 @@ set -euo pipefail
 
 LIST="$HOME/.config/emoji-pick/emojis.txt"
 
+# Capture the destination before rofi takes focus. Terminal emulators generally
+# use Ctrl+Shift+V for clipboard paste; GUI apps use Ctrl+V.
+target_window=$(xdotool getactivewindow 2>/dev/null || true)
+target_class=""
+if [[ -n "$target_window" ]]; then
+  target_class=$(xdotool getwindowclassname "$target_window" 2>/dev/null || true)
+fi
+
 if [[ ! -s "$LIST" ]]; then
   notify-send -a emoji-pick "emoji-pick" "list is empty — run: arc emoji add <emoji> <words>" 2>/dev/null || true
   exit 1
@@ -26,4 +34,12 @@ emoji="${chosen%% *}"
 
 echo -n "$emoji" | xclip -selection clipboard
 sleep 0.1
-xdotool key --clearmodifiers ctrl+v
+
+case "${target_class,,}" in
+  *terminal*|*konsole*|*kitty*|*alacritty*|*wezterm*|*foot*|*xterm*|*rxvt*|*tilix*|*terminator*|*contour*|*qterminal*|*mate-terminal*|*lxterminal*|*cool-retro-term*|*hyper*|*tabby*)
+    xdotool key --clearmodifiers ctrl+shift+v
+    ;;
+  *)
+    xdotool key --clearmodifiers ctrl+v
+    ;;
+esac

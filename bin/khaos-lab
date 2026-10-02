@@ -789,11 +789,11 @@ class Dialog:
         self.win.transient(app.root)
         self.win.geometry(geometry or f"+{app.root.winfo_x() + 120}+{app.root.winfo_y() + 150}")
         self.win.bind("<Escape>", lambda _e: self.close())
-        self.shell = tk.Frame(self.win, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
-        self.shell.pack(fill="both", expand=True, padx=10, pady=10)
+        self.shell = tk.Frame(self.win, bg=SURFACE)
+        self.shell.pack(fill="both", expand=True, padx=8, pady=8)
         tk.Frame(self.shell, bg=app.phase_accent, height=2).pack(fill="x")
-        tk.Label(self.shell, text=title.upper(), font=app.f.small, bg=SURFACE,
-                 fg=app.phase_accent, anchor="w").pack(fill="x", padx=18, pady=(12, 3))
+        tk.Label(self.shell, text=title, font=app.f.label, bg=SURFACE,
+                 fg=FG, anchor="w").pack(fill="x", padx=22, pady=(17, 10))
         self.win.after(60, self._grab)
 
     def _grab(self):
@@ -2111,8 +2111,6 @@ class App:
         self.view = None
         self.current = "Status"
         self._console_room_done = False
-        self._maximized = False
-        self._pre_max_geometry = None
         self._sidebar_visible = True
         self._sidebar_auto_hidden = False
         self.phase_name, self.phase_accent = ui.phase_info()
@@ -2164,8 +2162,7 @@ class App:
             tk.Label(header, image=self._header_bg, bg=BG).place(relx=0, rely=0, relwidth=1, relheight=1)
         self._header_icon = load_image(HEADER_ICON_PATH)
         if self._header_icon:
-            tk.Label(header, image=self._header_icon, bg=BG, highlightthickness=2,
-                     highlightbackground=GOLD).pack(side="left", padx=(0, 8))
+            tk.Label(header, image=self._header_icon, bg=BG, highlightthickness=0).pack(side="left", padx=(0, 8))
         self.nav_toggle = ui.button(header, "menu", command=self.toggle_nav, font=f.small, bg=BG,
                                     fg=FG_MUTED, hover_bg=OVERLAY, hover_fg=self.phase_accent, padx=8, pady=4)
         self.nav_toggle.pack(side="left", padx=(0, 8))
@@ -2173,25 +2170,7 @@ class App:
         tk.Label(header, text="/", font=f.big, bg=BG, fg=FG_MUTED).pack(side="left")
         self.brand_accent = tk.Label(header, text="lab", font=f.big, bg=BG, fg=self.phase_accent)
         self.brand_accent.pack(side="left", padx=(0, 16))
-        tk.Label(header, text="FIELD DESK", font=f.small, bg=BG, fg=FG_MUTED).pack(side="left")
-        # Window controls (min/max/close), 2026-09-22 -- user's own follow-up: "its tricky to
-        # find max/min/close buttons". Real cause, confirmed via xwininfo: this WM theme is
-        # currently drawing essentially zero titlebar chrome for this window (the client and
-        # its WM frame came back pixel-identical -- no reserved space for WM-drawn buttons at
-        # all), a desktop/WM theme characteristic, not something khaos-lab's own code was ever
-        # doing. Fixing the WM theme system-wide is out of scope here (it'd affect every window
-        # on the desktop); drawing khaos-lab's own controls, scoped to just this app, is the
-        # same pattern any custom-chrome app uses regardless of what the WM does. Packed before
-        # clock/phase below so it claims the rightmost slot (pack(side="right") stacks in the
-        # order packed -- first claims the far edge).
-        ctrl = tk.Frame(header, bg=BG)
-        ctrl.pack(side="right", padx=(10, 0))
-        ui.button(ctrl, "─", command=root.iconify, font=f.small, bg=BG, fg=FG_MUTED,
-                  hover_bg=OVERLAY, hover_fg=FG, padx=8, pady=2).pack(side="left")
-        ui.button(ctrl, "▢", command=self._toggle_maximize, font=f.small, bg=BG, fg=FG_MUTED,
-                  hover_bg=OVERLAY, hover_fg=FG, padx=8, pady=2).pack(side="left")
-        ui.button(ctrl, "✕", command=root.destroy, font=f.small, bg=BG, fg=FG_MUTED,
-                  hover_bg=ROSE, hover_fg=FG, padx=8, pady=2).pack(side="left")
+        tk.Label(header, text="local-workshop/workstation", font=f.small, bg=BG, fg=FG_MUTED).pack(side="left")
         self.clock_lbl = tk.Label(header, text="", font=f.small, bg=BG, fg=FG_MUTED)
         self.clock_lbl.pack(side="right")
         # The panel's palette is fixed on purpose; which Kataleya phase it is (choice/desire/
@@ -2230,10 +2209,10 @@ class App:
     def toggle_nav(self):
         """Let the workspace reclaim width on demand; the menu stays one click away."""
         if self._sidebar_visible:
-            self.body_pane.forget(self.sidebar)
+            self.body_pane.forget(self.sidebar_frame)
             self._sidebar_visible = False
         else:
-            self.body_pane.add(self.sidebar, before=self.content_wrap, minsize=112, width=156)
+            self.body_pane.add(self.sidebar_frame, before=self.content_wrap, minsize=188, width=216)
             self._sidebar_visible = True
         self._sidebar_auto_hidden = False
         self.root.after_idle(lambda: self.refresh_scroll(self.view.frame) if self.view else None)
@@ -2244,11 +2223,11 @@ class App:
         # Auto-tuck navigation only at genuinely narrow widths; wide screens never get
         # an unsolicited layout change, and a manual toggle takes priority.
         if event.width < 700 and self._sidebar_visible:
-            self.body_pane.forget(self.sidebar)
+            self.body_pane.forget(self.sidebar_frame)
             self._sidebar_visible = False
             self._sidebar_auto_hidden = True
         elif event.width > 840 and self._sidebar_auto_hidden and not self._sidebar_visible:
-            self.body_pane.add(self.sidebar, before=self.content_wrap, minsize=112, width=156)
+            self.body_pane.add(self.sidebar_frame, before=self.content_wrap, minsize=188, width=216)
             self._sidebar_visible = True
             self._sidebar_auto_hidden = False
 
@@ -2269,8 +2248,16 @@ class App:
                                                      cursor="sb_h_double_arrow")
         body_pane.pack(fill="both", expand=True)
         # Canvas, not Frame, so the watermark can sit behind the nav buttons.
-        self.sidebar = tk.Canvas(body_pane, bg=BG, width=188, highlightthickness=0)
-        body_pane.add(self.sidebar, minsize=156, width=188)
+        self.sidebar_frame = tk.Frame(body_pane, bg=BG, width=216)
+        self.sidebar_frame.pack_propagate(False)
+        self.sidebar = tk.Canvas(self.sidebar_frame, bg=BG, width=207, highlightthickness=0)
+        self.sidebar_scroll = tk.Scrollbar(self.sidebar_frame, orient="vertical", command=self.sidebar.yview,
+                                           bg=OVERLAY, troughcolor=BG, activebackground=self.phase_accent,
+                                           bd=0, highlightthickness=0, width=8)
+        self.sidebar.configure(yscrollcommand=self.sidebar_scroll.set)
+        self.sidebar.pack(side="left", fill="both", expand=True)
+        self.sidebar_scroll.pack(side="right", fill="y")
+        body_pane.add(self.sidebar_frame, minsize=188, width=216)
         content_wrap = self.content_wrap = tk.Frame(body_pane, bg=SURFACE)
         body_pane.add(content_wrap, minsize=300)
         self.content = tk.Canvas(content_wrap, bg=SURFACE, highlightthickness=0)
@@ -2303,32 +2290,27 @@ class App:
 
     def _build_sidebar(self):
         sb = self.sidebar
-        self._sidebar_bg = load_image(SIDEBAR_BG_PATH)
-        if self._sidebar_bg:
-            sb.create_image(0, 0, anchor="nw", image=self._sidebar_bg)
-        # Brand badge: a fixed strip at the top, drawn before the nav buttons and never covered by
-        # them (the art's own wordmark sits low in a tall image the button stack covers).
-        self._sidebar_icon = load_image(SIDEBAR_ICON_PATH)
-        if self._sidebar_icon:
-            sb.create_image(8, 6, anchor="nw", image=self._sidebar_icon)
-        sb.create_text(34, 16, anchor="w", text="khaos-lab", font=self.f.small, fill=GOLD)
-        sb.create_line(0, 30, 182, 30, fill=OVERLAY, width=1)
-        # Mercury staff: a slim twin helix and wings, drawn in the phase accent.
-        # Decorative only; it occupies the rail beside the navigation labels.
-        sb.create_line(164, 43, 164, 100, fill=self.phase_accent, width=2)
-        sb.create_line(148, 53, 164, 42, 180, 53, fill=self.phase_accent, width=2, smooth=True)
-        sb.create_line(164, 58, 153, 67, 164, 76, 175, 85, 164, 94,
-                       fill=TEAL, width=2, smooth=True)
-        sb.create_line(164, 58, 175, 67, 164, 76, 153, 85, 164, 94,
-                       fill=GOLD, width=2, smooth=True)
+        # Quiet identity header: a fine Mercury staff echoes the website SVG
+        # without sitting behind labels or bringing old wallpaper into the rail.
+        sb.create_line(24, 14, 24, 72, fill=self.phase_accent, width=1.6, capstyle="round")
+        sb.create_line(24, 20, 12, 13, 24, 17, 36, 13, 24, 20,
+                       fill=self.phase_accent, width=1.5, smooth=True, splinesteps=24)
+        sb.create_line(24, 24, 12, 33, 24, 42, 36, 51, 24, 61,
+                       fill=TEAL, width=1.7, smooth=True, splinesteps=28)
+        sb.create_line(24, 24, 36, 33, 24, 42, 12, 51, 24, 61,
+                       fill=self.phase_accent, width=1.7, smooth=True, splinesteps=28)
+        sb.create_text(49, 28, anchor="w", text="khaos / lab", font=self.f.label, fill=FG)
+        sb.create_text(49, 49, anchor="w", text="MERCURY · LOCAL", font=self.f.small, fill=FG_MUTED)
+        sb.create_line(12, 81, 202, 81, fill=BORDER, width=1)
+        sb.create_text(13, 91, anchor="nw", text="WORKSPACES", font=self.f.small, fill=FG_MUTED)
         self.nav_buttons, self.nav_y = {}, {}
         self.nav_accent = sb.create_rectangle(0, 0, 0, 0, fill=GOLD, width=0)   # active-row tick
-        y = 30
+        y = 112
         for cat in CATEGORIES:
             b = ui.button(sb, cat, command=lambda c=cat: self.select(c), font=self.f.nav, bg=BG, fg=FG_MUTED,
                           hover_bg=OVERLAY, hover_fg=GOLD, padx=14, pady=6)
             b.configure(anchor="w")
-            sb.create_window(4, y, anchor="nw", window=b, width=150)
+            sb.create_window(10, y, anchor="nw", window=b, width=194)
             b.update_idletasks()
             self.nav_y[cat] = (y, b.winfo_reqheight())
             y += b.winfo_reqheight() + 1
@@ -2339,7 +2321,7 @@ class App:
             b.bind("<Button-5>", lambda _e: sb.yview_scroll(1, "units"))
             b.bind("<MouseWheel>", lambda e: sb.yview_scroll(-1 if e.delta > 0 else 1, "units"))
         # Scrollable, so every category stays reachable at any window height / sash position.
-        sb.configure(scrollregion=(0, 0, 184, y + 4))
+        sb.configure(scrollregion=(0, 0, 216, y + 8))
         sb.bind("<Button-4>", lambda _e: sb.yview_scroll(-1, "units"))
         sb.bind("<Button-5>", lambda _e: sb.yview_scroll(1, "units"))
         sb.bind("<MouseWheel>", lambda e: sb.yview_scroll(-1 if e.delta > 0 else 1, "units"))
@@ -2634,33 +2616,6 @@ class App:
         ny = wy if y < wy else max(wy, wy + wh - h) if y + h > wy + wh else y
         if (nx, ny) != (x, y):
             r.geometry(f"+{nx}+{ny}")
-
-    def _toggle_maximize(self):
-        # Real bug caught before shipping, 2026-09-22: tried Tk's '-zoomed' attribute first
-        # (the standard X11 EWMH maximize toggle) -- confirmed via a direct non-UI test
-        # (set it True, re-read it, checked winfo geometry) that it's a silent no-op on this
-        # WM: geometry unchanged, state still reports False right after setting True. Falls
-        # back to the same _NET_WORKAREA technique _geometry_watchdog below already uses
-        # successfully -- save the current geometry once, size to the real usable desktop
-        # area to "maximize", restore the saved geometry to toggle back. Async via self.bg,
-        # same pattern as the watchdog, so the xprop call can't stall a button click.
-        if self._maximized:
-            self.root.geometry(self._pre_max_geometry)
-            self._maximized = False
-            return
-        self.root.update_idletasks()
-        r = self.root
-        self._pre_max_geometry = f"{r.winfo_width()}x{r.winfo_height()}+{r.winfo_x()}+{r.winfo_y()}"
-        self.bg(lambda: self.runner.run("xprop -root _NET_WORKAREA", timeout=3), self._apply_maximize)
-
-    def _apply_maximize(self, res):
-        ok, out = res
-        nums = [int(n) for n in re.findall(r"-?\d+", out)] if ok and out else []
-        if len(nums) < 4:
-            return
-        wx, wy, ww, wh = nums[:4]
-        self.root.geometry(f"{ww}x{wh}+{wx}+{wy}")
-        self._maximized = True
 
     def _on_callback_error(self, exc, val, tb):
         self.errors.append("".join(traceback.format_exception(exc, val, tb)))

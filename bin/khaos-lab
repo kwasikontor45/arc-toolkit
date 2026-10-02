@@ -478,19 +478,21 @@ CATEGORIES = {
     # Android/ADB, device-agnostic: pure reads, or UAD-ng's own GUI for debloat work.
     "Phone": [
         Action("Device: status", "arc phone status"),
-        Action("Device: full info (read-only, any device)", "arc phone info", timeout=15),
+        Action("Device: full info (read-only, one target)", "arc phone info", timeout=15),
         Action("Device: list packages", "arc phone packages", timeout=15),
-        Action("Device: export package snapshot (read-only, any device)", "arc phone export", timeout=15),
+        Action("Device: export package snapshot (read-only)", "arc phone export", timeout=15),
         Action("Device: doctor (disabled pkgs vs. real crash evidence, read-only)", "arc phone doctor", timeout=20),
         Action("Device: reboot + wait for full boot", "arc phone reboot", timeout=90),
-        Action("UAD-ng: launch (any device, GUI)", "arc phone uad", detach=True),
+        Action("UAD-ng: launch (multi-device GUI)", "arc phone uad", detach=True),
     ],
     "Waydroid": [
         Action("Android: status (container, session, display)", "arc-waydroid status", timeout=15),
         Action("Android: open (starts Waydroid + X11 display if needed)", "arc-waydroid open",
                confirm=True, timeout=150),
+        Action("ADB: connect Waydroid (then manage under Phone)", "arc-waydroid adb-connect", timeout=60),
+        Action("ADB: disconnect Waydroid", "arc-waydroid adb-disconnect", timeout=20),
         Action("Android: stop + restore host device permissions", "arc-waydroid stop",
-               confirm=True, timeout=60),
+               confirm=True, timeout=90),
         Action("Android: installed apps", "arc-waydroid apps", timeout=25),
         Action("Android: recent launch logs", "arc-waydroid logs", timeout=10),
     ],
@@ -913,6 +915,7 @@ class StatusView(TileView):
         (3, 0, "idsips", "IDS/IPS"), (3, 1, "calendar", "Upcoming (Orage)"),
         (4, 0, "awslab", "AWS lab (gvm / soclab / wazuh)"), (4, 1, "inventory", "Inventory (arc inv)"),
         (5, 0, "notify", "Notify stack (voice · bubbles · site)"),
+        (5, 1, "waydroid", "Waydroid · Android sandbox"),
     ]
 
     def checks(self):
@@ -982,9 +985,25 @@ class StatusView(TileView):
                 return "unavailable"
             return "  ·  ".join(f"{n} {'ok' if v == 'active' else v}" for n, v in zip(names, s))
 
+        def waydroid():
+            ok, out = r("arc-waydroid status", timeout=12)
+            if not ok:
+                return "status unavailable"
+            service = re.search(r"^Container service: (.+)$", out, re.MULTILINE)
+            if not service:
+                return "status unavailable"
+            if service.group(1) == "stopped":
+                return "stopped · manual start"
+            session = re.search(r"^Session: (.+)$", out, re.MULTILINE)
+            weston = re.search(r"^Khaos Weston window: (.+)$", out, re.MULTILINE)
+            detail = f"Android {session.group(1).lower()}" if session else "Android status unknown"
+            if weston:
+                detail += f" · Weston {weston.group(1)}"
+            return f"container {service.group(1)} · {detail}"
+
         return {"dns": dns, "break": brk, "disk": disk, "services": services, "uptime": uptime,
                 "selfheal": selfheal, "idsips": idsips, "calendar": calendar_,
-                "awslab": awslab, "inventory": inventory, "notify": notify}
+                "awslab": awslab, "inventory": inventory, "notify": notify, "waydroid": waydroid}
 
     def color_for(self, key, val):
         if key == "services":
@@ -1001,6 +1020,12 @@ class StatusView(TileView):
             return TEAL if "suricata active" in val and val.count("running") == 2 else ROSE
         if key == "notify":
             return TEAL if val.count(" ok") == 3 else ROSE
+        if key == "waydroid":
+            if val.startswith("container running"):
+                return TEAL
+            if val.startswith("stopped"):
+                return GOLD
+            return ROSE
         return FG
 
 
@@ -1536,8 +1561,8 @@ class HelpView(View):
         "Find": "Search your notes and archived references",
         "Network": "VPN, DNS, router, and network-monitoring actions",
         "Reference": "Build and open your private reference library",
-        "Phone": "Inspect and manage Android devices over ADB",
-        "Waydroid": "Local Android runtime · manual start · X11/Wayland aware",
+        "Phone": "ADB device tools · UAD-ng package management",
+        "Waydroid": "Open Waydroid → connect ADB → manage it from Phone",
         "Security": "SOPs, firewall, account, and security checks",
         "SOC": "Local and cloud security labs, dashboards, and scanners",
         "Cloud": "On-demand cloud labs and instance controls",

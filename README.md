@@ -40,6 +40,14 @@ auto-recreated — "missing" is genuinely ambiguous (accidentally deleted vs. de
 and resurrecting something that was intentionally killed off is worse than leaving a gap for a
 human to look at once. This was a real bug caught during testing, not a hypothetical.
 
+### Waydroid from Khaos Lab
+
+The **Waydroid** workspace in `khaos-lab` provides status, open, stop, installed-app, recent-log, and ADB connect/disconnect actions. It stays manual-start: Open starts the container, creates a nested Weston window on X11 when no Wayland compositor is available, starts the Android session, and opens the launcher. ADB connects only to Waydroid's private IP on port 5555; Stop disconnects that saved target before shutting down. After connecting, use the existing **Phone** menu for ADB tools and UAD-ng. Device-specific Phone commands require one connected target to avoid ambiguous ADB commands; UAD-ng has its own multi-device selector. The standalone `arc-waydroid status|open|stop|apps|logs|adb-connect|adb-disconnect` command is also available in a terminal.
+
+The Status dashboard also shows Waydroid beside the notification-stack tile. It polls the read-only operator status every 15 seconds and reports the container, Android session, and Khaos-owned Weston window without starting anything.
+
+`sudoers/arc-waydroid` grants only the exact Waydroid unit start/stop commands and fixed device-mode restoration commands used by Stop. Waydroid is a shared-kernel container, not a VM; while it runs, its standard startup widens access to host device nodes. The vanilla image has no Google apps, and no shared host folders are configured.
+
 ## Offline / no-internet
 
 The source machine never depends on the network for day-to-day use — every script is a local

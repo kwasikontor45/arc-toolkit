@@ -1,0 +1,374 @@
+#!/usr/bin/env python3
+"""Small, manual-start Waydroid operator for the Khaos Lab control panel.
+
+Commands: status, open, stop, apps, logs, adb-connect, adb-disconnect. This is
+intentionally independent from khaos-lab: it can also be used directly from a
+terminal.
+"""
+
+import os
+import ipaddress
+import re
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+UNIT = "waydroid-container.service"
+SOCKET = "khaos-waydroid"
+HOME = Path.home()
+STATE_HOME = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state"))
+STATE_DIR = STATE_HOME / "khaos-lab" / "waydroid"
+LOG = STATE_DIR / "runtime.log"
+WESTON_PID = STATE_DIR / "weston.pid"
+ADB_TARGET = STATE_DIR / "adb-target"
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+
+
+def run(args, *, timeout=20, env=None):
+    try:
+        return subprocess.run(args, text=True, capture_output=True, timeout=timeout, env=env)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(args, 1, "", str(exc))
+
+
+def service_active():
+    result = run(["systemctl", "is-active", UNIT], timeout=5)
+    state = result.stdout.strip()
+    if state == "active":
+        return True
+    if state in {"inactive", "failed", "activating", "deactivating"} and result.returncode:
+        return False
+    return None
+
+
+def service_enabled():
+    result = run(["systemctl", "is-enabled", UNIT], timeout=5)
+    state = result.stdout.strip()
+    if state in {"enabled", "enabled-runtime", "linked", "linked-runtime", "alias", "static",
+                 "indirect", "disabled", "masked", "masked-runtime", "generated", "transient"}:
+        return state
+    return "unknown (system bus unavailable)" if result.returncode else (state or "unknown")
+
+
+def waydroid_status():
+    # `waydroid status` can activate the system D-Bus service. Only call it
+    # after systemd says the unit is already active, keeping status read-only.
+    active = service_active()
+    if active is False:
+        return "Session: STOPPED\nContainer: STOPPED"
+    if active is None:
+        return "Waydroid status unavailable: cannot read the system service state."
+    result = run(["waydroid", "status"], timeout=10)
+    return (result.stdout or result.stderr).strip() or "Waydroid returned no status."
+
+
+def waydroid_adb_target():
+    active = service_active()
+    if active is None:
+        raise RuntimeError("Cannot read Waydroid's system-service state from this session.")
+    if active is False:
+        raise RuntimeError("Open Waydroid first, then connect ADB.")
+    result = run(["waydroid", "status"], timeout=10)
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout).strip() or "Could not read Waydroid status.")
+    match = re.search(r"^IP address:\s*([^\s]+)", result.stdout, re.MULTILINE)
+    if not match:
+        raise RuntimeError("Waydroid has no reported IP yet. Open Android, then retry ADB connect.")
+    try:
+        address = ipaddress.ip_address(match.group(1))
+    except ValueError as exc:
+        raise RuntimeError("Waydroid returned an invalid IP address.") from exc
+    if not address.is_private or address.is_loopback or address.is_unspecified:
+        raise RuntimeError("Waydroid returned a non-private address; refusing an ADB connection.")
+    return f"{address.compressed}:5555"
+
+
+def adb_devices_output():
+    result = run(["adb", "devices", "-l"], timeout=15)
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout).strip() or "ADB is unavailable.")
+    return result.stdout.strip()
+
+
+def adb_connect():
+    target = waydroid_adb_target()
+    result = run(["adb", "connect", target], timeout=20)
+    message = (result.stdout or result.stderr).strip()
+    if result.returncode or "unable to connect" in message.lower() or "failed to connect" in message.lower():
+        raise RuntimeError(message or f"Could not connect to Waydroid at {target}.")
+    devices = adb_devices_output()
+    if not any(line.split()[:2] == [target, "device"] for line in devices.splitlines()):
+        raise RuntimeError(f"ADB did not authorize Waydroid at {target}. Connect again after Android finishes booting.")
+    ensure_state_dir()
+    ADB_TARGET.write_text(target + "\n")
+    ADB_TARGET.chmod(0o600)
+    print(f"ADB connected to Waydroid ({target}).\nUse Phone → UAD-ng or the ADB device tools in Khaos Lab.\n{devices}")
+
+
+def adb_disconnect_saved():
+    try:
+        target = ADB_TARGET.read_text().strip()
+    except OSError:
+        return None
+    try:
+        address, port = target.rsplit(":", 1)
+        parsed = ipaddress.ip_address(address)
+        if not parsed.is_private or port != "5555":
+            raise ValueError
+    except ValueError as exc:
+        raise RuntimeError("Saved Waydroid ADB target is invalid; refusing to disconnect an unknown device.") from exc
+    result = run(["adb", "disconnect", target], timeout=15)
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout).strip() or "Could not disconnect Waydroid from ADB.")
+    ADB_TARGET.unlink(missing_ok=True)
+    return (result.stdout or result.stderr).strip() or f"Disconnected {target}."
+
+
+def adb_disconnect():
+    message = adb_disconnect_saved()
+    print(message or "No Khaos-managed Waydroid ADB connection to disconnect.")
+
+
+def owned_weston_pid():
+    try:
+        pid = int(WESTON_PID.read_text().strip())
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
+        if b"weston" in command and f"--socket={SOCKET}".encode() in command:
+            return pid
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def ensure_state_dir():
+    STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        STATE_DIR.chmod(0o700)
+    except OSError:
+        pass
+
+
+def open_log():
+    ensure_state_dir()
+    if LOG.exists() and LOG.stat().st_size > 2 * 1024 * 1024:
+        tail = LOG.read_text(errors="replace").splitlines()[-1000:]
+        LOG.write_text("\n".join(tail) + "\n")
+    return LOG.open("a", encoding="utf-8")
+
+
+def close_owned_weston():
+    pid = owned_weston_pid()
+    if not pid:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    for _ in range(30):
+        if not Path(f"/proc/{pid}").exists():
+            break
+        time.sleep(0.1)
+    WESTON_PID.unlink(missing_ok=True)
+
+
+def start_container():
+    result = run(["sudo", "-n", "/usr/bin/systemctl", "start", UNIT], timeout=30)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(detail or f"could not start {UNIT}")
+
+
+def stop_container():
+    result = run(["sudo", "-n", "/usr/bin/systemctl", "stop", UNIT], timeout=45)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(detail or f"could not stop {UNIT}")
+
+
+def restore_host_device_modes():
+    # Waydroid widens these nodes while its container is running and leaves
+    # the modes behind on stop. Restore the exact host defaults observed on
+    # this machine; the user's seat ACLs on graphics/video nodes are retained.
+    commands = [
+        ["sudo", "-n", "/usr/bin/chmod", "0600", "/dev/binder", "/dev/hwbinder",
+         "/dev/vndbinder", "/dev/dma_heap/system"],
+        ["sudo", "-n", "/usr/bin/chmod", "0660", "/dev/dri/renderD128", "/dev/fb0",
+         "/dev/video0", "/dev/video1"],
+    ]
+    for command in commands:
+        result = run(command, timeout=10)
+        if result.returncode:
+            detail = (result.stderr or result.stdout).strip()
+            raise RuntimeError(detail or "could not restore host device permissions")
+
+
+def choose_display():
+    runtime = os.environ.get("XDG_RUNTIME_DIR", str(RUNTIME))
+    current = os.environ.get("WAYLAND_DISPLAY", "")
+    if current:
+        socket = Path(current) if current.startswith("/") else Path(runtime) / current
+        if socket.exists():
+            return current, False
+
+    if not os.environ.get("DISPLAY"):
+        raise RuntimeError("No desktop display found. Run this from your logged-in desktop session.")
+
+    socket_path = RUNTIME / SOCKET
+    pid = owned_weston_pid()
+    if pid:
+        for _ in range(100):
+            if socket_path.exists():
+                return SOCKET, True
+            if not Path(f"/proc/{pid}").exists():
+                break
+            time.sleep(0.1)
+        close_owned_weston()
+    if socket_path.exists():
+        raise RuntimeError(f"{socket_path} exists but is not owned by this launcher; refusing to replace it.")
+
+    ensure_state_dir()
+    env = os.environ.copy()
+    env.pop("WAYLAND_DISPLAY", None)
+    with open_log() as log:
+        proc = subprocess.Popen(
+            ["weston", "--backend=x11", f"--socket={SOCKET}", "--idle-time=0", "--no-config"],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+            start_new_session=True, env=env,
+        )
+    WESTON_PID.write_text(f"{proc.pid}\n")
+    WESTON_PID.chmod(0o600)
+    for _ in range(100):
+        if socket_path.exists():
+            return SOCKET, True
+        if proc.poll() is not None:
+            WESTON_PID.unlink(missing_ok=True)
+            raise RuntimeError(f"Weston exited while starting. See {LOG}.")
+        time.sleep(0.1)
+    close_owned_weston()
+    raise RuntimeError(f"Weston did not create its Wayland socket. See {LOG}.")
+
+
+def open_android():
+    display, own_display = choose_display()
+    try:
+        start_container()
+        env = os.environ.copy()
+        env["WAYLAND_DISPLAY"] = display
+        session = waydroid_status()
+        if "Session:\tRUNNING" not in session and "Session: RUNNING" not in session:
+            with open_log() as log:
+                subprocess.Popen(
+                    ["waydroid", "session", "start"], stdin=subprocess.DEVNULL,
+                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env,
+                )
+
+        deadline = time.monotonic() + 90
+        last = session
+        while time.monotonic() < deadline:
+            time.sleep(2)
+            last = waydroid_status()
+            if "Session:\tRUNNING" in last or "Session: RUNNING" in last:
+                break
+        else:
+            raise RuntimeError(f"Android session did not become ready. Last status:\n{last}\nSee {LOG}.")
+
+        result = run(["waydroid", "show-full-ui"], timeout=20, env=env)
+        if result.returncode:
+            raise RuntimeError((result.stderr or result.stdout).strip() or "Could not open Android UI.")
+    except Exception:
+        try:
+            stop_android()
+        except Exception:
+            pass
+        raise
+    kind = "nested Weston on X11" if own_display else "current Wayland desktop"
+    print(
+        f"Android is open via {kind}.\n"
+        "Run `arc-waydroid adb-connect` to make it available to ADB and UAD-ng.\n"
+        "Waydroid shares the host kernel and widens access to device nodes while running."
+    )
+
+
+def stop_android():
+    errors = []
+    if service_active() is True:
+        current = waydroid_status()
+        if "Session:\tRUNNING" in current or "Session: RUNNING" in current:
+            result = run(["waydroid", "session", "stop"], timeout=30)
+            if result.returncode:
+                errors.append((result.stderr or result.stdout).strip() or "session stop failed")
+    try:
+        adb_message = adb_disconnect_saved()
+        if adb_message:
+            print(f"ADB: {adb_message}")
+    except RuntimeError as exc:
+        errors.append(str(exc))
+    try:
+        stop_container()
+    except RuntimeError as exc:
+        errors.append(str(exc))
+    try:
+        restore_host_device_modes()
+    except RuntimeError as exc:
+        errors.append(str(exc))
+
+    close_owned_weston()
+
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    print("Waydroid session stopped; the container remains manual-start and Weston was closed if this launcher opened it.")
+
+
+def status():
+    active = service_active()
+    active_label = "running" if active is True else "stopped" if active is False else "unknown (system bus unavailable)"
+    print(f"Container service: {active_label}")
+    print(f"Boot policy: {service_enabled()} (Khaos starts it only when you open Android)")
+    if active is True:
+        print(waydroid_status())
+    pid = owned_weston_pid()
+    print(f"Khaos Weston window: {'running' if pid else 'closed'}")
+    print("Security: shared Linux kernel; device access is widened while running and reset by Stop. No Google apps or shared host folders were added.")
+
+
+def apps():
+    active = service_active()
+    if active is False:
+        print("Android is stopped. Open Android first to inspect installed apps.")
+        return
+    if active is None:
+        raise RuntimeError("cannot read the system service state; run this from the logged-in desktop session")
+    result = run(["waydroid", "app", "list"], timeout=20)
+    print((result.stdout or result.stderr).strip() or "No launcher apps reported.")
+    if result.returncode:
+        raise RuntimeError("Could not read the Android app list.")
+
+
+def logs():
+    if not LOG.exists():
+        print("No Waydroid launch log yet.")
+        return
+    lines = LOG.read_text(errors="replace").splitlines()
+    print("\n".join(lines[-80:]) if lines else "Log is empty.")
+
+
+def main():
+    commands = {"status": status, "open": open_android, "stop": stop_android,
+                "apps": apps, "logs": logs, "adb-connect": adb_connect,
+                "adb-disconnect": adb_disconnect}
+    if len(sys.argv) != 2 or sys.argv[1] not in commands:
+        print("Usage: arc-waydroid {status|open|stop|apps|logs|adb-connect|adb-disconnect}", file=sys.stderr)
+        return 2
+    try:
+        commands[sys.argv[1]]()
+    except RuntimeError as exc:
+        print(f"arc-waydroid: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

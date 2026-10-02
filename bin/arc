@@ -5419,6 +5419,11 @@ cmd_phone() {
       echo -e "  ${R}✗${N}  no device connected — plug in + enable USB debugging, then retry."
       return 1
     fi
+    if [[ "$n" -gt 1 ]]; then
+      echo -e "  ${Y}!${N}  multiple devices connected — choose one target or use UAD-ng's device selector."
+      adb devices -l
+      return 1
+    fi
     return 0
   }
 

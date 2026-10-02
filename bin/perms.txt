@@ -7,6 +7,7 @@
 # other readable even though the repo itself is private).
 # format: <octal> <filename>
 755 arc
+755 arc-waydroid
 711 arc-aide-watch
 755 arc-break
 711 arc-cf-watch

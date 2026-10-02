@@ -485,6 +485,15 @@ CATEGORIES = {
         Action("Device: reboot + wait for full boot", "arc phone reboot", timeout=90),
         Action("UAD-ng: launch (any device, GUI)", "arc phone uad", detach=True),
     ],
+    "Waydroid": [
+        Action("Android: status (container, session, display)", "arc-waydroid status", timeout=15),
+        Action("Android: open (starts Waydroid + X11 display if needed)", "arc-waydroid open",
+               confirm=True, timeout=150),
+        Action("Android: stop + restore host device permissions", "arc-waydroid stop",
+               confirm=True, timeout=60),
+        Action("Android: installed apps", "arc-waydroid apps", timeout=25),
+        Action("Android: recent launch logs", "arc-waydroid logs", timeout=10),
+    ],
     "Security": [
         Action("SOP status", "arc sop status"),
         Action("SOP violations", "arc sop violations"),
@@ -1139,7 +1148,7 @@ class InventoryView(View):
         tk.Label(self.body, text=title, font=self.app.f.small, bg=SURFACE, fg=GOLD, anchor="w").pack(
             fill="x", padx=6, pady=(10, 3))
 
-    def _row(self, tag, tag_color, main, sub="", drift=None):
+    def _row(self, tag, tag_color, main, sub="", drift=None, review=None):
         f = self.app.f
         row = tk.Frame(self.body, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
         row.pack(fill="x", pady=1, padx=4)
@@ -1153,8 +1162,51 @@ class InventoryView(View):
                      wraplength=430).pack(fill="x")
 
         if drift:
-            ui.button(row, "fix guide", command=lambda a=drift: self.review_drift(a), font=f.small,
+            ui.button(row, "manage", command=lambda a=drift: self.review_drift(a), font=f.small,
                       bg=SURFACE, fg=GOLD, hover_bg=BG, padx=10, pady=5).pack(side="right", padx=8)
+        elif review:
+            ui.button(row, "review", command=lambda a=review: self.attest_asset(a), font=f.small,
+                      bg=SURFACE, fg=GOLD, hover_bg=BG, padx=10, pady=5).pack(side="right", padx=8)
+
+    def attest_asset(self, asset):
+        name = asset.get("name", asset.get("id", "asset"))
+        dialog = Dialog(self.app, f"review · {name}")
+        dialog.label(f"{asset.get('id')}  ·  {asset.get('kind', 'asset')}", fg=TEAL)
+        dialog.label(f"Goal: {asset.get('status', 'unknown')}  ·  observed: {asset.get('observed', 'unknown')}\n"
+                     f"{asset.get('detail', '')}\n\n{'; '.join(asset.get('problems') or [])}",
+                     font=self.app.f.small, wrap=520)
+        dialog.label("Mark reviewed only after checking this evidence. The action is recorded in the ledger.",
+                     fg=FG_MUTED, font=self.app.f.small, wrap=520)
+        aid = shlex.quote(str(asset.get("id", "")))
+        dialog.buttons([
+            ("mark reviewed today", GOLD,
+             lambda: self.app.run_async(f"arc inv review {aid}", on_done=self.reload)),
+            ("close", FG_MUTED, None),
+        ])
+
+    def ignore_untracked(self, item):
+        identity = str(item.get("identity", ""))
+        dialog = Dialog(self.app, "manage unregistered item", resizable=True)
+        dialog.label(identity, fg=TEAL, wrap=520)
+        dialog.label(f"{item.get('detail', '')}\n\nIgnoring records this discovery as intentionally unmanaged."
+                     " Give a short reason; the choice is written to the inventory ledger.",
+                     font=self.app.f.small, wrap=520)
+        reason = tk.StringVar(value="")
+        entry = tk.Entry(dialog.win, textvariable=reason, font=self.app.f.small, width=54,
+                         bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat")
+        entry.pack(padx=20, pady=(2, 12), fill="x")
+
+        def submit():
+            why = reason.get().strip()
+            if not why:
+                dialog.label("Enter a reason before ignoring this item.", fg=ROSE,
+                             font=self.app.f.small, wrap=500)
+                return
+            cmd = f"arc inv ignore {shlex.quote(identity)} --reason {shlex.quote(why)}"
+            self.app.run_async(cmd, on_done=self.reload)
+
+        dialog.buttons([("ignore with reason", GOLD, submit), ("close", FG_MUTED, None)])
+        entry.focus_set()
 
     def review_drift(self, asset):
         """Explain the mismatch and offer a safe read-only inspection command."""
@@ -1205,8 +1257,15 @@ class InventoryView(View):
         dialog.label(f"Recorded goal: {desired}     Latest check: {observed} ({detail})\nIssue: {problems}",
                      fg=FG, font=self.app.f.small, wrap=600, pady=(0, 10))
         dialog.label(guidance, fg=FG, font=self.app.f.small, wrap=600, pady=(0, 10))
-        dialog.label("Nothing changes from this guide. The inspect action only reads the inventory record.",
-                     fg=FG_MUTED, font=self.app.f.small, wrap=600, pady=(0, 14))
+        if asset.get("id") == "svc.storage-mount" and probe.get("type") == "systemd":
+            dialog.label("This unit is bound to the USB vault device. On-demand is the expected lifecycle: "
+                         "systemd starts it when the drive appears and it may remain stopped when unplugged.",
+                         fg=GOLD, font=self.app.f.small, wrap=600, pady=(0, 12))
+            dialog.label("Changing desired state updates the register and tamper-evident ledger; it does not start or stop the service.",
+                         fg=FG_MUTED, font=self.app.f.small, wrap=600, pady=(0, 14))
+        else:
+            dialog.label("This guide does not change provider resources. Inspect the record and follow the steps above.",
+                         fg=FG_MUTED, font=self.app.f.small, wrap=600, pady=(0, 14))
         inspect_cmd = f"arc inv show {shlex.quote(str(asset.get('id', '')))}"
 
         def copy_inspect():
@@ -1219,12 +1278,25 @@ class InventoryView(View):
             ok, result = self.app.runner.detach(cmd)
             self.app.console.log("opened inventory register" if ok else result, TEAL if ok else ROSE)
 
-        dialog.buttons([
+        def set_storage_on_demand():
+            confirm = Dialog(self.app, "confirm desired state")
+            confirm.label("Set storage-mount desired state to on-demand?", fg=GOLD)
+            confirm.label("This corrects the inventory expectation only. The USB service is hardware-bound; "
+                          "no mount, unmount, or systemd command will run.", font=self.app.f.small, wrap=520)
+            cmd = "arc inv set-status svc.storage-mount on-demand --reason 'USB-bound unit starts when vault drive is present; stopped while unplugged' && arc inv scan --quiet"
+            confirm.buttons([("update register + scan", GOLD,
+                              lambda: self.app.run_async(cmd, timeout=180, on_done=self.reload)),
+                             ("cancel", FG_MUTED, None)])
+
+        buttons = [
             ("inspect record", TEAL, lambda: self.app.run_async(inspect_cmd)),
             ("copy inspect command", GOLD, copy_inspect),
             ("open inventory register", GOLD, open_register),
-            ("close", FG_MUTED, None),
-        ])
+        ]
+        if asset.get("id") == "svc.storage-mount":
+            buttons.insert(0, ("set on-demand + scan", GOLD, set_storage_on_demand))
+        buttons.append(("close", FG_MUTED, None))
+        dialog.buttons(buttons)
 
     def render(self, d):
         for w in self.counts.winfo_children():
@@ -1253,6 +1325,7 @@ class InventoryView(View):
                      fg=GOLD).pack(side="left", padx=(6, 14))
         bad = sorted((a for a in d["assets"] if a["health"] in self.ORDER),
                      key=lambda a: (self.ORDER[a["health"]], a["id"]))
+        self._assets = d["assets"]
         self._section(f"needs attention ({len(bad)})")
         if not bad:
             tk.Label(self.body, text="  nothing — every registered asset matches its desired state",
@@ -1260,19 +1333,23 @@ class InventoryView(View):
         for a in bad[:40]:
             self._row(a["health"], self.HEALTH_COLOR[a["health"]], a.get("name", a["id"]),
                       "; ".join(a.get("problems") or []) or f"observed {a.get('observed', '?')} ({a.get('detail', '')})",
-                      drift=a if a["health"] == "drift" else None)
+                      drift=a if a["health"] == "drift" else None,
+                      review=a if a["health"] == "attention" else None)
         if len(bad) > 40:
             tk.Label(self.body, text=f"  +{len(bad) - 40} more — arc inv drift", font=f.small, bg=SURFACE,
                      fg=FG_MUTED, anchor="w").pack(fill="x", padx=6)
         if d.get("untracked"):
             self._section(f"unregistered — found by discovery, nobody wrote it down ({len(d['untracked'])})")
             for u in d["untracked"][:20]:
-                self._row("untracked", GOLD, u["identity"], f"{u.get('detail', '')}  ·  adopt or ignore in a terminal: "
-                                                            f"arc inv adopt {u['identity']} --id … --kind …")
+                self._row("untracked", GOLD, u["identity"], f"{u.get('detail', '')}  ·  review before adopting or ignoring")
+                # Attach the guided, reason-required ignore action to this row.
+                row = self.body.winfo_children()[-1]
+                ui.button(row, "manage", command=lambda item=u: self.ignore_untracked(item), font=f.small,
+                          bg=SURFACE, fg=GOLD, hover_bg=BG, padx=10, pady=5).pack(side="right", padx=8)
         self._section("recent changes (tamper-evident ledger)")
         for e in d.get("recent", [])[:8]:
             self._row(e["ts"][5:16].replace("T", " "), FG_MUTED, f"{e['event']}  ·  {e['id'] or '—'}")
-        tk.Label(self.body, text="Drift guides explain the mismatch and safe next steps; they never change resources. "
+        tk.Label(self.body, text="Manage controls update the inventory ledger; system and provider resources require their own confirmed action. "
                                  "Register: ~/dev-notes/intel-ops/inventory/registry.toml",
                  font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left", wraplength=500).pack(
             fill="x", padx=6, pady=(12, 4))
@@ -1460,6 +1537,7 @@ class HelpView(View):
         "Network": "VPN, DNS, router, and network-monitoring actions",
         "Reference": "Build and open your private reference library",
         "Phone": "Inspect and manage Android devices over ADB",
+        "Waydroid": "Local Android runtime · manual start · X11/Wayland aware",
         "Security": "SOPs, firewall, account, and security checks",
         "SOC": "Local and cloud security labs, dashboards, and scanners",
         "Cloud": "On-demand cloud labs and instance controls",

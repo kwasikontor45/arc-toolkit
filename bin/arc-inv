@@ -460,7 +460,9 @@ class Registry:
             if re.search(rf'(?m)^id\s*=\s*"{re.escape(asset_id)}"\s*$', b):
                 hit = True
                 for k, v in fields.items():
-                    line = f'{k} = "{v}"'
+                    # JSON string escaping is compatible with TOML basic strings;
+                    # never let a reason or other user text break the registry.
+                    line = f'{k} = {json.dumps(str(v), ensure_ascii=False)}'
                     if re.search(rf"(?m)^{k}\s*=", b):
                         b = re.sub(rf"(?m)^{k}\s*=.*$", line, b)
                     else:
@@ -470,13 +472,36 @@ class Registry:
             raise SystemExit(f"no such asset: {asset_id}")
         self._write(head + "".join(blocks))
 
+    def set_cloudflare_probe(self, asset_id, name, notes):
+        head, blocks = self._blocks(self._text())
+        hit = False
+        probe = f'probe = {{ type = "cloudflare", name = {json.dumps(name)} }}'
+        for i, block in enumerate(blocks):
+            if re.search(rf'(?m)^id\s*=\s*"{re.escape(asset_id)}"\s*$', block):
+                hit = True
+                if re.search(r"(?m)^probe\s*=", block):
+                    block = re.sub(r"(?m)^probe\s*=.*$", probe, block)
+                else:
+                    block = block.rstrip("\n") + "\n" + probe + "\n\n"
+                note = f'notes = {json.dumps(notes, ensure_ascii=False)}'
+                if re.search(r"(?m)^notes\s*=", block):
+                    block = re.sub(r"(?m)^notes\s*=.*$", note, block)
+                else:
+                    block = block.rstrip("\n") + "\n" + note + "\n\n"
+                blocks[i] = block
+        if not hit:
+            raise SystemExit(f"no such asset: {asset_id}")
+        self._write(head + "".join(blocks))
+
     def append_asset(self, a):
-        lines = ["[[asset]]"] + [f'{k} = "{v}"' for k, v in a.items()]
+        lines = ["[[asset]]"] + [f'{k} = {json.dumps(str(v), ensure_ascii=False)}' for k, v in a.items()]
         text = self._text().rstrip("\n") + "\n\n" + "\n".join(lines) + "\n"
         self._write(text)
 
     def append_ignore(self, identity, reason):
-        text = self._text().rstrip("\n") + f'\n\n[[ignore]]\nidentity = "{identity}"\nreason = "{reason}"\n'
+        text = self._text().rstrip("\n") + (
+            f'\n\n[[ignore]]\nidentity = {json.dumps(str(identity), ensure_ascii=False)}\n'
+            f'reason = {json.dumps(str(reason), ensure_ascii=False)}\n')
         self._write(text)
 
 
@@ -845,11 +870,11 @@ def cmd_adopt(b, args):
     a = {"id": args.id, "name": args.name or (u or {}).get("label", args.id), "kind": kind,
          "status": args.status, "criticality": "medium", "purpose": args.purpose or "(describe me)",
          "added": str(date.today())}
-    text = "[[asset]]\n" + "\n".join(f'{k} = "{v}"' for k, v in a.items())
+    text = "[[asset]]\n" + "\n".join(f'{k} = {json.dumps(str(v), ensure_ascii=False)}' for k, v in a.items())
     if probe:
         text += "\n" + probe
     else:
-        text += f'\nidentity = ["{ident}"]\nprobe = {{ type = "manual" }}'
+        text += f'\nidentity = [{json.dumps(ident, ensure_ascii=False)}]\nprobe = {{ type = "manual" }}'
     reg = Registry().load()
     reg._write(reg._text().rstrip("\n") + "\n\n" + text + "\n")
     b.ledger.append("asset_added", args.id, actor="cli", identity=ident, kind=kind)
@@ -878,6 +903,38 @@ def cmd_review(b, args):
     print(f"  {args.id} attested as reviewed today")
 
 
+def cmd_set_status(b, args):
+    a = b.reg.by_id().get(args.id)
+    if not a:
+        raise SystemExit(f"no such asset: {args.id}")
+    previous = a.get("status", "active")
+    if previous == args.status:
+        print(f"  {args.id} already has desired state {args.status}")
+        return
+    b.reg.set_fields(args.id, {"status": args.status})
+    b.ledger.append("desired_state_changed", args.id, actor="control-center",
+                    previous=previous, desired=args.status, reason=args.reason)
+    print(f"  {args.id}: desired state {previous} → {args.status}; run: arc inv scan --quiet")
+
+
+def cmd_set_cloudflare_probe(b, args):
+    if not re.fullmatch(r"cf-(?:pages|worker):[a-z0-9][a-z0-9-]*", args.name):
+        raise SystemExit("probe name must look like cf-pages:project or cf-worker:script")
+    a = b.reg.by_id().get(args.id)
+    if not a:
+        raise SystemExit(f"no such asset: {args.id}")
+    previous = a.get("probe", {})
+    desired = {"type": "cloudflare", "name": args.name}
+    previous_note = a.get("notes", "")
+    if previous == desired and previous_note == args.note:
+        print(f"  {args.id} already probes {args.name} with current notes")
+        return
+    b.reg.set_cloudflare_probe(args.id, args.name, args.note)
+    b.ledger.append("probe_changed", args.id, actor="cli", previous=previous,
+                    desired=desired, previous_note=previous_note, note=args.note, reason=args.reason)
+    print(f"  {args.id}: probe now checks Cloudflare resource {args.name}; run: arc inv scan --quiet")
+
+
 def cmd_history(b, args):
     es = b.ledger.entries()
     if args.id:
@@ -904,12 +961,18 @@ def main():
     s = sub.add_parser("ignore"); s.add_argument("identity"); s.add_argument("--reason", required=True)
     s = sub.add_parser("retire"); s.add_argument("id"); s.add_argument("--reason", required=True)
     s = sub.add_parser("review"); s.add_argument("id")
+    s = sub.add_parser("set-status"); s.add_argument("id")
+    s.add_argument("status", choices=("active", "on-demand", "standby", "planned"))
+    s.add_argument("--reason", required=True)
+    s = sub.add_parser("set-cloudflare-probe"); s.add_argument("id"); s.add_argument("--name", required=True)
+    s.add_argument("--note", required=True)
+    s.add_argument("--reason", required=True)
     s = sub.add_parser("history"); s.add_argument("id", nargs="?")
     args = ap.parse_args()
     if args.cmd in (None, "help"):
         if args.cmd is None and STATE.exists():
             Books().summary()
-            print("  arc inv help | scan | list | show <id> | drift | untracked | adopt | retire | review | history\n")
+            print("  arc inv help | scan | list | show <id> | drift | untracked | adopt | ignore | retire | review | set-status | set-cloudflare-probe | history\n")
         else:
             print(__doc__)
         return
@@ -925,6 +988,8 @@ def main():
     else:
         {"list": cmd_list, "show": cmd_show, "drift": cmd_drift, "untracked": cmd_untracked, "adopt": cmd_adopt,
          "ignore": cmd_ignore, "retire": cmd_retire, "review": cmd_review, "history": cmd_history,
+         "set-status": cmd_set_status,
+         "set-cloudflare-probe": cmd_set_cloudflare_probe,
          "verify": cmd_verify}[args.cmd](b, args)
 
 

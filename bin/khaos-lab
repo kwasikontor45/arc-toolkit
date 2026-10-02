@@ -529,7 +529,8 @@ CATEGORIES = {
                "bash -c \"echo '-- suricata --'; systemctl status suricata --no-pager -l | head -6; echo; "
                "echo '-- sagan --'; arc sagan status; echo; echo '-- evebox --'; arc evebox status\"", timeout=20),
         Action("Sagan: recent alerts (native, no browser)", "arc sagan alerts", timeout=15),
-        Action("Restart Sagan + EveBox", "bash -c 'arc sagan restart && arc evebox restart'", timeout=60),
+        Action("Sagan: start container", "arc sagan start", timeout=60),
+        Action("EveBox: start container", "arc evebox start", timeout=60),
         Action("Open EveBox dashboard (browser)", "arc evebox open"),
         Action("soc-lab: status (Splunk)", "arc soc-lab status"),
         Action("soc-lab: start", "arc soc-lab start", timeout=120),     # cold Splunk takes a while
@@ -738,11 +739,16 @@ class Dialog:
                  wraplength=wrap or 0, justify="left").pack(padx=20, pady=pady)
 
     def buttons(self, specs):
-        row = tk.Frame(self.win, bg=BG)
-        row.pack(pady=(0, 16))
-        for text, fg, fn in specs:
-            ui.button(row, text, command=(lambda f=fn: (self.close(), f and f())), font=self.app.f.small,
-                      bg=SURFACE, fg=fg, hover_bg=OVERLAY, padx=12, pady=6).pack(side="left", padx=6)
+        self.button_rows([specs])
+
+    def button_rows(self, rows):
+        for specs in rows:
+            row = tk.Frame(self.win, bg=BG)
+            row.pack(pady=(0, 8))
+            for text, fg, fn in specs:
+                ui.button(row, text, command=(lambda f=fn: (self.close(), f and f())), font=self.app.f.small,
+                          bg=SURFACE, fg=fg, hover_bg=OVERLAY, padx=12, pady=6).pack(side="left", padx=6)
+        tk.Frame(self.win, bg=BG, height=8).pack()
 
     def close(self):
         try:
@@ -1234,7 +1240,7 @@ class InventoryView(View):
         entry.focus_set()
 
     def review_drift(self, asset):
-        """Explain the mismatch and offer a safe read-only inspection command."""
+        """Explain a mismatch and offer confirmed, asset-scoped ways to resolve it."""
         desired = asset.get("status", "unknown")
         observed = asset.get("observed", "unknown")
         detail = asset.get("detail", "no probe detail")
@@ -1289,7 +1295,7 @@ class InventoryView(View):
             dialog.label("Changing desired state updates the register and tamper-evident ledger; it does not start or stop the service.",
                          fg=FG_MUTED, font=self.app.f.small, wrap=600, pady=(0, 14))
         else:
-            dialog.label("This guide does not change provider resources. Inspect the record and follow the steps above.",
+            dialog.label("Lifecycle actions update the register and ledger only. A repair action starts only the named local service/container; provider resources need provider-side repair.",
                          fg=FG_MUTED, font=self.app.f.small, wrap=600, pady=(0, 14))
         inspect_cmd = f"arc inv show {shlex.quote(str(asset.get('id', '')))}"
 
@@ -1303,25 +1309,94 @@ class InventoryView(View):
             ok, result = self.app.runner.detach(cmd)
             self.app.console.log("opened inventory register" if ok else result, TEAL if ok else ROSE)
 
-        def set_storage_on_demand():
-            confirm = Dialog(self.app, "confirm desired state")
-            confirm.label("Set storage-mount desired state to on-demand?", fg=GOLD)
-            confirm.label("This corrects the inventory expectation only. The USB service is hardware-bound; "
-                          "no mount, unmount, or systemd command will run.", font=self.app.f.small, wrap=520)
-            cmd = "arc inv set-status svc.storage-mount on-demand --reason 'USB-bound unit starts when vault drive is present; stopped while unplugged' && arc inv scan --quiet"
-            confirm.buttons([("update register + scan", GOLD,
+        aid = str(asset.get("id", ""))
+
+        def set_lifecycle(status, reason):
+            cmd = (f"arc inv set-status {shlex.quote(aid)} {status} "
+                   f"--reason {shlex.quote(reason)} && arc inv scan --quiet")
+            self.app.run_async(cmd, timeout=180, on_done=self.reload)
+
+        def choose_lifecycle():
+            edit = Dialog(self.app, "set intended lifecycle", resizable=True)
+            edit.label(f"{aid} · current goal: {desired} · observed: {observed}", fg=TEAL, wrap=520)
+            edit.label("Choose the intended lifecycle. This changes inventory only; it will not start, stop, or delete anything.",
+                       fg=FG_MUTED, font=self.app.f.small, wrap=520)
+            reason = tk.StringVar(value="")
+            entry = tk.Entry(edit.win, textvariable=reason, font=self.app.f.small, width=54,
+                             bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat")
+            entry.pack(padx=20, pady=(2, 12), fill="x")
+
+            def choose(status):
+                why = reason.get().strip()
+                if not why:
+                    edit.label("Add a short reason so the decision is recorded in the ledger.",
+                               fg=ROSE, font=self.app.f.small, wrap=500)
+                    entry.focus_set()
+                    return
+                edit.close()
+                set_lifecycle(status, why)
+
+            edit.buttons([(state, GOLD, lambda state=state: choose(state))
+                          for state in ("active", "on-demand", "standby", "planned")] +
+                         [("cancel", FG_MUTED, None)])
+            entry.focus_set()
+
+        def confirm_standby():
+            confirm = Dialog(self.app, "confirm intentional standby")
+            confirm.label(f"Mark {aid} as standby?", fg=GOLD)
+            confirm.label("This records that the resource may be intentionally stopped, then scans to confirm. "
+                          "It will not start or stop the resource.", font=self.app.f.small, wrap=520)
+            # Keep the action behind an explicit click; don't run until the confirm button is pressed.
+            cmd = (f"arc inv set-status {shlex.quote(aid)} standby --reason "
+                   f"{shlex.quote('Operator confirmed intentional standby from Khaos Lab drift manager')} "
+                   "&& arc inv scan --quiet")
+            confirm.buttons([("set standby + scan", GOLD,
                               lambda: self.app.run_async(cmd, timeout=180, on_done=self.reload)),
                              ("cancel", FG_MUTED, None)])
 
-        buttons = [
-            ("inspect record", TEAL, lambda: self.app.run_async(inspect_cmd)),
-            ("copy inspect command", GOLD, copy_inspect),
-            ("open inventory register", GOLD, open_register),
-        ]
-        if asset.get("id") == "svc.storage-mount":
-            buttons.insert(0, ("set on-demand + scan", GOLD, set_storage_on_demand))
-        buttons.append(("close", FG_MUTED, None))
-        dialog.buttons(buttons)
+        # Only offer live repair actions whose operator command is explicit and local.
+        repair = {
+            "ctr.sagan": ("start Sagan + scan", "arc sagan start && arc inv scan --quiet"),
+            "ctr.evebox": ("start EveBox + scan", "arc evebox start && arc inv scan --quiet"),
+        }.get(aid)
+
+        actions = []
+        if repair and desired == "active" and observed in ("stopped", "down", "absent"):
+            actions.append((repair[0], ROSE,
+                            lambda cmd=repair[1]: self._confirm_drift_action(aid, cmd)))
+        if (aid != "svc.storage-mount" and probe.get("type") in ("docker", "systemd")
+                and observed in ("stopped", "down")):
+            actions.append(("mark standby + scan", GOLD, confirm_standby))
+        elif aid == "svc.storage-mount" and probe.get("type") == "systemd":
+            actions.append(("set on-demand + scan", GOLD,
+                            lambda: self._confirm_lifecycle_action(aid, "on-demand",
+                                "USB-bound unit starts when vault drive is present; stopped while unplugged")))
+        choose = ("choose intended state…", GOLD, choose_lifecycle)
+        close = ("close", FG_MUTED, None)
+        support = [("inspect record", TEAL, lambda: self.app.run_async(inspect_cmd)),
+                   ("copy inspect command", GOLD, copy_inspect),
+                   ("open inventory register", GOLD, open_register)]
+        dialog.button_rows([actions + [choose, close], support])
+
+    def _confirm_drift_action(self, aid, cmd):
+        confirm = Dialog(self.app, "confirm live repair")
+        confirm.label(f"Start {aid}?", fg=GOLD)
+        confirm.label("This changes the live resource and then scans inventory. Use this only when it should be running.",
+                      font=self.app.f.small, wrap=520)
+        confirm.buttons([("start + scan", ROSE,
+                          lambda: self.app.run_async(cmd, timeout=180, on_done=self.reload)),
+                         ("cancel", FG_MUTED, None)])
+
+    def _confirm_lifecycle_action(self, aid, status, reason):
+        confirm = Dialog(self.app, "confirm desired state")
+        confirm.label(f"Set {aid} desired state to {status}?", fg=GOLD)
+        confirm.label("This updates the register and ledger only; no system resource will be started or stopped.",
+                      font=self.app.f.small, wrap=520)
+        cmd = (f"arc inv set-status {shlex.quote(aid)} {status} --reason {shlex.quote(reason)} "
+               "&& arc inv scan --quiet")
+        confirm.buttons([("update + scan", GOLD,
+                          lambda: self.app.run_async(cmd, timeout=180, on_done=self.reload)),
+                         ("cancel", FG_MUTED, None)])
 
     def render(self, d):
         for w in self.counts.winfo_children():

@@ -908,16 +908,10 @@ cmd_day() {
   echo -e "  ${C}${B}arc day${N}  —  morning startup"
   echo -e "$HR\n"
 
-  # ── SOP ack gate (soft) ────────────────────────────────────────────────────
+  # ── SOP reminder (non-blocking) ────────────────────────────────────────────
   if ! arc-sop ack-today 2>/dev/null; then
-    notify-send -u critical -i dialog-warning "arc · SOP gate" "No SOP acknowledgment recorded today. Run: arc sop ack" 2>/dev/null || true
-    echo -e "  ${Y}⚠${N}  ${B}no SOP acknowledgment recorded today${N}"
-    echo -e "  ${M}agents:${N}  read ${C}~/dev-notes/intel-ops/SOT.md${N}  then run ${C}arc sop ack${N}"
-    echo -e "  ${D}MO V:${N}    log ${C}[STARTING]${N} ${D}in GAMEPLAN.md before any task${N}"
-    echo -e ""
-    printf "  ${D}press Enter to continue · Ctrl-C to abort:${N} "
-    read -r _arc_sop_gate
-    echo ""
+    notify-send -u low -i dialog-warning "arc · SOP reminder" "No acknowledgment today. Run: arc sop ack. Startup continues." 2>/dev/null || true
+    echo -e "  ${Y}⚠${N}  ${B}SOP ack missing${N}  ${D}·${N}  ${M}run arc sop ack${N}  ${D}· startup continues${N}"
   fi
 
   echo -e "  ${C}storage drive${N}"

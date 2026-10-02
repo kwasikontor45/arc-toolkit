@@ -12,6 +12,10 @@ changes. Nothing here can silently drift out of sync with what's actually runnin
 three things that genuinely can't be symlinks (crontab isn't a file; systemd units and sudoers
 fragments live under `/etc`, root-owned) — those need an explicit `arc sot snapshot` to re-capture.
 
+`arc day` gives a short startup reminder when today's SOP acknowledgment is missing, then continues
+the readiness checks without waiting for keyboard input. Use `arc sop ack` to record the required
+acknowledgment; the separate Codex operation gate still enforces it before protected tool actions.
+
 ## Using it
 
 `arc help` opens the short command map. Drill into a workspace with `arc help network`

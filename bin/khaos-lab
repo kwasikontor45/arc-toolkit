@@ -127,6 +127,11 @@ ROSE     = "#ff3864"
 PINE     = "#0f9b9b"
 TEAL     = "#00e5c7"
 
+# Palette anchors. The ambience moves with the same continuous circadian engine as
+# Kataleya; signal colors (success/warning/error) remain fixed for reliable reading.
+_BASE_PALETTE = {"BG": BG, "SURFACE": SURFACE, "OVERLAY": OVERLAY, "BORDER": BORDER,
+                 "FG": FG, "FG_MUTED": FG_MUTED}
+
 
 # ── text helpers ─────────────────────────────────────────────────────────────
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -224,6 +229,14 @@ def sop_setup_command(cmd):
         words = shlex.split(cmd)
     except ValueError:
         return False
+    if words[:2] == ["arc-sop", "emergency"]:
+        return len(words) >= 3 and bool(" ".join(words[2:]).strip())
+    if words == ["arc-sop", "gate-enable"]:
+        return True
+    if words[:3] == ["arc", "sop", "emergency"]:
+        return len(words) >= 4 and bool(" ".join(words[3:]).strip())
+    if words == ["arc", "sop", "gate-enable"]:
+        return True
     if words[:2] != ["arc", "sop"]:
         return False
     if len(words) == 4 and words[:3] == ["arc", "sop", "start"]:
@@ -776,6 +789,11 @@ class Dialog:
         self.win.transient(app.root)
         self.win.geometry(geometry or f"+{app.root.winfo_x() + 120}+{app.root.winfo_y() + 150}")
         self.win.bind("<Escape>", lambda _e: self.close())
+        self.shell = tk.Frame(self.win, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
+        self.shell.pack(fill="both", expand=True, padx=10, pady=10)
+        tk.Frame(self.shell, bg=app.phase_accent, height=2).pack(fill="x")
+        tk.Label(self.shell, text=title.upper(), font=app.f.small, bg=SURFACE,
+                 fg=app.phase_accent, anchor="w").pack(fill="x", padx=18, pady=(12, 3))
         self.win.after(60, self._grab)
 
     def _grab(self):
@@ -786,20 +804,20 @@ class Dialog:
             pass                      # not viewable yet / already closed -- harmless
 
     def label(self, text, fg=FG, font=None, wrap=None, pady=(0, 10)):
-        tk.Label(self.win, text=text, font=font or self.app.f.label, bg=BG, fg=fg,
-                 wraplength=wrap or 0, justify="left").pack(padx=20, pady=pady)
+        tk.Label(self.shell, text=text, font=font or self.app.f.label, bg=SURFACE, fg=fg,
+                 wraplength=wrap or 0, justify="left", anchor="w").pack(fill="x", padx=18, pady=pady)
 
     def buttons(self, specs):
         self.button_rows([specs])
 
     def button_rows(self, rows):
         for specs in rows:
-            row = tk.Frame(self.win, bg=BG)
+            row = tk.Frame(self.shell, bg=SURFACE)
             row.pack(pady=(0, 8))
             for text, fg, fn in specs:
                 ui.button(row, text, command=(lambda f=fn: (self.close(), f and f())), font=self.app.f.small,
                           bg=SURFACE, fg=fg, hover_bg=OVERLAY, padx=12, pady=6).pack(side="left", padx=6)
-        tk.Frame(self.win, bg=BG, height=8).pack()
+        tk.Frame(self.shell, bg=SURFACE, height=6).pack()
 
     def close(self):
         try:
@@ -820,11 +838,15 @@ class ConsolePane:
 
     def __init__(self, app, parent):
         f = app.f
-        tk.Label(parent, text="output", font=f.small, bg=BG, fg=FG_MUTED).pack(anchor="w")
+        bar = tk.Frame(parent, bg=BG)
+        bar.pack(fill="x", pady=(0, 4))
+        tk.Label(bar, text="LIVE OUTPUT", font=f.small, bg=BG, fg=app.phase_accent).pack(side="left")
+        tk.Label(bar, text="drag the bright rail to resize  ·  wheel to scroll", font=f.small,
+                 bg=BG, fg=FG_MUTED).pack(side="right")
         # Canvas + padded create_window (same technique as the content pane): the Text is opaque,
         # so the background art only shows in the pad margin around it -- by design.
         self.canvas = tk.Canvas(parent, bg=SURFACE, highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
+        self.canvas.pack(side="left", fill="both", expand=True)
         if app.content_bg:
             self.canvas.create_image(0, 0, anchor="nw", image=app.content_bg)
         self.text = tk.Text(self.canvas, bg=SURFACE, fg=FG, insertbackground=FG, font=f.mono,
@@ -833,6 +855,11 @@ class ConsolePane:
         self._item = self.canvas.create_window(self._pad, self._pad, anchor="nw", window=self.text)
         self.canvas.bind("<Configure>", self._resize)
         self._tags = {}
+        self.scroll = tk.Scrollbar(parent, orient="vertical", command=self.text.yview,
+                                   bg=OVERLAY, troughcolor=BG, activebackground=app.phase_accent,
+                                   bd=0, highlightthickness=0, width=13)
+        self.scroll.pack(side="right", fill="y")
+        self.text.configure(yscrollcommand=self.scroll.set)
 
     def _resize(self, event):
         self.canvas.itemconfigure(self._item, width=max(event.width - 2 * self._pad, 1),
@@ -845,8 +872,9 @@ class ConsolePane:
             self.text.tag_configure(name, foreground=color)
         return name
 
-    def log(self, text, color=FG):
+    def log(self, text, color=None):
         t = self.text
+        color = color or FG
         t.configure(state="normal")
         start = t.index("end-1c")
         t.insert("end", text + "\n")
@@ -941,7 +969,7 @@ class TileView(View):
         width = getattr(event, "width", self.frame.winfo_width())
         cols = 1 if width < 560 else 2 if width < 980 else 3
         for i, tile in enumerate(self._tile_frames):
-            tile.grid(row=i // cols, column=i % cols, padx=5, pady=5, sticky="nsew")
+            tile.grid(row=i // cols, column=i % cols, padx=8, pady=8, sticky="nsew")
         for col in range(max(cols, getattr(self, "_tile_cols", 0))):
             self.frame.grid_columnconfigure(col, weight=1 if col < cols else 0,
                                             uniform="tiles" if col < cols else "")
@@ -1291,7 +1319,7 @@ class InventoryView(View):
                      " Give a short reason; the choice is written to the inventory ledger.",
                      font=self.app.f.small, wrap=520)
         reason = tk.StringVar(value="")
-        entry = tk.Entry(dialog.win, textvariable=reason, font=self.app.f.small, width=54,
+        entry = tk.Entry(dialog.shell, textvariable=reason, font=self.app.f.small, width=54,
                          bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat")
         entry.pack(padx=20, pady=(2, 12), fill="x")
 
@@ -1578,9 +1606,9 @@ class LogsView(View):
     def _view(self, src):
         f = self.app.f
         d = Dialog(self.app, src["name"], resizable=True, geometry="900x600")
-        tk.Label(d.win, text=f"{src['name']}  —  {src['path']}", font=f.small, bg=BG, fg=FG_MUTED,
+        tk.Label(d.shell, text=f"{src['name']}  —  {src['path']}", font=f.small, bg=SURFACE, fg=FG_MUTED,
                  anchor="w").pack(fill="x", padx=14, pady=(12, 4))
-        tf = tk.Frame(d.win, bg=BG)
+        tf = tk.Frame(d.shell, bg=SURFACE)
         tf.pack(fill="both", expand=True, padx=14, pady=(0, 8))
         sb = tk.Scrollbar(tf)
         sb.pack(side="right", fill="y")
@@ -1590,7 +1618,7 @@ class LogsView(View):
         sb.configure(command=box.yview)
         box.insert("1.0", "loading…")
         box.configure(state="disabled")
-        ui.button(d.win, "close", command=d.close, font=f.small, bg=SURFACE, fg=FG_MUTED, hover_bg=OVERLAY,
+        ui.button(d.shell, "close", command=d.close, font=f.small, bg=OVERLAY, fg=FG_MUTED, hover_bg=BG,
                   padx=14, pady=8).pack(pady=(0, 12))
 
         def show(text):
@@ -1736,6 +1764,28 @@ class SopView(View):
         ui.button(row, "log + acknowledge", command=self.start_task, font=f.small, bg=OVERLAY,
                   fg=TEAL, hover_bg=BG, padx=12, pady=7).pack(side="right")
 
+        emergency = tk.Frame(self.frame, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
+        emergency.pack(fill="x", padx=8, pady=(0, 10))
+        tk.Label(emergency, text="EMERGENCY ACCESS  ·  OWNER ONLY  ·  30 MINUTES",
+                 font=f.small, bg=OVERLAY, fg=ROSE, anchor="w").pack(fill="x", padx=12, pady=(10, 3))
+        tk.Label(emergency, text="Use only when normal SOP startup is unavailable. Access expires automatically; agents cannot open it.",
+                 font=f.small, bg=OVERLAY, fg=FG_MUTED, anchor="w", justify="left",
+                 wraplength=700).pack(fill="x", padx=12, pady=(0, 7))
+        emergency_row = tk.Frame(emergency, bg=OVERLAY)
+        emergency_row.pack(fill="x", padx=12, pady=(0, 10))
+        self.emergency_text = tk.StringVar()
+        self.emergency_entry = tk.Entry(emergency_row, textvariable=self.emergency_text, font=f.small,
+                                        bg=BG, fg=FG, insertbackground=FG, relief="flat")
+        self.emergency_entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 8))
+        self.emergency_entry.insert(0, "brief emergency reason…")
+        self.emergency_entry.bind("<FocusIn>", self._clear_emergency_placeholder)
+        self.emergency_entry.bind("<Return>", lambda _e: self.open_emergency())
+        ui.button(emergency_row, "open 30-minute window", command=self.open_emergency, font=f.small,
+                  bg=OVERLAY, fg=ROSE, hover_bg=BG, padx=10, pady=6).pack(side="right")
+        ui.button(emergency, "close override · enforce gate now", command=lambda: self.app.run_async(
+            "arc-sop gate-enable", timeout=10, on_done=self.refresh_gate), font=f.small,
+            bg=OVERLAY, fg=TEAL, hover_bg=BG, padx=10, pady=5).pack(anchor="e", padx=12, pady=(0, 9))
+
         ui.button(self.frame, "run full SOP compliance check", command=lambda: self.app.run_async(
             "arc sop check", timeout=20, on_done=self.refresh_gate), font=f.small, bg=SURFACE,
             fg=FG, hover_bg=OVERLAY, padx=12, pady=7).pack(anchor="w", padx=12, pady=(0, 8))
@@ -1747,6 +1797,21 @@ class SopView(View):
     def _clear_placeholder(self, _event=None):
         if self.task_text.get() == "briefly name today's work…":
             self.task_text.set("")
+
+    def _clear_emergency_placeholder(self, _event=None):
+        if self.emergency_text.get() == "brief emergency reason…":
+            self.emergency_text.set("")
+
+    def open_emergency(self):
+        reason = self.emergency_text.get().strip()
+        if reason == "brief emergency reason…":
+            reason = ""
+        if not reason:
+            self.app.console.log("enter a short reason before opening emergency access", ROSE)
+            self.emergency_entry.focus_set()
+            return
+        self.app.run_async(f"arc-sop emergency {shlex.quote(reason)}", timeout=10,
+                           on_done=self.refresh_gate)
 
     def refresh_gate(self):
         if not self.alive():
@@ -1770,9 +1835,9 @@ class SopView(View):
 
     def _read_doc(self, title, path, tail=None):
         d = Dialog(self.app, title, resizable=True, geometry="940x650")
-        tk.Label(d.win, text=f"read-only source  ·  {path}", font=self.app.f.small,
-                 bg=BG, fg=FG_MUTED, anchor="w").pack(fill="x", padx=14, pady=(12, 5))
-        frame = tk.Frame(d.win, bg=BG)
+        tk.Label(d.shell, text=f"read-only source  ·  {path}", font=self.app.f.small,
+                 bg=SURFACE, fg=FG_MUTED, anchor="w").pack(fill="x", padx=14, pady=(12, 5))
+        frame = tk.Frame(d.shell, bg=SURFACE)
         frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
         scroll = tk.Scrollbar(frame)
         scroll.pack(side="right", fill="y")
@@ -1782,7 +1847,7 @@ class SopView(View):
         scroll.configure(command=text.yview)
         text.insert("1.0", "loading…")
         text.configure(state="disabled")
-        ui.button(d.win, "close", command=d.close, font=self.app.f.small, bg=OVERLAY,
+        ui.button(d.shell, "close", command=d.close, font=self.app.f.small, bg=OVERLAY,
                   fg=FG_MUTED, hover_bg=BG, padx=14, pady=7).pack(pady=(0, 12))
 
         def load():
@@ -2051,6 +2116,8 @@ class App:
         self._sidebar_visible = True
         self._sidebar_auto_hidden = False
         self.phase_name, self.phase_accent = ui.phase_info()
+        self._last_ambient = None
+        self._ambient_current = dict(_BASE_PALETTE)
         self.phase_lines = []
 
         self.content_bg = load_image(CONTENT_BG_PATH)
@@ -2063,6 +2130,9 @@ class App:
         root.bind("<F1>", lambda _e: (self.select("Help"), "break")[1])
 
         gate_open, _ = check_sop_gate()
+        self.status_gate.configure(text="SOP GATE  ·  OPEN" if gate_open else "SOP GATE  ·  LOCKED",
+                                   fg=PINE if gate_open else ROSE)
+        self.status_phase.configure(text=f"{self.phase_name.upper()}  ·  {time.strftime('%H:%M')}")
         self.select("Status" if gate_open else "SOP")
         self._tick()
         root.after(500, self._geometry_watchdog)   # give the WM time to finish its initial placement
@@ -2074,11 +2144,11 @@ class App:
             # DejaVu Sans for the title: JetBrains Mono has no glyph for the skull and Tk does no
             # per-character font fallback (it rendered blank space).
             return SimpleNamespace(
-                big=tkfont.Font(family="DejaVu Sans", size=14, weight="bold"),
-                label=tkfont.Font(family="JetBrains Mono", size=10),
-                small=tkfont.Font(family="JetBrains Mono", size=9),
-                mono=tkfont.Font(family="JetBrains Mono", size=9),
-                nav=tkfont.Font(family="JetBrains Mono", size=10))
+                big=tkfont.Font(family="DejaVu Sans", size=16, weight="bold"),
+                label=tkfont.Font(family="JetBrains Mono", size=11),
+                small=tkfont.Font(family="JetBrains Mono", size=10),
+                mono=tkfont.Font(family="JetBrains Mono", size=10),
+                nav=tkfont.Font(family="JetBrains Mono", size=11))
         except Exception:
             d = tkfont.Font(size=10)
             return SimpleNamespace(big=d, label=d, small=d, mono=d, nav=d)
@@ -2086,7 +2156,7 @@ class App:
     def _build_header(self):
         f, root = self.f, self.root
         header = tk.Frame(root, bg=BG)
-        header.pack(fill="x", padx=14, pady=(10, 4))
+        header.pack(fill="x", padx=18, pady=(12, 5))
         # Background watermark via place() so the icon/title/clock (packed normally) stack on top
         # of it and keep their own resize behaviour.
         self._header_bg = load_image(HEADER_BG_PATH)
@@ -2103,6 +2173,7 @@ class App:
         tk.Label(header, text="/", font=f.big, bg=BG, fg=FG_MUTED).pack(side="left")
         self.brand_accent = tk.Label(header, text="lab", font=f.big, bg=BG, fg=self.phase_accent)
         self.brand_accent.pack(side="left", padx=(0, 16))
+        tk.Label(header, text="FIELD DESK", font=f.small, bg=BG, fg=FG_MUTED).pack(side="left")
         # Window controls (min/max/close), 2026-09-22 -- user's own follow-up: "its tricky to
         # find max/min/close buttons". Real cause, confirmed via xwininfo: this WM theme is
         # currently drawing essentially zero titlebar chrome for this window (the client and
@@ -2130,18 +2201,18 @@ class App:
         # The quick-jump gets its own full-width row, leaving the brand and window controls clear.
         self.search_var = tk.StringVar()
         quickbar = tk.Frame(root, bg=BG)
-        quickbar.pack(fill="x", padx=14, pady=(0, 7))
+        quickbar.pack(fill="x", padx=18, pady=(0, 9))
         self.search_entry = tk.Entry(quickbar, textvariable=self.search_var, font=f.small, bg=OVERLAY,
                                      fg=FG, insertbackground=FG, relief="flat", highlightthickness=1,
                                      highlightbackground=OVERLAY, highlightcolor=GOLD)
-        self.search_entry.pack(fill="x", ipady=5)
-        self._placeholder = "quick-jump: type an action name…   (ctrl+f)"
+        self.search_entry.pack(fill="x", ipady=7)
+        self._placeholder = "⌕   Find a workspace or action…     Ctrl+F"
         self._ph_active = True
         self.search_entry.insert(0, self._placeholder)
         self.search_entry.configure(fg=FG_MUTED)
         self.search_entry.bind("<FocusIn>", self._search_focus_in)
         self.search_entry.bind("<FocusOut>", self._search_focus_out)
-        tk.Frame(root, bg=OVERLAY, height=1).pack(fill="x", padx=14)
+        tk.Frame(root, bg=OVERLAY, height=1).pack(fill="x", padx=18)
 
     def _search_focus_in(self, _e=None):
         if self._ph_active:
@@ -2183,20 +2254,23 @@ class App:
 
     def _build_panes(self):
         root = self.root
-        # Body/console split is a real drag-resizable PanedWindow (the console used to be fixed
-        # at 9 lines and could never grow). Sidebar/content is a second one.
-        self.main_pane = tk.PanedWindow(root, orient="vertical", bg=OVERLAY, sashwidth=6, sashrelief="flat",
-                                        bd=0, showhandle=False, opaqueresize=True)
-        self.main_pane.pack(fill="both", expand=True, padx=10, pady=(2, 8))
+        # High-contrast, generous rails turn both splits into obvious controls. The
+        # center grip is visible at rest, and the sash responds to both drag and wheel.
+        self.main_pane = tk.PanedWindow(root, orient="vertical", bg=BORDER, sashwidth=11,
+                                        sashpad=2, sashrelief="raised", bd=0, showhandle=True,
+                                        handlepad=4, handlesize=18, opaqueresize=True,
+                                        cursor="sb_v_double_arrow")
+        self.main_pane.pack(fill="both", expand=True, padx=18, pady=(5, 0))
         body = tk.Frame(self.main_pane, bg=BG)
-        self.main_pane.add(body, minsize=300, height=520)
-        body_pane = self.body_pane = tk.PanedWindow(body, orient="horizontal", bg=OVERLAY, sashwidth=4,
-                                                     sashrelief="flat", bd=0, showhandle=False,
-                                                     opaqueresize=True)
+        self.main_pane.add(body, minsize=240, height=520)
+        body_pane = self.body_pane = tk.PanedWindow(body, orient="horizontal", bg=BORDER, sashwidth=9,
+                                                     sashpad=2, sashrelief="raised", bd=0, showhandle=True,
+                                                     handlepad=4, handlesize=16, opaqueresize=True,
+                                                     cursor="sb_h_double_arrow")
         body_pane.pack(fill="both", expand=True)
         # Canvas, not Frame, so the watermark can sit behind the nav buttons.
-        self.sidebar = tk.Canvas(body_pane, bg=BG, width=156, highlightthickness=0)
-        body_pane.add(self.sidebar, minsize=112, width=156)
+        self.sidebar = tk.Canvas(body_pane, bg=BG, width=188, highlightthickness=0)
+        body_pane.add(self.sidebar, minsize=156, width=188)
         content_wrap = self.content_wrap = tk.Frame(body_pane, bg=SURFACE)
         body_pane.add(content_wrap, minsize=300)
         self.content = tk.Canvas(content_wrap, bg=SURFACE, highlightthickness=0)
@@ -2204,7 +2278,8 @@ class App:
         # required size (fixes SOC being clipped with no way to reach the bottom rows). Shown
         # only when a view actually overflows.
         self.content_scroll = tk.Scrollbar(content_wrap, orient="vertical", command=self.content.yview, bg=OVERLAY,
-                                           troughcolor=BG, activebackground=TEAL, bd=0, highlightthickness=0, width=12)
+                                           troughcolor=BG, activebackground=self.phase_accent,
+                                           bd=0, highlightthickness=0, width=14)
         self.content.configure(yscrollcommand=self.content_scroll.set)
         self.content.pack(side="left", fill="both", expand=True, padx=(10, 0))
         if self.content_bg:
@@ -2212,8 +2287,19 @@ class App:
         console_frame = tk.Frame(self.main_pane, bg=BG)
         # Keep output available without letting it dominate the work area at startup.
         self.console_frame = console_frame
-        self.main_pane.add(console_frame, minsize=72, height=120)
+        self.main_pane.add(console_frame, minsize=86, height=148)
         self.console = ConsolePane(self, console_frame)
+        # An always-visible operational rail makes state discoverable while moving between
+        # every workspace. The nearby splitter grip above controls output height.
+        self.statusbar = tk.Frame(root, bg=BG)
+        self.statusbar.pack(fill="x", padx=18, pady=(5, 11))
+        tk.Frame(self.statusbar, bg=self.phase_accent, width=3).pack(side="left", fill="y", padx=(0, 9))
+        self.status_route = tk.Label(self.statusbar, text="", font=self.f.small, bg=BG, fg=FG)
+        self.status_route.pack(side="left")
+        self.status_gate = tk.Label(self.statusbar, text="", font=self.f.small, bg=BG, fg=FG_MUTED)
+        self.status_gate.pack(side="right", padx=(12, 0))
+        self.status_phase = tk.Label(self.statusbar, text="", font=self.f.small, bg=BG, fg=self.phase_accent)
+        self.status_phase.pack(side="right")
 
     def _build_sidebar(self):
         sb = self.sidebar
@@ -2226,7 +2312,15 @@ class App:
         if self._sidebar_icon:
             sb.create_image(8, 6, anchor="nw", image=self._sidebar_icon)
         sb.create_text(34, 16, anchor="w", text="khaos-lab", font=self.f.small, fill=GOLD)
-        sb.create_line(0, 30, 150, 30, fill=OVERLAY, width=1)
+        sb.create_line(0, 30, 182, 30, fill=OVERLAY, width=1)
+        # Mercury staff: a slim twin helix and wings, drawn in the phase accent.
+        # Decorative only; it occupies the rail beside the navigation labels.
+        sb.create_line(164, 43, 164, 100, fill=self.phase_accent, width=2)
+        sb.create_line(148, 53, 164, 42, 180, 53, fill=self.phase_accent, width=2, smooth=True)
+        sb.create_line(164, 58, 153, 67, 164, 76, 175, 85, 164, 94,
+                       fill=TEAL, width=2, smooth=True)
+        sb.create_line(164, 58, 175, 67, 164, 76, 153, 85, 164, 94,
+                       fill=GOLD, width=2, smooth=True)
         self.nav_buttons, self.nav_y = {}, {}
         self.nav_accent = sb.create_rectangle(0, 0, 0, 0, fill=GOLD, width=0)   # active-row tick
         y = 30
@@ -2234,7 +2328,7 @@ class App:
             b = ui.button(sb, cat, command=lambda c=cat: self.select(c), font=self.f.nav, bg=BG, fg=FG_MUTED,
                           hover_bg=OVERLAY, hover_fg=GOLD, padx=14, pady=6)
             b.configure(anchor="w")
-            sb.create_window(4, y, anchor="nw", window=b, width=146)
+            sb.create_window(4, y, anchor="nw", window=b, width=150)
             b.update_idletasks()
             self.nav_y[cat] = (y, b.winfo_reqheight())
             y += b.winfo_reqheight() + 1
@@ -2243,10 +2337,12 @@ class App:
             # pane's scrollable views already use bind_all for their own wheel handling.
             b.bind("<Button-4>", lambda _e: sb.yview_scroll(-1, "units"))
             b.bind("<Button-5>", lambda _e: sb.yview_scroll(1, "units"))
+            b.bind("<MouseWheel>", lambda e: sb.yview_scroll(-1 if e.delta > 0 else 1, "units"))
         # Scrollable, so every category stays reachable at any window height / sash position.
-        sb.configure(scrollregion=(0, 0, 150, y + 4))
+        sb.configure(scrollregion=(0, 0, 184, y + 4))
         sb.bind("<Button-4>", lambda _e: sb.yview_scroll(-1, "units"))
         sb.bind("<Button-5>", lambda _e: sb.yview_scroll(1, "units"))
+        sb.bind("<MouseWheel>", lambda e: sb.yview_scroll(-1 if e.delta > 0 else 1, "units"))
 
     def _bind_search(self):
         self.search_entry.bind("<KeyRelease>", self._do_search)
@@ -2264,7 +2360,7 @@ class App:
             return                                     # a Text scrolls itself; don't also scroll the page
         self.content.yview_scroll(-1 if (evt.num == 4 or evt.delta > 0) else 1, "units")
 
-    def embed(self, widget, pad=16, scrollable=False):
+    def embed(self, widget, pad=22, scrollable=False):
         # pad on all sides is also what lets the watermark show through.
         item = self.content.create_window(pad, pad, anchor="nw", window=widget)
 
@@ -2295,7 +2391,7 @@ class App:
                 self.content.unbind_all(seq)
             self._set_scrollbar(False)
 
-    def refresh_scroll(self, widget, pad=16):
+    def refresh_scroll(self, widget, pad=22):
         """Re-measure after rows are added to an already-sized canvas (a category switch doesn't
         resize anything, so <Configure> alone would never fire)."""
         try:
@@ -2310,6 +2406,8 @@ class App:
     # -- routing -------------------------------------------------------------
     def select(self, name):
         self.current = name
+        if hasattr(self, "status_route"):
+            self.status_route.configure(text=f"WORKSPACE  /  {name.upper()}")
         for n, b in self.nav_buttons.items():
             b.set_look(bg=OVERLAY if n == name else BG,
                        fg=self.phase_accent if n == name else FG_MUTED)
@@ -2427,7 +2525,12 @@ class App:
             return True
         ok, detail = check_sop_gate()
         if panel_command_allowed(cmd, ok):
+            if hasattr(self, "status_gate"):
+                self.status_gate.configure(text="SOP GATE  ·  OPEN" if ok else "SOP GATE  ·  RECOVERY",
+                                           fg=PINE if ok else GOLD)
             return True
+        if hasattr(self, "status_gate"):
+            self.status_gate.configure(text="SOP GATE  ·  LOCKED", fg=ROSE)
         self.console.log("⛔ BLOCKED — operations are locked until this session satisfies the SOP gate.", ROSE)
         if detail:
             self.console.log(detail, GOLD)
@@ -2442,6 +2545,10 @@ class App:
         try:
             self.clock_lbl.configure(text=time.strftime("%H:%M:%S"))
             name, color = ui.phase_info()
+            minute = int(time.time() // 60)
+            if minute != self._last_ambient:
+                self._last_ambient = minute
+                self._apply_circadian_ambient()
             if name != self.phase_name or color != self.phase_accent:
                 self.phase_name, self.phase_accent = name, color
                 self.phase_lbl.configure(text=f"◐ {name}", fg=color)
@@ -2463,9 +2570,49 @@ class App:
                     y, h = self.nav_y[self.current]
                     self.sidebar.itemconfigure(self.nav_accent, fill=color)
                     self.sidebar.coords(self.nav_accent, 0, y, 3, y + h)
+                if hasattr(self, "status_phase"):
+                    self.status_phase.configure(text=f"{name.upper()}  ·  {time.strftime('%H:%M')}", fg=color)
+                    self.statusbar.winfo_children()[0].configure(bg=color)
             self.runner.reap()
         except Exception:
             self.root.report_callback_exception(*sys.exc_info())
+
+    def _apply_circadian_ambient(self):
+        """Recolor the live workspace from Kataleya's shared time palette.
+
+        Functional colors stay steady; only ambient roles drift. Applying one
+        role map recursively prevents old and new routes from mixing palettes.
+        """
+        ambient = ui.circadian()
+        global BG, SURFACE, OVERLAY, BORDER, FG, FG_MUTED
+        palette = {
+            "BG": ambient["bg"], "SURFACE": ambient["surface"],
+            "OVERLAY": ambient["overlay"],
+            "BORDER": ui._lerp_hex(ambient["surface"], ambient["fg_muted"], 0.32),
+            "FG": ambient["fg"], "FG_MUTED": ambient["fg_muted"],
+        }
+        role_map = {_BASE_PALETTE[key]: value for key, value in palette.items()}
+        role_map.update({self._ambient_current[key]: value for key, value in palette.items()})
+        self._ambient_current = palette
+        globals().update(palette)
+        self.root.configure(bg=BG)
+
+        def repaint(widget):
+            for option in ("background", "foreground", "insertbackground", "highlightbackground",
+                           "highlightcolor", "activebackground", "activeforeground", "selectbackground",
+                           "troughcolor"):
+                try:
+                    value = widget.cget(option)
+                    if value in role_map:
+                        widget.configure(**{option: role_map[value]})
+                except (tk.TclError, TypeError):
+                    pass
+            try:
+                for child in widget.winfo_children():
+                    repaint(child)
+            except tk.TclError:
+                pass
+        repaint(self.root)
 
     def _geometry_watchdog(self):
         """Keep the window inside the real usable desktop area (`_NET_WORKAREA`, what the WM itself

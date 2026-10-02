@@ -24,9 +24,12 @@ mkdir -p "$HOME/.config/arc" 2>/dev/null
 # 2026-07-30, same rule and same day as the matching check in
 # `arc sop gate bypass`. Matching uid alone is not sufficient here.
 AGENT_DETECTED=""
+[[ -n "$CODEX_SESSION_ID" ]] && AGENT_DETECTED="codex (CODEX_SESSION_ID)"
 [[ -n "$CLAUDE_CODE_SESSION_ID" ]] && AGENT_DETECTED="claude (CLAUDE_CODE_SESSION_ID)"
 [[ -n "$CLAUDE_CODE_BRIDGE_SESSION_ID" ]] && AGENT_DETECTED="claude (CLAUDE_CODE_BRIDGE_SESSION_ID)"
 [[ -n "$KIMI_SESSION_ID" ]] && AGENT_DETECTED="kimi (KIMI_SESSION_ID)"
+[[ -n "$ARC_SESSION_ID" ]] && AGENT_DETECTED="agent (ARC_SESSION_ID)"
+[[ -n "$AGENT_SESSION_ID" ]] && AGENT_DETECTED="agent (AGENT_SESSION_ID)"
 [[ -n "$AGENT_ID" ]] && AGENT_DETECTED="$AGENT_ID (AGENT_ID)"
 if [[ -n "$AGENT_DETECTED" ]]; then
   echo "REFUSED -- agent bypass is never allowed, regardless of uid. Detected: $AGENT_DETECTED" >&2
@@ -34,12 +37,18 @@ if [[ -n "$AGENT_DETECTED" ]]; then
 fi
 
 OWNER_FILE="$HOME/.config/arc/gate-owner-uid"
-if [[ -f "$OWNER_FILE" ]]; then
-  OWNER_UID=$(cat "$OWNER_FILE" 2>/dev/null)
-  if [[ "$OWNER_UID" =~ ^[0-9]+$ ]] && [[ "$(id -u)" != "$OWNER_UID" ]]; then
-    echo "REFUSED — only the enrolled owner (uid $OWNER_UID) can bypass the gate. You are: $(whoami) (uid $(id -u))" >&2
-    exit 1
-  fi
+if [[ ! -f "$OWNER_FILE" ]]; then
+  echo "REFUSED — enrolled owner record is missing; this fire exit will not guess or self-enroll." >&2
+  exit 1
+fi
+OWNER_UID=$(cat "$OWNER_FILE" 2>/dev/null)
+if [[ ! "$OWNER_UID" =~ ^[0-9]+$ ]]; then
+  echo "REFUSED — enrolled owner record is invalid; restore it from a trusted backup first." >&2
+  exit 1
+fi
+if [[ "$(id -u)" != "$OWNER_UID" ]]; then
+  echo "REFUSED — only the enrolled owner (uid $OWNER_UID) can bypass the gate. You are: $(whoami) (uid $(id -u))" >&2
+  exit 1
 fi
 
 TTY_NAME=$(tty 2>/dev/null)

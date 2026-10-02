@@ -4,20 +4,54 @@ arc-sop-gate-hook — agent PreToolUse hook, real enforcement point.
 
 Blocks Bash tool calls until arc-sop's gate is actually satisfied (GAMEPLAN
 [STARTING] entry today + a same-day ack for this agent session), or the human owner
-has set the bypass. Self-serve commands (arc-sop/arc sop) are allowed
-through unconditionally so the gate can be satisfied without a deadlock.
+has set an override. Only single, parsed SOP startup/status/recovery commands pass
+before acknowledgment; shell command chains never inherit that exception.
 """
 import json
 import os
-import re
+import shlex
 import subprocess
 import sys
 
-# (\S*/)? allows an absolute/relative path prefix (e.g.
-# /home/architect-of-chaos/.local/bin/arc-sop) -- found 2026-08-18, this
-# session's own `arc-sop start` got blocked because it invoked the full path
-# instead of relying on PATH, which the bare "arc-sop\b" match never covered.
-SELF_SERVE = re.compile(r"^\s*(sudo\s+)?(\S*/)?(arc-sop\b|arc\s+sop\b)", re.IGNORECASE)
+def self_serve(command: str) -> bool:
+    """Allow a single SOP command before acknowledgment, never a command chain."""
+    if not isinstance(command, str) or not command.strip():
+        return False
+    # Parse shell operators as syntax, not as plain characters, so a quoted
+    # task like "repair X & Y" is accepted while `start task; unsafe` is not.
+    if any(ch in command for ch in ("`", chr(10), chr(13))) or "$(" in command or "${" in command:
+        return False
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
+        lexer.whitespace_split = True
+        argv = list(lexer)
+    except ValueError:
+        return False
+    if any(token and all(ch in ";&|<>" for ch in token) for token in argv):
+        return False
+    if not argv:
+        return False
+    if os.path.basename(argv[0]) == "sudo":
+        argv = argv[1:]
+        if argv and argv[0] == "-n":
+            argv = argv[1:]
+    if not argv:
+        return False
+    binary, args = os.path.basename(argv[0]).lower(), argv[1:]
+    if binary == "arc-sop" and args:
+        verb = args[0].lower()
+        return ((verb == "start" and len(args) >= 2)
+                or (verb in {"ack", "status", "check", "verify", "gate-status", "violations"}
+                    and len(args) == 1)
+                or (verb == "emergency" and len(args) >= 2)
+                or (verb == "gate-enable" and len(args) == 1))
+    if binary == "arc" and len(args) >= 2 and args[0].lower() == "sop":
+        verb = args[1].lower()
+        return ((verb == "start" and len(args) >= 3)
+                or (verb in {"ack", "status", "check", "verify"} and len(args) == 2)
+                or (verb == "emergency" and len(args) >= 3)
+                or (verb == "gate-enable" and len(args) == 2))
+    return False
 
 
 def _notify(title: str, message: str):
@@ -34,14 +68,21 @@ def main():
     raw = sys.stdin.read()
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)  # malformed input -- fail open, don't brick the session
+    except (json.JSONDecodeError, TypeError):
+        print(json.dumps({"decision": "deny", "reason": "Malformed SOP gate hook input."}),
+              file=sys.stderr)
+        sys.exit(2)
 
+    if not isinstance(data, dict):
+        print(json.dumps({"decision": "deny", "reason": "Malformed SOP gate hook input."}),
+              file=sys.stderr)
+        sys.exit(2)
     if data.get("tool_name") != "Bash":
         sys.exit(0)
 
-    command = (data.get("tool_input") or {}).get("command", "")
-    if SELF_SERVE.match(command):
+    tool_input = data.get("tool_input")
+    command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+    if self_serve(command):
         sys.exit(0)
 
     # Codex supplies the authoritative session id in the hook payload. The
@@ -64,7 +105,7 @@ def main():
         # fresh, unscoped "human" run instead of this specific agent session.
         cmd = [
             "sudo", "-u", "architect-of-chaos", "-H",
-            "--preserve-env=CODEX_SESSION_ID,CLAUDE_CODE_SESSION_ID,CLAUDE_CODE_BRIDGE_SESSION_ID",
+            "--preserve-env=CODEX_SESSION_ID,CLAUDE_CODE_SESSION_ID,CLAUDE_CODE_BRIDGE_SESSION_ID,KIMI_SESSION_ID,ARC_SESSION_ID,AGENT_SESSION_ID,AGENT_ID",
             arc_sop, "gate-check",
         ]
     else:

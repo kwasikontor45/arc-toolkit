@@ -42,3 +42,50 @@ arc() {
 # ── Terminal greeting ────────────────────────────────────────────
 source "$HOME/.config/arc/greeting.sh"
 _arc_greeting
+
+# ── Interactive terminal SOP gate ─────────────────────────────────
+# Install after startup hooks/greeting so they never become gate casualties.
+# Only interactive shells are filtered; scripts use an agent adapter and must
+# pass `arc-sop gate-check` with a stable session ID before operational tools.
+_arc_sop_refresh_gate() {
+  if command arc-sop gate-check >/dev/null 2>&1; then
+    _ARC_SOP_GATE_OPEN=1
+  else
+    _ARC_SOP_GATE_OPEN=0
+  fi
+}
+
+_arc_sop_debug_guard() {
+  [ "${_ARC_SOP_GATE_OPEN:-0}" = 1 ] && return 0
+  command "$HOME/.local/bin/arc-sop-shell-guard" "$BASH_COMMAND" || return 1
+}
+
+if [ -n "${BASH_VERSION:-}" ] && [[ $- == *i* ]]; then
+  _arc_sop_refresh_gate
+  shopt -s extdebug
+  set +o functrace
+  # Correct the old newline hook (it assigned PROMPT_COMMAND instead of
+  # running echo), then append one gate refresh for every prompt.
+  [ "${PROMPT_COMMAND:-}" = "PROMPT_COMMAND=echo" ] && PROMPT_COMMAND=echo
+  case ";${PROMPT_COMMAND:-};" in
+    *";_arc_sop_refresh_gate;"*) ;;
+    *) PROMPT_COMMAND="${PROMPT_COMMAND:+${PROMPT_COMMAND};}_arc_sop_refresh_gate" ;;
+  esac
+  trap '_arc_sop_debug_guard' DEBUG
+elif [ -n "${ZSH_VERSION:-}" ]; then
+  _arc_sop_refresh_gate
+  autoload -Uz add-zsh-hook
+  add-zsh-hook precmd _arc_sop_refresh_gate
+  _arc_sop_accept_line() {
+    if [ "${_ARC_SOP_GATE_OPEN:-0}" = 1 ] || command "$HOME/.local/bin/arc-sop-shell-guard" "$BUFFER"; then
+      zle .accept-line
+    else
+      BUFFER=""
+      CURSOR=0
+      zle redisplay
+    fi
+  }
+  zle -N _arc_sop_accept_line
+  bindkey -M main '^M' _arc_sop_accept_line
+  bindkey -M main '^J' _arc_sop_accept_line
+fi

@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Conservative pre-ack command allowlist shared by interactive shells."""
+import os
+import shlex
+import sys
+
+
+def allowed(command: str) -> bool:
+    if (not command.strip() or any(c in command for c in ("`", chr(10), chr(13)))
+            or "$(" in command or "${" in command or "$[" in command):
+        return False
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
+        lexer.whitespace_split = True
+        argv = list(lexer)
+    except ValueError:
+        return False
+    if any(token and all(c in ";&|<>" for c in token) for token in argv):
+        return False
+    if not argv:
+        return False
+    binary = os.path.basename(argv[0]).lower()
+    args = argv[1:]
+    if binary == "_arc_sop_refresh_gate" and not args:
+        return True
+    if binary == "sudo":
+        args = args[1:] if args and args[0] == "-n" else args
+        if not args:
+            return False
+        binary, args = os.path.basename(args[0]).lower(), args[1:]
+    if binary == "arc-sop" and args:
+        verb = args[0].lower()
+        return ((verb == "start" and len(args) >= 2)
+                or (verb in {"ack", "status", "check", "verify", "gate-status", "violations"}
+                    and len(args) == 1)
+                or (verb == "emergency" and len(args) >= 2)
+                or (verb == "gate-enable" and len(args) == 1))
+    if binary == "arc" and len(args) >= 2 and args[0].lower() == "sop":
+        verb = args[1].lower()
+        return ((verb == "start" and len(args) >= 3)
+                or (verb in {"ack", "status", "check", "verify"} and len(args) == 2)
+                or (verb == "emergency" and len(args) >= 3)
+                or (verb == "gate-enable" and len(args) == 2))
+    if binary in {"cd", "pwd", "ls", "cat", "head", "tail", "glow", "stat", "file", "wc",
+                  "date", "id", "whoami", "grep", "rg", "clear", "history", "type", "which",
+                  "echo", "printf"}:
+        return True
+    if binary == "arc" and args and args[0] == "help":
+        return True
+    if binary == "git" and args and args[0] in {"status", "diff", "log", "show", "branch", "remote"}:
+        return True
+    return False
+
+
+if __name__ == "__main__":
+    command = sys.argv[1] if len(sys.argv) == 2 else ""
+    if allowed(command):
+        raise SystemExit(0)
+    print("SOP gate: command blocked. Read the SOT/GAMEPLAN, then run `arc-sop start \"task\"`.",
+          file=sys.stderr)
+    raise SystemExit(1)

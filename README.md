@@ -13,8 +13,10 @@ three things that genuinely can't be symlinks (crontab isn't a file; systemd uni
 fragments live under `/etc`, root-owned) — those need an explicit `arc sot snapshot` to re-capture.
 
 `arc day` gives a short startup reminder when today's SOP acknowledgment is missing, then continues
-the readiness checks without waiting for keyboard input. Use `arc sop ack` to record the required
-acknowledgment; the separate Codex operation gate still enforces it before protected tool actions.
+the readiness checks without waiting for keyboard input. Start each work session with the single
+command `arc-sop start "<task>"`; it records the daily GAMEPLAN start when needed and acknowledges
+the current agent or terminal session. Interactive Bash/zsh terminals use the shared shell guard;
+Codex uses its PreToolUse hook, and the Khaos Lab panel checks the same session-scoped gate.
 The Khaos Lab panel checks that same session-scoped gate before running action buttons, opening the
 inventory editor, or clearing logs. Read-only dashboards and document views stay available while
 locked. The SOP workspace can read the latest GAMEPLAN/SOT, run compliance checks, and use
@@ -84,6 +86,15 @@ provider resource is absent.
 For Codex SOP gating, `arc-sop` uses Codex's injected `CODEX_SESSION_ID`. The PreToolUse hook
 passes its authoritative payload `session_id` to `arc-sop gate-check`; keep both sides aligned so
 an acknowledgment from one session cannot silently authorize another.
+
+Future agent adapters should set `ARC_SESSION_ID` (or `AGENT_SESSION_ID`) to a stable unique
+session ID and call `arc-sop gate-check` before operational tools. Before acknowledgment, only
+standalone SOP setup, recovery, and read-only discovery commands pass; shell chains do not.
+
+If the owner must act during a real emergency, `arc-sop emergency "reason"` opens an audited,
+owner-only 30-minute window that expires on its own. Agents cannot activate it. Run
+`arc-sop gate-enable` to close it sooner. The separate `arc-sop gate-bypass` remains an owner-only
+manual override; use the timed emergency command for a temporary opening.
 
 ## What's NOT in here, on purpose
 

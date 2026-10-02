@@ -42,6 +42,7 @@
 775 arc-site-server
 711 arc-sop
 711 arc-sop-gate-hook
+711 arc-sop-shell-guard
 755 arc-sot
 700 arc-sudo-session
 711 arc-suricata-watch

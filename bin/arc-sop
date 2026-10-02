@@ -215,7 +215,9 @@ def session_id() -> str:
     # "session: claude-20260726-044456-3388" right next to it. For any
     # non-agent context, always describe the real shell/terminal instead.
     sid = (
-        os.environ.get("KIMI_SESSION_ID")
+        os.environ.get("ARC_SESSION_ID")
+        or os.environ.get("AGENT_SESSION_ID")
+        or os.environ.get("KIMI_SESSION_ID")
         or os.environ.get("CODEX_SESSION_ID")
         or os.environ.get("CLAUDE_CODE_SESSION_ID")
         or os.environ.get("CLAUDE_CODE_BRIDGE_SESSION_ID")
@@ -223,7 +225,11 @@ def session_id() -> str:
     )
     if sid:
         return sid[:64]
-    return f"{_detect_shell()}@{_detect_terminal_emulator()}"[:64]
+    try:
+        tty = os.ttyname(0)
+    except OSError:
+        tty = "no-tty"
+    return f"{_detect_shell()}@{_detect_terminal_emulator()}:{tty}"[:64]
 
 
 def agent_id() -> str:
@@ -237,6 +243,8 @@ def agent_id() -> str:
         return "claude"
     if os.environ.get("KIMI_SESSION_ID"):
         return "kimi"
+    if os.environ.get("ARC_SESSION_ID") or os.environ.get("AGENT_SESSION_ID"):
+        return os.environ.get("AGENT_ID") or "arc-agent"
     explicit = os.environ.get("AGENT_ID")
     if explicit:
         return explicit
@@ -252,7 +260,9 @@ def agent_id() -> str:
 
 
 def is_agent_id(aid: str) -> bool:
-    return aid in ("claude", "codex", "kimi") or bool(os.environ.get("AGENT_ID"))
+    return (aid in ("claude", "codex", "kimi", "arc-agent")
+            or any(os.environ.get(key) for key in
+                   ("AGENT_ID", "ARC_SESSION_ID", "AGENT_SESSION_ID")))
 
 
 def run(cmd: list, check: bool = False, capture: bool = True) -> tuple:
@@ -401,16 +411,37 @@ def _finish_start(sid: str, aid: str) -> int:
 
 
 GATE_BYPASS_FILE = HOME / ".config/arc/gate-bypass"
+GATE_EMERGENCY_FILE = HOME / ".config/arc/gate-emergency.json"
+GATE_EMERGENCY_LOG = HOME / ".config/arc/gate-emergency.jsonl"
+GATE_EMERGENCY_SECONDS = 30 * 60
+
+
+def _active_emergency():
+    try:
+        record = json.loads(GATE_EMERGENCY_FILE.read_text())
+        if float(record["expires_epoch"]) > time.time():
+            return record
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        pass
+    return None
 
 
 def cmd_gate_status():
     active = GATE_BYPASS_FILE.exists()
+    emergency = _active_emergency()
     gp_ok = _gameplan_today_has_starting()
     owner_uid = _gate_owner_uid()
     print(f"{C}arc-sop gate status{N}")
-    print(f"  {D}bypass{N}    {(R + 'ACTIVE — gate disabled' + N) if active else (G + 'off — gate enforced' + N)}")
+    if active:
+        state = R + "OWNER BYPASS ACTIVE — until gate-enable" + N
+    elif emergency:
+        expires = datetime.fromtimestamp(float(emergency["expires_epoch"])).strftime("%H:%M:%S")
+        state = Y + f"EMERGENCY ACTIVE — auto-expires {expires}; {emergency.get('reason', 'reason unavailable')}" + N
+    else:
+        state = G + "off — gate enforced" + N
+    print(f"  {D}state{N}     {state}")
     print(f"  {D}gameplan{N}  {(G + 'satisfied for today' + N) if gp_ok else (Y + 'not satisfied yet' + N)}")
-    print(f"  {D}owner{N}     {Y}uid {owner_uid}{N}  {D}({_current_username() if os.getuid() == owner_uid else 'not you'}, only this uid can bypass/enable){N}")
+    print(f"  {D}owner{N}     {Y}uid {owner_uid}{N}  {D}({_current_username() if os.getuid() == owner_uid else 'not you'}, only this uid can override; agents are always refused){N}")
 
 
 def cmd_gate_check() -> bool:
@@ -424,7 +455,12 @@ def cmd_gate_check() -> bool:
     every OTHER session too, including a brand new one that never checked in
     itself. Found live 2026-07-31: opened a second session, nothing fired."""
     if GATE_BYPASS_FILE.exists():
-        print("bypass active")
+        print("owner bypass active")
+        return True
+    emergency = _active_emergency()
+    if emergency:
+        until = datetime.fromtimestamp(float(emergency["expires_epoch"])).strftime("%H:%M:%S")
+        print(f"emergency access active until {until}")
         return True
 
     gp_ok = _gameplan_today_has_starting()
@@ -505,6 +541,39 @@ def cmd_gate_bypass():
     _notify("SOP gate bypassed", f"Gate bypass activated by {aid} ({_current_username()})", urgency="critical")
 
 
+def cmd_gate_emergency(reason: str):
+    """Owner-only, audited, 30-minute access window for genuine emergencies."""
+    aid = agent_id()
+    if is_agent_id(aid):
+        print(f"{R}✗{N}  refused — agents cannot open emergency access")
+        _notify("SOP emergency access REFUSED", f"Agent {aid} requested emergency access", urgency="critical")
+        sys.exit(1)
+    if not _is_gate_owner():
+        print(f"{R}✗{N}  refused — only the machine owner can open emergency access")
+        sys.exit(1)
+    reason = " ".join(reason.split())[:300]
+    if not reason:
+        print(f"{R}✗{N}  usage: arc-sop emergency \"why this is urgent\"")
+        sys.exit(2)
+    GATE_EMERGENCY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    record = {
+        "started_at": now(), "expires_epoch": started + GATE_EMERGENCY_SECONDS,
+        "reason": reason, "user": _current_username(), "uid": os.getuid(),
+        "session_id": session_id(),
+    }
+    line = json.dumps(record, sort_keys=True) + "\n"
+    with GATE_EMERGENCY_LOG.open("a") as audit:
+        audit.write(line)
+    os.chmod(GATE_EMERGENCY_LOG, 0o600)
+    GATE_EMERGENCY_FILE.write_text(line)
+    os.chmod(GATE_EMERGENCY_FILE, 0o600)
+    expires = datetime.fromtimestamp(record["expires_epoch"]).strftime("%H:%M:%S")
+    print(f"{Y}⚠ emergency access open until {expires} (30 minutes); it will close automatically{N}")
+    print(f"  reason recorded: {reason}")
+    _notify("SOP emergency access opened", f"{reason} -- auto-expires at {expires}", urgency="critical")
+
+
 def cmd_gate_enable():
     aid = agent_id()
     if is_agent_id(aid):
@@ -515,11 +584,22 @@ def cmd_gate_enable():
         print(f"{R}✗{N}  refused — only the machine's owner (uid {_gate_owner_uid()}) can manage gate enforcement. You are: {_current_username()} (uid {os.getuid()})")
         _notify("SOP gate enable REFUSED", f"Non-owner tried to re-enable: {_current_username()} (uid {os.getuid()})", urgency="critical")
         sys.exit(1)
+    had_override = GATE_BYPASS_FILE.exists() or GATE_EMERGENCY_FILE.exists()
+    emergency = _active_emergency()
     if GATE_BYPASS_FILE.exists():
         GATE_BYPASS_FILE.unlink()
-        print(f"{G}✓{N}  gate bypass removed — enforcement active again for new shells")
+    if GATE_EMERGENCY_FILE.exists():
+        GATE_EMERGENCY_FILE.unlink()
+    if had_override:
+        if emergency:
+            record = {"event": "closed_early", "closed_at": now(), "user": _current_username(),
+                      "uid": os.getuid(), "session_id": session_id(), "reason": emergency.get("reason", "")}
+            with GATE_EMERGENCY_LOG.open("a") as audit:
+                audit.write(json.dumps(record, sort_keys=True) + "\n")
+            os.chmod(GATE_EMERGENCY_LOG, 0o600)
+        print(f"{G}✓{N}  gate enforced again for new commands")
     else:
-        print(f"{D}bypass wasn't active — nothing to do{N}")
+        print(f"{D}gate already enforced — nothing to do{N}")
 
 
 def hash_file(path: Path) -> str:
@@ -935,7 +1015,7 @@ def cmd_recover():
 # ---------------------------------------------------------------------------
 def main():
     if len(sys.argv) < 2:
-        print("Usage: arc-sop [ack | baseline | verify | check | status | bundle | root-copy | recover]")
+        print("Usage: arc-sop start <task> | gate-status | emergency <reason> | gate-enable | ...")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -983,11 +1063,13 @@ def main():
         sys.exit(0 if ok else 1)
     elif cmd == "gate-bypass":
         cmd_gate_bypass()
+    elif cmd == "emergency":
+        cmd_gate_emergency(" ".join(sys.argv[2:]))
     elif cmd == "gate-enable":
         cmd_gate_enable()
     else:
         print(f"Unknown command: {cmd}")
-        print("Usage: arc-sop [ack | baseline | verify | check | status | violations | resolve <id> | bundle | root-copy | recover | ack-today | done-balance | start | ack-auto | gate-status | gate-bypass | gate-enable]")
+        print("Usage: arc-sop [start <task> | ack | baseline | verify | check | status | violations | resolve <id> | bundle | root-copy | recover | ack-today | done-balance | ack-auto | gate-status | emergency <reason> | gate-bypass | gate-enable]")
         sys.exit(1)
 
 

@@ -54,6 +54,12 @@ The **Waydroid** workspace in `khaos-lab` provides status, open, stop, installed
 
 The Status dashboard also shows Waydroid beside the notification-stack tile. It polls the read-only operator status every 15 seconds and reports the container, Android session, and Khaos-owned Weston window without starting anything.
 
+### Studio from Khaos Lab
+
+The **Studio** workspace launches the installed LMMS Flatpak, opens the saved `Reborn_Practice_Beat.mmp` exercise directly, or opens its short beginner guide in the default Markdown app (Apostrophe on this workstation). The project and guide stay in `~/khaos-lab/ref/`; the panel only launches the apps and opens those existing files.
+
+The command center adapts its workspace cards and status tiles from one to three columns as the content width changes. Its menu can be tucked away for a narrow window, and action-heavy workspaces have a local filter in addition to global quick-jump. Output remains in a user-resizable lower pane.
+
 `sudoers/arc-waydroid` grants only the exact Waydroid unit start/stop commands and fixed device-mode restoration commands used by Stop. Waydroid is a shared-kernel container, not a VM; while it runs, its standard startup widens access to host device nodes. The vanilla image has no Google apps, and no shared host folders are configured.
 
 GVM database exports from `arc gvm cloud-stop` are stored on the encrypted USB vault at `/mnt/storage/Persistent/khaos-lab/gvm-lab/backups/`. The command refuses to stop the cloud lab when that backup destination is unavailable, so large cloud dumps do not accumulate on the workstation disk.

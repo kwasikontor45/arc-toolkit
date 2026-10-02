@@ -48,6 +48,7 @@ import queue
 import re
 import shlex
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -113,16 +114,14 @@ LOG_SOURCES = [
 # fix (WM_CLASS was generic "Tk").
 
 # ── Palette -- "low-life-high-tech", khaos-lab's own fixed identity ───────────
-# Fixed on purpose (2026-09-19, user's explicit call: a C&C panel, not a mood
-# ring). Near-black ground, amber primary accent (matches the emblem art),
-# hot magenta for danger, acid cyan for ok/info. Only the header phase label
-# still follows the time of day.
-BG       = "#0a0c10"
-SURFACE  = "#12151b"
-OVERLAY  = "#1c212a"
-BORDER   = "#2a323d"
-FG       = "#d9dee6"
-FG_MUTED = "#5c6472"
+# Fixed workshop-dark ground; the selected route and command chrome use the
+# current circadian phase accent. Status semantics stay stable and legible.
+BG       = "#080d12"
+SURFACE  = "#10171e"
+OVERLAY  = "#18232c"
+BORDER   = "#2c3a45"
+FG       = "#dce5eb"
+FG_MUTED = "#8495a2"
 GOLD     = "#ff9d2e"
 ROSE     = "#ff3864"
 PINE     = "#0f9b9b"
@@ -541,6 +540,13 @@ CATEGORIES = {
         Action("Android: installed apps", "arc-waydroid apps", timeout=25),
         Action("Android: recent launch logs", "arc-waydroid logs", timeout=10),
     ],
+    "Studio": [
+        Action("LMMS: launch music studio", "flatpak run io.lmms.LMMS", detach=True),
+        Action("LMMS: open Reborn practice beat", "flatpak run io.lmms.LMMS "
+               "~/khaos-lab/ref/Reborn_Practice_Beat.mmp", detach=True),
+        Action("Guide: Reborn beat baby steps", "xdg-open "
+               "~/khaos-lab/ref/Reborn_LMMS_Baby_Steps.md", detach=True),
+    ],
     "Security": [
         Action("SOP status", "arc sop status"),
         Action("SOP violations", "arc sop violations"),
@@ -910,19 +916,36 @@ class TileView(View):
 
     def build(self):
         self.labels = {}
-        for row, col, key, title in self.TILES:
-            f = tk.Frame(self.frame, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
-            f.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
-            self.frame.columnconfigure(col, weight=1, uniform="tiles")
+        self._tile_frames = []
+        for _row, _col, key, title in self.TILES:
+            f = tk.Frame(self.frame, bg=OVERLAY, padx=2, pady=2)
+            self._tile_frames.append(f)
+            accent = tk.Frame(f, bg=self.app.phase_accent, height=1)
+            accent.pack(fill="x")
+            self.app.phase_lines.append(accent)
             tk.Label(f, text=title, font=self.app.f.small, bg=OVERLAY, fg=FG_MUTED).pack(
-                anchor="w", padx=12, pady=(10, 2))
+                anchor="w", padx=10, pady=(8, 2))
             val = tk.Label(f, text="checking…", font=self.app.f.label, bg=OVERLAY, fg=FG, justify="left",
                            anchor="w")
-            val.pack(anchor="w", fill="x", padx=12, pady=(0, 10))
+            val.pack(anchor="w", fill="x", padx=10, pady=(0, 8))
             # wrap long values to the tile instead of clipping them off both edges
             f.bind("<Configure>", lambda e, v=val: v.configure(wraplength=max(e.width - 30, 80)))
             self.labels[key] = val
+        self.frame.bind("<Configure>", self._layout_tiles, add="+")
+        self._layout_tiles(SimpleNamespace(width=max(self.frame.winfo_width(), 600)))
         self.poll(self.NAME, self.EVERY, self.collect, lambda _r: None)
+
+    def _layout_tiles(self, event):
+        if not hasattr(self, "_tile_frames"):
+            return
+        width = getattr(event, "width", self.frame.winfo_width())
+        cols = 1 if width < 560 else 2 if width < 980 else 3
+        for i, tile in enumerate(self._tile_frames):
+            tile.grid(row=i // cols, column=i % cols, padx=5, pady=5, sticky="nsew")
+        for col in range(max(cols, getattr(self, "_tile_cols", 0))):
+            self.frame.grid_columnconfigure(col, weight=1 if col < cols else 0,
+                                            uniform="tiles" if col < cols else "")
+        self._tile_cols = cols
 
     def refresh(self):
         self.kick(self.NAME)
@@ -1802,25 +1825,30 @@ class HelpView(View):
         "Network": "VPN, DNS, router, and network-monitoring actions",
         "Reference": "Build and open your private reference library",
         "Phone": "ADB device tools · UAD-ng package management",
-        "Waydroid": "Open Waydroid → connect ADB → manage it from Phone",
+        "Waydroid": "Open Android → connect ADB → manage it from Phone",
+        "Studio": "Launch LMMS, open the practice project, or read its beginner guide",
         "Security": "SOPs, firewall, account, and security checks",
         "SOC": "Local and cloud security labs, dashboards, and scanners",
         "Cloud": "On-demand cloud labs and instance controls",
         "Dev": "Repository, deployment, and development workflows",
-        "Remote Access": "Desktop sharing, tunnels, and backup access",
+        "Remote Access": "Tailscale, private notes site, and backup tunnel",
         "Maintenance": "Backups, cleanup, updates, and system repair",
         "Personal": "Personal utilities and daily workflow actions",
     }
 
     def build(self):
         f = self.app.f
-        hero = tk.Frame(self.frame, bg=BG, highlightthickness=1, highlightbackground=BORDER)
+        hero = tk.Frame(self.frame, bg=BG)
         hero.pack(fill="x", pady=(0, 12))
-        tk.Label(hero, text="COMMAND CENTER  /  HELP", font=f.small, bg=BG, fg=TEAL,
+        accent = tk.Frame(hero, bg=self.app.phase_accent, height=2)
+        accent.pack(fill="x", pady=(0, 8))
+        self.app.phase_lines.append(accent)
+        tk.Label(hero, text="AGENT COMMAND CENTER  /  WORKSPACES", font=f.small, bg=BG,
+                 fg=self.app.phase_accent,
                  anchor="w").pack(fill="x", padx=14, pady=(12, 3))
         tk.Label(hero, text="What do you need to do?", font=f.big, bg=BG, fg=FG,
                  anchor="w").pack(fill="x", padx=14, pady=(0, 4))
-        tk.Label(hero, text="Choose a workspace below, or use quick-jump to find an action across the toolkit.",
+        tk.Label(hero, text="Choose a workspace, or search the whole toolkit from quick-jump.",
                  font=f.small, bg=BG, fg=FG_MUTED, anchor="w", wraplength=580,
                  justify="left").pack(fill="x", padx=14, pady=(0, 10))
         row = tk.Frame(hero, bg=BG)
@@ -1831,7 +1859,8 @@ class HelpView(View):
             "arc help all", timeout=15),
                   font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BORDER, padx=10, pady=6).pack(side="left")
 
-        tk.Label(self.frame, text="WORKSPACES", font=f.small, bg=SURFACE, fg=FG_MUTED,
+        tk.Label(self.frame, text=f"WORKSPACES  ·  {len(CATEGORIES) - 1}", font=f.small,
+                 bg=SURFACE, fg=FG_MUTED,
                  anchor="w").pack(fill="x", pady=(0, 5))
         grid = tk.Frame(self.frame, bg=SURFACE)
         grid.pack(fill="x")
@@ -1843,13 +1872,18 @@ class HelpView(View):
             actions = CATEGORIES[name]
             count = len(actions)
             subtitle = self.DESCRIPTIONS.get(name, "Open this workspace")
-            card = tk.Frame(grid, bg=BG, highlightthickness=1, highlightbackground=BORDER,
-                            padx=10, pady=8, cursor="hand2")
-            tk.Label(card, text=name.upper(), font=f.small, bg=BG, fg=GOLD, anchor="w").pack(fill="x")
-            tk.Label(card, text=subtitle, font=f.small, bg=BG, fg=FG_MUTED, anchor="w",
-                     justify="left", wraplength=240, height=2).pack(fill="x", pady=(3, 5))
-            tk.Label(card, text=(f"{count} actions  →" if count else "overview  →"), font=f.small,
-                     bg=BG, fg=TEAL, anchor="w").pack(fill="x")
+            card = tk.Frame(grid, bg=BG, padx=10, pady=7, cursor="hand2")
+            top = tk.Frame(card, bg=BG)
+            top.pack(fill="x")
+            tk.Label(top, text=name.upper(), font=f.small, bg=BG, fg=self.app.phase_accent,
+                     anchor="w").pack(side="left")
+            tk.Label(top, text=(f"{count} actions  →" if count else "overview  →"), font=f.small,
+                     bg=BG, fg=TEAL, anchor="e").pack(side="right")
+            desc = tk.Label(card, text=subtitle, font=f.small, bg=BG, fg=FG_MUTED, anchor="w",
+                            justify="left", wraplength=240)
+            desc.pack(fill="x", pady=(3, 0))
+            card.bind("<Configure>", lambda e, d=desc: d.configure(wraplength=max(e.width - 22, 150)))
+            tk.Frame(card, bg=BORDER, height=1).pack(fill="x", pady=(6, 0))
             for widget in (card, *card.winfo_children()):
                 widget.bind("<Button-1>", lambda _e, n=name: self.app.select(n))
                 widget.configure(cursor="hand2")
@@ -1864,11 +1898,12 @@ class HelpView(View):
     def _layout_cards(self, grid, width):
         if not hasattr(self, "_cards"):
             return
-        columns = 2 if width < 650 else 3
+        columns = 1 if width < 430 else 2 if width < 820 else 3
         for index, card in enumerate(self._cards):
             card.grid(row=index // columns, column=index % columns, sticky="nsew", padx=(0, 7), pady=(0, 7))
-        for col in range(columns):
-            grid.grid_columnconfigure(col, weight=1, uniform="help-card")
+        for col in range(3):
+            grid.grid_columnconfigure(col, weight=1 if col < columns else 0,
+                                      uniform="help-card" if col < columns else "")
 
     def _focus_search(self):
         self.app.search_entry.focus_set()
@@ -1877,9 +1912,15 @@ class HelpView(View):
     @staticmethod
     def _card_hover(card, on):
         bg = OVERLAY if on else BG
-        card.configure(bg=bg, highlightbackground=GOLD if on else BORDER)
-        for child in card.winfo_children():
-            child.configure(bg=bg)
+        def paint(widget):
+            try:
+                if widget.winfo_class() in ("Frame", "Label"):
+                    widget.configure(bg=bg)
+            except tk.TclError:
+                return
+            for child in widget.winfo_children():
+                paint(child)
+        paint(card)
 
 
 class ActionsView(View):
@@ -1893,31 +1934,79 @@ class ActionsView(View):
         self.actions, self.prefix, self.empty_text = actions, prefix_by_action or {}, empty_text
 
     def build(self):
+        self.rows = []
+        self.filter_var = tk.StringVar()
+        if self.actions and len(self.actions) >= 5:
+            head = tk.Frame(self.frame, bg=SURFACE)
+            head.pack(fill="x", pady=(2, 10))
+            sources = {self.prefix.get(id(a), "").split(" — ")[0]
+                       for a in self.actions if self.prefix.get(id(a), "")}
+            label = (next(iter(sources)) if len(sources) == 1 else
+                     "QUICK-JUMP RESULTS" if sources else self.app.current)
+            tk.Label(head, text=label.upper(), font=self.app.f.small, bg=SURFACE,
+                     fg=GOLD, anchor="w").pack(fill="x", pady=(0, 4))
+            tk.Label(head, text=f"{len(self.actions)} tools · filter this workspace or use quick-jump",
+                     font=self.app.f.small, bg=SURFACE, fg=FG_MUTED, anchor="w").pack(fill="x", pady=(0, 7))
+            entry = tk.Entry(head, textvariable=self.filter_var, font=self.app.f.small, bg=OVERLAY, fg=FG,
+                             insertbackground=FG, relief="flat", highlightthickness=1,
+                             highlightbackground=BORDER, highlightcolor=TEAL)
+            entry.pack(fill="x", ipady=6)
+            entry.insert(0, "filter tools…")
+            entry.bind("<FocusIn>", lambda _e: entry.delete(0, "end")
+                       if entry.get() == "filter tools…" else None)
+            self.filter_var.trace_add("write", lambda *_: self._filter_rows())
         if not self.actions:
             tk.Label(self.frame, text=self.empty_text or "nothing here", font=self.app.f.label, bg=SURFACE,
                      fg=FG_MUTED, anchor="w", padx=10, pady=10).pack(fill="x")
         for a in self.actions:
             self._row(a, self.prefix.get(id(a), ""))
+        if self.actions and len(self.actions) >= 5:
+            self.no_match = tk.Label(self.frame, text="No tools match that filter.", font=self.app.f.small,
+                                     bg=SURFACE, fg=FG_MUTED, anchor="w")
+            self.no_match.pack_forget()
+
+    def _filter_rows(self):
+        query = self.filter_var.get().strip().lower()
+        if query == "filter tools…":
+            query = ""
+        visible = []
+        for row, searchable in self.rows:
+            row.pack_forget()
+            if not query or query in searchable:
+                visible.append(row)
+        for row in visible:
+            row.pack(fill="x", pady=2)
+        if hasattr(self, "no_match"):
+            if visible:
+                self.no_match.pack_forget()
+            else:
+                self.no_match.pack(fill="x", pady=10)
 
     def _row(self, action, prefix):
         # The whole row highlights together on hover: with the label far-left and the button
         # far-right, nothing else ties them together once a category has many actions.
         f = self.app.f
-        row = tk.Frame(self.frame, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
-        row.pack(fill="x", pady=1)
+        item = tk.Frame(self.frame, bg=SURFACE)
+        item.pack(fill="x", pady=2)
+        row = tk.Frame(item, bg=SURFACE)
+        row.pack(fill="x")
         gated = ConfirmPolicy.required(action) and not action.detach
         label = tk.Label(row, text=f"{prefix}{action.label}", font=f.label, bg=SURFACE, fg=FG, anchor="w",
-                         padx=10, pady=6)
+                         padx=9, pady=5)
         label.pack(side="left", fill="x", expand=True)
-        btn = tk.Button(row, text="run…" if gated else "run", command=lambda a=action: self.app.run_action(a),
+        btn = tk.Button(row, text="confirm" if gated else "open" if action.detach else "run",
+                        command=lambda a=action: self.app.run_action(a),
                         font=f.small, bg=OVERLAY, fg=ROSE if gated else TEAL, activebackground=BG,
-                        activeforeground=TEAL, relief="flat", bd=0, padx=14, pady=4, cursor="hand2")
-        btn.pack(side="right", padx=10, pady=6)
+                        activeforeground=TEAL, relief="flat", bd=0, padx=11, pady=3, cursor="hand2")
+        btn.pack(side="right", padx=7, pady=3)
 
         def hover(on):
             bg = OVERLAY if on else SURFACE
             row.configure(bg=bg)
             label.configure(bg=bg)
+        line = tk.Frame(item, bg=BORDER, height=1)
+        line.pack(fill="x", padx=9, pady=(1, 0))
+        self.rows.append((item, f"{prefix} {action.label} {action.cmd}".lower()))
         for w in (row, label, btn):
             w.bind("<Enter>", lambda _e: hover(True))
             w.bind("<Leave>", lambda _e: hover(False))
@@ -1934,11 +2023,13 @@ class App:
         self.root = root = tk.Tk(className="khaos-lab")
         root.title("khaos☠️lab")
         root.configure(bg=BG)
-        # 860x730: comfortably inside the real usable area (_NET_WORKAREA is 766px tall; the taskbar
-        # panel reserves the rest). No forced position -- xfwm4's own placement keeps the window on
-        # screen; the geometry watchdog below corrects it if it's ever dragged off-area.
-        root.geometry("860x730")
-        root.minsize(720, 480)
+        # Start at a comfortable fraction of the actual screen instead of imposing one
+        # workstation-sized box on every display. The window remains freely resizable.
+        screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
+        width = min(1120, max(640, int(screen_w * 0.88)))
+        height = min(790, max(500, int(screen_h * 0.88)))
+        root.geometry(f"{width}x{height}")
+        root.minsize(min(640, max(520, screen_w - 40)), min(480, max(380, screen_h - 50)))
         self.errors = []
         root.report_callback_exception = self._on_callback_error
 
@@ -1957,12 +2048,17 @@ class App:
         self._console_room_done = False
         self._maximized = False
         self._pre_max_geometry = None
+        self._sidebar_visible = True
+        self._sidebar_auto_hidden = False
+        self.phase_name, self.phase_accent = ui.phase_info()
+        self.phase_lines = []
 
         self.content_bg = load_image(CONTENT_BG_PATH)
         self._build_header()
         self._build_panes()
         self._build_sidebar()
         self._bind_search()
+        root.bind("<Configure>", self._on_root_configure, add="+")
         root.bind("<Control-f>", lambda _e: (self.search_entry.focus_set(), "break")[1])
         root.bind("<F1>", lambda _e: (self.select("Help"), "break")[1])
 
@@ -1990,7 +2086,7 @@ class App:
     def _build_header(self):
         f, root = self.f, self.root
         header = tk.Frame(root, bg=BG)
-        header.pack(fill="x", padx=14, pady=(14, 8))
+        header.pack(fill="x", padx=14, pady=(10, 4))
         # Background watermark via place() so the icon/title/clock (packed normally) stack on top
         # of it and keep their own resize behaviour.
         self._header_bg = load_image(HEADER_BG_PATH)
@@ -1999,10 +2095,14 @@ class App:
         self._header_icon = load_image(HEADER_ICON_PATH)
         if self._header_icon:
             tk.Label(header, image=self._header_icon, bg=BG, highlightthickness=2,
-                     highlightbackground=GOLD).pack(side="left", padx=(0, 10))
+                     highlightbackground=GOLD).pack(side="left", padx=(0, 8))
+        self.nav_toggle = ui.button(header, "menu", command=self.toggle_nav, font=f.small, bg=BG,
+                                    fg=FG_MUTED, hover_bg=OVERLAY, hover_fg=self.phase_accent, padx=8, pady=4)
+        self.nav_toggle.pack(side="left", padx=(0, 8))
         tk.Label(header, text="khaos", font=f.big, bg=BG, fg=GOLD).pack(side="left")
         tk.Label(header, text="/", font=f.big, bg=BG, fg=FG_MUTED).pack(side="left")
-        tk.Label(header, text="lab", font=f.big, bg=BG, fg=TEAL).pack(side="left", padx=(0, 16))
+        self.brand_accent = tk.Label(header, text="lab", font=f.big, bg=BG, fg=self.phase_accent)
+        self.brand_accent.pack(side="left", padx=(0, 16))
         # Window controls (min/max/close), 2026-09-22 -- user's own follow-up: "its tricky to
         # find max/min/close buttons". Real cause, confirmed via xwininfo: this WM theme is
         # currently drawing essentially zero titlebar chrome for this window (the client and
@@ -2027,13 +2127,14 @@ class App:
         # still-pine/nyx) is still useful at a glance, in that phase's own accent.
         self.phase_lbl = tk.Label(header, text="", font=f.small, bg=BG, fg=FG_MUTED)
         self.phase_lbl.pack(side="right", padx=(0, 14))
-        # Global quick-jump: searches ACTION LABELS across every category (the Find view searches
-        # note CONTENT). Fixed width -- filling the strip crushed the header art.
+        # The quick-jump gets its own full-width row, leaving the brand and window controls clear.
         self.search_var = tk.StringVar()
-        self.search_entry = tk.Entry(header, textvariable=self.search_var, font=f.small, width=28, bg=OVERLAY,
+        quickbar = tk.Frame(root, bg=BG)
+        quickbar.pack(fill="x", padx=14, pady=(0, 7))
+        self.search_entry = tk.Entry(quickbar, textvariable=self.search_var, font=f.small, bg=OVERLAY,
                                      fg=FG, insertbackground=FG, relief="flat", highlightthickness=1,
                                      highlightbackground=OVERLAY, highlightcolor=GOLD)
-        self.search_entry.pack(side="left", ipady=4, padx=(0, 16))
+        self.search_entry.pack(fill="x", ipady=5)
         self._placeholder = "quick-jump: type an action name…   (ctrl+f)"
         self._ph_active = True
         self.search_entry.insert(0, self._placeholder)
@@ -2055,23 +2156,48 @@ class App:
             self.search_entry.insert(0, self._placeholder)
             self.search_entry.configure(fg=FG_MUTED)
 
+    def toggle_nav(self):
+        """Let the workspace reclaim width on demand; the menu stays one click away."""
+        if self._sidebar_visible:
+            self.body_pane.forget(self.sidebar)
+            self._sidebar_visible = False
+        else:
+            self.body_pane.add(self.sidebar, before=self.content_wrap, minsize=112, width=156)
+            self._sidebar_visible = True
+        self._sidebar_auto_hidden = False
+        self.root.after_idle(lambda: self.refresh_scroll(self.view.frame) if self.view else None)
+
+    def _on_root_configure(self, event):
+        if event.widget is not self.root:
+            return
+        # Auto-tuck navigation only at genuinely narrow widths; wide screens never get
+        # an unsolicited layout change, and a manual toggle takes priority.
+        if event.width < 700 and self._sidebar_visible:
+            self.body_pane.forget(self.sidebar)
+            self._sidebar_visible = False
+            self._sidebar_auto_hidden = True
+        elif event.width > 840 and self._sidebar_auto_hidden and not self._sidebar_visible:
+            self.body_pane.add(self.sidebar, before=self.content_wrap, minsize=112, width=156)
+            self._sidebar_visible = True
+            self._sidebar_auto_hidden = False
+
     def _build_panes(self):
         root = self.root
         # Body/console split is a real drag-resizable PanedWindow (the console used to be fixed
         # at 9 lines and could never grow). Sidebar/content is a second one.
         self.main_pane = tk.PanedWindow(root, orient="vertical", bg=OVERLAY, sashwidth=6, sashrelief="flat",
                                         bd=0, showhandle=False, opaqueresize=True)
-        self.main_pane.pack(fill="both", expand=True, padx=14, pady=10)
+        self.main_pane.pack(fill="both", expand=True, padx=10, pady=(2, 8))
         body = tk.Frame(self.main_pane, bg=BG)
-        # 400 is only the INITIAL split; the console auto-grows once on the first real output.
-        self.main_pane.add(body, minsize=240, height=400)
-        body_pane = tk.PanedWindow(body, orient="horizontal", bg=OVERLAY, sashwidth=6, sashrelief="flat",
-                                   bd=0, showhandle=False, opaqueresize=True)
+        self.main_pane.add(body, minsize=300, height=520)
+        body_pane = self.body_pane = tk.PanedWindow(body, orient="horizontal", bg=OVERLAY, sashwidth=4,
+                                                     sashrelief="flat", bd=0, showhandle=False,
+                                                     opaqueresize=True)
         body_pane.pack(fill="both", expand=True)
         # Canvas, not Frame, so the watermark can sit behind the nav buttons.
-        self.sidebar = tk.Canvas(body_pane, bg=BG, width=150, highlightthickness=0)
-        body_pane.add(self.sidebar, minsize=110, width=150)
-        content_wrap = tk.Frame(body_pane, bg=SURFACE)
+        self.sidebar = tk.Canvas(body_pane, bg=BG, width=156, highlightthickness=0)
+        body_pane.add(self.sidebar, minsize=112, width=156)
+        content_wrap = self.content_wrap = tk.Frame(body_pane, bg=SURFACE)
         body_pane.add(content_wrap, minsize=300)
         self.content = tk.Canvas(content_wrap, bg=SURFACE, highlightthickness=0)
         # A real scrollbar wired to a scrollregion kept honest by the embedded widget's actual
@@ -2084,8 +2210,9 @@ class App:
         if self.content_bg:
             self.content.create_image(0, 0, anchor="nw", image=self.content_bg)
         console_frame = tk.Frame(self.main_pane, bg=BG)
-        # minsize=110 is a real floor: whatever's left only ever shrinks the Text, never hides it.
-        self.main_pane.add(console_frame, minsize=110, height=190)
+        # Keep output available without letting it dominate the work area at startup.
+        self.console_frame = console_frame
+        self.main_pane.add(console_frame, minsize=72, height=120)
         self.console = ConsolePane(self, console_frame)
 
     def _build_sidebar(self):
@@ -2184,9 +2311,11 @@ class App:
     def select(self, name):
         self.current = name
         for n, b in self.nav_buttons.items():
-            b.set_look(bg=OVERLAY if n == name else BG, fg=GOLD if n == name else FG_MUTED)
+            b.set_look(bg=OVERLAY if n == name else BG,
+                       fg=self.phase_accent if n == name else FG_MUTED)
         if name in self.nav_y:
             y, h = self.nav_y[name]
+            self.sidebar.itemconfigure(self.nav_accent, fill=self.phase_accent)
             self.sidebar.coords(self.nav_accent, 0, y, 3, y + h)
             self.sidebar.tag_raise(self.nav_accent)
         cls = self.SPECIAL_VIEWS.get(name)
@@ -2313,7 +2442,27 @@ class App:
         try:
             self.clock_lbl.configure(text=time.strftime("%H:%M:%S"))
             name, color = ui.phase_info()
-            self.phase_lbl.configure(text=f"◐ {name}", fg=color)
+            if name != self.phase_name or color != self.phase_accent:
+                self.phase_name, self.phase_accent = name, color
+                self.phase_lbl.configure(text=f"◐ {name}", fg=color)
+                self.brand_accent.configure(fg=color)
+                self.search_entry.configure(highlightcolor=color)
+                self.nav_toggle.configure(hover_fg=color)
+                live_lines = []
+                for line in self.phase_lines:
+                    try:
+                        if line.winfo_exists():
+                            line.configure(bg=color)
+                            live_lines.append(line)
+                    except tk.TclError:
+                        pass
+                self.phase_lines = live_lines
+                if self.current in self.nav_buttons:
+                    self.nav_buttons[self.current].set_look(bg=OVERLAY, fg=color)
+                if self.current in self.nav_y:
+                    y, h = self.nav_y[self.current]
+                    self.sidebar.itemconfigure(self.nav_accent, fill=color)
+                    self.sidebar.coords(self.nav_accent, 0, y, 3, y + h)
             self.runner.reap()
         except Exception:
             self.root.report_callback_exception(*sys.exc_info())
@@ -2394,6 +2543,43 @@ class App:
             self._do_search()
             self._pump(0.2)
         print("  global search            ok")
+        self.select("Network")
+        action_view = self.view
+        if isinstance(action_view, ActionsView) and hasattr(action_view, "filter_var"):
+            action_view.filter_var.set("vpn")
+            filtered = sum(row.winfo_manager() == "pack" for row, _ in action_view.rows)
+            action_view.filter_var.set("")
+            filter_ok = filtered > 0 and filtered < len(action_view.rows)
+        else:
+            filter_ok = False
+        self.select("Status")
+        layouts = []
+        if isinstance(self.view, TileView):
+            for width, expected in ((400, 1), (760, 2), (1100, 3)):
+                self.view._layout_tiles(SimpleNamespace(width=width))
+                cols = max((w.grid_info().get("column", 0) for w in self.view._tile_frames), default=0) + 1
+                layouts.append(cols == expected)
+        self._on_root_configure(SimpleNamespace(widget=self.root, width=650))
+        nav_narrow = not self._sidebar_visible and self._sidebar_auto_hidden
+        self._on_root_configure(SimpleNamespace(widget=self.root, width=900))
+        nav_wide = self._sidebar_visible and not self._sidebar_auto_hidden
+        print(f"  responsive tile layouts  {'ok' if all(layouts) else 'FAILED'} ({layouts})")
+        print(f"  workspace filter         {'ok' if filter_ok else 'FAILED'}")
+        print(f"  adaptive navigation      {'ok' if nav_narrow and nav_wide else 'FAILED'}")
+        wired = {category: {a.label for a in CATEGORIES.get(category, [])}
+                 for category in ("Phone", "Waydroid", "Studio")}
+        integration_ok = (
+            {"UAD-ng: launch (multi-device GUI)"} <= wired["Phone"]
+            and {"ADB: connect Waydroid (then manage under Phone)",
+                 "Android: open (starts Waydroid + X11 display if needed)"} <= wired["Waydroid"]
+            and {"LMMS: launch music studio", "LMMS: open Reborn practice beat",
+                 "Guide: Reborn beat baby steps"} <= wired["Studio"]
+            and all(shutil.which(cmd) for cmd in ("arc", "arc-sop", "arc-waydroid", "adb", "uad-ng", "flatpak"))
+            and (HOME / "khaos-lab/ref/Reborn_Practice_Beat.mmp").is_file()
+            and (HOME / "khaos-lab/ref/Reborn_LMMS_Baby_Steps.md").is_file()
+        )
+        print(f"  program/project wiring   {'ok' if integration_ok else 'FAILED'} "
+              "(Arc SOP · Waydroid/ADB/UAD · LMMS + practice assets)")
         self.select("Personal")
         self._pump(0.3)
         leaked = self.poller.active()
@@ -2430,7 +2616,8 @@ class App:
             globals()["check_sop_gate"] = original_gate
         gate_ok = gate_ok and locked_action_blocked and locked_button_blocked and recovery_action_available
         print(f"  SOP operation gate        {'ok' if gate_ok else 'FAILED'} (locked ops denied; setup retained)")
-        bad = self.errors or leaked or not gate_ok
+        bad = (self.errors or leaked or not gate_ok or not filter_ok or not all(layouts)
+               or not (nav_narrow and nav_wide) or not integration_ok)
         print("  " + ("FAILED" if bad else "all views built with no callback errors"))
         for e in self.errors:
             print(e)

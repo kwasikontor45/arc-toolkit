@@ -2767,7 +2767,7 @@ _sec_clamav() {
 
 _sec_yara() {
   local sub="${1:-}"
-  local rules="$HOME/khaos-lab/soc-lab/yara-rules/index.yar"
+  local rules="$HOME/.local/share/arc-toolkit/yara-rules/index.yar"
   local log="$HOME/khaos-lab/soc-lab/yara-scan.log"
   case "$sub" in
     status)
@@ -5951,9 +5951,13 @@ cmd_gvm() {
       ;;
     cloud-stop)
       echo -e "$HR"
-      echo -e "  ${C}${B}arc gvm cloud-stop${N}  —  sync data down, then stop gvm-cloud"
+      echo -e "  ${C}${B}arc gvm cloud-stop${N}  —  back up to the USB vault, then stop gvm-cloud"
       echo -e "$HR\n"
-      local backup_dir="$HOME/khaos-lab/gvm-lab/backups"
+      local backup_dir="/mnt/storage/Persistent/khaos-lab/gvm-lab/backups"
+      if ! mountpoint -q /mnt/storage || [[ ! -d /mnt/storage/Persistent/khaos-lab/gvm-lab/backups || ! -w /mnt/storage/Persistent/khaos-lab/gvm-lab/backups ]]; then
+        echo -e "  ${R}✗${N}  USB vault is not mounted read-write — refusing to create a local cloud dump or stop without the vault backup."
+        return 1
+      fi
       mkdir -p "$backup_dir"
       local stamp; stamp=$(date +%Y%m%dT%H%M%SZ)
       echo -e "  ${D}pg_dump gvmd database...${N}"
@@ -6173,7 +6177,7 @@ cmd_wazuh() {
       for pair in "ip:malicious-ip" "domain:malicious-domains" "hash:malware-hashes"; do
         local kind="${pair%%:*}" fname="${pair#*:}"
         echo -e "  ${D}fetching OTX ${kind} indicators...${N}"
-        python3 "$HOME/khaos-lab/arc-toolkit/bin/arc-otx-fetch.py" "$kind" > "$scratch/${fname}.new" 2>/dev/null
+        python3 "$HOME/.local/share/arc-toolkit/bin/arc-otx-fetch.py" "$kind" > "$scratch/${fname}.new" 2>/dev/null
         local n_new; n_new=$(wc -l < "$scratch/${fname}.new")
 
         _aws_lab_ssh "$WAZUH_INSTANCE_ID" "sudo cat ${LISTS_DIR}/${fname}" > "$scratch/${fname}.current" 2>/dev/null

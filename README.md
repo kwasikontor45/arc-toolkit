@@ -48,6 +48,8 @@ The Status dashboard also shows Waydroid beside the notification-stack tile. It 
 
 `sudoers/arc-waydroid` grants only the exact Waydroid unit start/stop commands and fixed device-mode restoration commands used by Stop. Waydroid is a shared-kernel container, not a VM; while it runs, its standard startup widens access to host device nodes. The vanilla image has no Google apps, and no shared host folders are configured.
 
+GVM database exports from `arc gvm cloud-stop` are stored on the encrypted USB vault at `/mnt/storage/Persistent/khaos-lab/gvm-lab/backups/`. The command refuses to stop the cloud lab when that backup destination is unavailable, so large cloud dumps do not accumulate on the workstation disk.
+
 ## Offline / no-internet
 
 The source machine never depends on the network for day-to-day use — every script is a local

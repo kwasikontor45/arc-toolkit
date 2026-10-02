@@ -175,17 +175,38 @@ def close_owned_weston():
 
 
 def start_container():
+    # The system D-Bus activation file can start this unit whenever a client
+    # requests its bus name. Keep the unit persistently masked between user
+    # launches; only this explicit Open path briefly unmasks it, starts it,
+    # then restores the mask while the active service is running.
+    unmask = run(["sudo", "-n", "/usr/bin/systemctl", "unmask", UNIT], timeout=15)
+    if unmask.returncode:
+        detail = (unmask.stderr or unmask.stdout).strip()
+        raise RuntimeError(detail or f"could not authorize explicit start of {UNIT}")
+
     result = run(["sudo", "-n", "/usr/bin/systemctl", "start", UNIT], timeout=30)
+    mask = run(["sudo", "-n", "/usr/bin/systemctl", "mask", UNIT], timeout=15)
     if result.returncode:
         detail = (result.stderr or result.stdout).strip()
+        if mask.returncode:
+            detail = f"{detail}; could not restore the Waydroid start lock"
         raise RuntimeError(detail or f"could not start {UNIT}")
+    if mask.returncode:
+        stopped = run(["sudo", "-n", "/usr/bin/systemctl", "stop", UNIT], timeout=30)
+        remasked = run(["sudo", "-n", "/usr/bin/systemctl", "mask", UNIT], timeout=15)
+        if stopped.returncode or remasked.returncode:
+            raise RuntimeError("Waydroid start lock restoration failed; inspect `arc-waydroid status` immediately.")
+        raise RuntimeError("Could not keep the manual-start lock; Waydroid was stopped.")
 
 
 def stop_container():
     result = run(["sudo", "-n", "/usr/bin/systemctl", "stop", UNIT], timeout=45)
-    if result.returncode:
+    mask = run(["sudo", "-n", "/usr/bin/systemctl", "mask", UNIT], timeout=15)
+    if result.returncode or mask.returncode:
         detail = (result.stderr or result.stdout).strip()
-        raise RuntimeError(detail or f"could not stop {UNIT}")
+        if mask.returncode:
+            detail = f"{detail}; could not restore the Waydroid start lock"
+        raise RuntimeError(detail or f"could not stop and lock {UNIT}")
 
 
 def restore_host_device_modes():
@@ -326,7 +347,10 @@ def status():
     active = service_active()
     active_label = "running" if active is True else "stopped" if active is False else "unknown (system bus unavailable)"
     print(f"Container service: {active_label}")
-    print(f"Boot policy: {service_enabled()} (Khaos starts it only when you open Android)")
+    policy = service_enabled()
+    if policy == "masked":
+        policy = "masked (implicit/D-Bus starts blocked; only Open temporarily authorizes it)"
+    print(f"Boot policy: {policy}")
     if active is True:
         print(waydroid_status())
     pid = owned_weston_pid()

@@ -3,6 +3,7 @@
 # 'systemctl enable' vs leave static/disabled (e.g. arc-break.service
 # is deliberately static/manual-start-only, not a bug to fix).
 # format: <scope:system|user> <state> <unit>
+# External unit: waydroid-container.service is persistently masked; only arc-waydroid open may temporarily unmask it.
 system static arc-chkrootkit-check.service
 system enabled arc-clamav-watch.service
 system enabled arc-docker-shutdown-stop.service

@@ -2568,10 +2568,17 @@ class App:
         print(f"  adaptive navigation      {'ok' if nav_narrow and nav_wide else 'FAILED'}")
         wired = {category: {a.label for a in CATEGORIES.get(category, [])}
                  for category in ("Phone", "Waydroid", "Studio")}
+        waydroid_launcher = shutil.which("arc-waydroid")
+        waydroid_source = Path(waydroid_launcher).read_text(errors="replace") if waydroid_launcher else ""
+        waydroid_manual_lock = (
+            '"/usr/bin/systemctl", "unmask", UNIT' in waydroid_source
+            and '"/usr/bin/systemctl", "mask", UNIT' in waydroid_source
+        )
         integration_ok = (
             {"UAD-ng: launch (multi-device GUI)"} <= wired["Phone"]
             and {"ADB: connect Waydroid (then manage under Phone)",
                  "Android: open (starts Waydroid + X11 display if needed)"} <= wired["Waydroid"]
+            and waydroid_manual_lock
             and {"LMMS: launch music studio", "LMMS: open Reborn practice beat",
                  "Guide: Reborn beat baby steps"} <= wired["Studio"]
             and all(shutil.which(cmd) for cmd in ("arc", "arc-sop", "arc-waydroid", "adb", "uad-ng", "flatpak"))
@@ -2579,7 +2586,7 @@ class App:
             and (HOME / "khaos-lab/ref/Reborn_LMMS_Baby_Steps.md").is_file()
         )
         print(f"  program/project wiring   {'ok' if integration_ok else 'FAILED'} "
-              "(Arc SOP · Waydroid/ADB/UAD · LMMS + practice assets)")
+              "(Arc SOP · Waydroid manual-start lock/ADB/UAD · LMMS + practice assets)")
         self.select("Personal")
         self._pump(0.3)
         leaked = self.poller.active()

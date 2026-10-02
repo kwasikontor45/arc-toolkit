@@ -41,8 +41,10 @@ khaos-lab navigation, and Glow pager.
 | `arc sot install-systemd` | Install + enable `systemd/*` units, matching the source machine's enabled/disabled state |
 | `arc sot install-autostart` | Install XDG autostart entries + khaos-lab's app-menu icon/entry |
 
-`arc-heal` runs the drift check on its normal cadence too (`check_arc_hq_drift`), so a broken
-symlink gets caught and repaired within hours even if nobody thinks to run `arc sot status`.
+`arc-heal` checks inventory drift and script symlink integrity on its normal cadence, so a broken
+link is caught and repaired without a manual `arc sot status`. Inventory probes include the
+Kataleya and kontor.studio live URLs. It also verifies Waydroid's persistent manual-start mask
+and restores the mask if another action removes it; it never stops an active Android session.
 **One deliberate exception:** a script missing entirely from `~/.local/bin` is *flagged*, never
 auto-recreated — "missing" is genuinely ambiguous (accidentally deleted vs. deliberately retired),
 and resurrecting something that was intentionally killed off is worse than leaving a gap for a
@@ -50,7 +52,7 @@ human to look at once. This was a real bug caught during testing, not a hypothet
 
 ### Waydroid from Khaos Lab
 
-The **Waydroid** workspace in `khaos-lab` provides status, open, stop, installed-app, recent-log, and ADB connect/disconnect actions. It stays manual-start: Open starts the container, creates a nested Weston window on X11 when no Wayland compositor is available, starts the Android session, and opens the launcher. ADB connects only to Waydroid's private IP on port 5555; Stop disconnects that saved target before shutting down. After connecting, use the existing **Phone** menu for ADB tools and UAD-ng. Device-specific Phone commands require one connected target to avoid ambiguous ADB commands; UAD-ng has its own multi-device selector. The standalone `arc-waydroid status|open|stop|apps|logs|adb-connect|adb-disconnect` command is also available in a terminal.
+The **Waydroid** workspace in `khaos-lab` provides status, open, stop, installed-app, recent-log, and ADB connect/disconnect actions. Its system unit stays persistently masked, blocking boot and D-Bus activation; only the explicit Open action temporarily unmasks, starts, and re-masks the service. Stop shuts down the container and restores the persistent mask. Open creates a nested Weston window on X11 when no Wayland compositor is available, starts the Android session, and opens the launcher. ADB connects only to Waydroid's private IP on port 5555; Stop disconnects that saved target before shutting down. After connecting, use the existing **Phone** menu for ADB tools and UAD-ng. Device-specific Phone commands require one connected target to avoid ambiguous ADB commands; UAD-ng has its own multi-device selector. The standalone `arc-waydroid status|open|stop|apps|logs|adb-connect|adb-disconnect` command is also available in a terminal.
 
 The Status dashboard also shows Waydroid beside the notification-stack tile. It polls the read-only operator status every 15 seconds and reports the container, Android session, and Khaos-owned Weston window without starting anything.
 
@@ -60,7 +62,7 @@ The **Studio** workspace launches the installed LMMS Flatpak, opens the saved `R
 
 The command center adapts its workspace cards and status tiles from one to three columns as the content width changes. Its menu can be tucked away for a narrow window, and action-heavy workspaces have a local filter in addition to global quick-jump. Output remains in a user-resizable lower pane.
 
-`sudoers/arc-waydroid` grants only the exact Waydroid unit start/stop commands and fixed device-mode restoration commands used by Stop. Waydroid is a shared-kernel container, not a VM; while it runs, its standard startup widens access to host device nodes. The vanilla image has no Google apps, and no shared host folders are configured.
+`sudoers/arc-waydroid` grants only the exact Waydroid unit start/stop/mask/unmask commands and fixed device-mode restoration commands used by Stop. Waydroid is a shared-kernel container, not a VM; while it runs, its standard startup widens access to host device nodes. The vanilla image has no Google apps, and no shared host folders are configured.
 
 GVM database exports from `arc gvm cloud-stop` are stored on the encrypted USB vault at `/mnt/storage/Persistent/khaos-lab/gvm-lab/backups/`. The command refuses to stop the cloud lab when that backup destination is unavailable, so large cloud dumps do not accumulate on the workstation disk.
 

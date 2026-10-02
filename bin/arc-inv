@@ -69,7 +69,9 @@ OUT_DIR = Path(_SANDBOX) / "out" if _SANDBOX else HOME / "khaos-lab" / "inventor
 DEFAULT_REGION = "us-east-1"
 OK_OBS = {                      # desired status -> observed values that are healthy
     "active":    {"up", "running"},
-    "on-demand": {"up", "running", "stopped", "down"},
+    # On-demand assets are optional to have locally; an absent checkout is
+    # healthy and can be cloned when needed.
+    "on-demand": {"up", "running", "stopped", "down", "absent"},
     "standby":   {"up", "running", "stopped", "down"},
     "retired":   {"absent"},
 }

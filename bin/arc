@@ -1002,8 +1002,24 @@ cmd_backup() {
 
 # ── Sync ───────────────────────────────────────────────────────────────────────
 cmd_sync() {
+  local include_gvm_db=false
+  case "${1:-}" in
+    "") ;;
+    --include-gvm-db) include_gvm_db=true ;;
+    *) echo -e "  ${R}usage: arc sync [--include-gvm-db]${N}"; return 2 ;;
+  esac
+  if [[ $# -gt 1 ]]; then
+    echo -e "  ${R}usage: arc sync [--include-gvm-db]${N}"
+    return 2
+  fi
+
   echo -e "$HR"
   echo -e "  ${C}${B}arc sync${N}  —  vault → MEGA cloud backup"
+  if [[ "$include_gvm_db" == true ]]; then
+    echo -e "  ${Y}including GVM SQL database dumps — this may take several hours${N}"
+  else
+    echo -e "  ${D}large GVM SQL dumps stay on the encrypted USB; use --include-gvm-db for an off-site copy${N}"
+  fi
   echo -e "$HR\n"
 
   if ! storage_ok; then
@@ -1013,7 +1029,9 @@ cmd_sync() {
   fi
 
   echo -e "  ${C}syncing vault → MEGA...${N}"
-  if sudo /usr/local/bin/vault-backup-mega; then
+  local -a sync_args=()
+  [[ "$include_gvm_db" == true ]] && sync_args+=(--include-gvm-db)
+  if sudo /usr/local/bin/vault-backup-mega "${sync_args[@]}"; then
     echo -e "  ${G}✓${N}  MEGA vault sync complete"
     notify-send -i dialog-information "arc sync" "MEGA vault sync complete" 2>/dev/null || true
 
@@ -4400,7 +4418,7 @@ cmd_help_full() {
   echo -e "  ${D}arc${N}                       ${M}status: disk usage + repo overview${N}"
   echo -e "  ${D}arc ${C}day${N}                   ${M}morning startup: USB check, backup status, repos${N}"
   echo -e "  ${D}arc ${C}backup${N}                ${M}sync local work → USB vault${N}"
-  echo -e "  ${D}arc ${C}sync${N}                  ${M}push vault → MEGA cloud backup${N}"
+      echo -e "  ${D}arc ${C}sync${N}                  ${M}MEGA sync (GVM SQL stays on USB; --include-gvm-db opts in)${N}"
   echo -e "  ${D}arc ${C}mega${N}                  ${M}browse MEGA — ls · lsd · tree [path]${N}"
   echo -e "  ${D}arc ${C}restart${N}               ${M}backup → unmount USB → XFCE logout  (alias: warm-restart)${N}"
   echo -e "  ${D}arc ${C}safe-reboot${N}           ${M}backup → unmount USB → sudo reboot${N}"
@@ -6531,7 +6549,7 @@ case "${1:-}" in
   eero-watch)     cmd_eero_watch ;;
   eero-logs)      cmd_eero_logs ;;
   stop-eero)      cmd_stop_eero ;;
-  sync)            cmd_sync ;;
+  sync)            cmd_sync "${@:2}" ;;
   mega)            cmd_mega "${2:-}" "${3:-}" ;;
   net)             cmd_net "${@:2}" ;;
   kismet)          arc-kismet "${@:2}" ;;

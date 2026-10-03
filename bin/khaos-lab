@@ -809,7 +809,7 @@ CATEGORIES = {
         Action("Fix: taskbar panel (has caused a real outage before)", "arc fix panel"),
     ],
     "Personal": [
-        Action("Calendar: show / hide Orage", "env GTK_THEME=Adwaita:dark /usr/bin/orage --toggle", detach=True),
+        Action("Calendar: show / hide Orage", "/usr/bin/orage --toggle", detach=True),
         Action("Break timer status", "arc break status"),
         # confirm=False: starting the break timer is the user's own deliberate, harmless,
         # reversible click (the tool must never auto-start -- this button IS the manual start).

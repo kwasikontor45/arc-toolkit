@@ -1,0 +1,37 @@
+# Arc Break taskbar timer
+
+A small GTK 3 timer for XFCE and other GTK desktops. Start it from the desktop menu, click **Start timer**, and it minimizes into the normal taskbar. Its taskbar icon shows the remaining minutes in a phase-colored progress ring; the live title carries the exact countdown. Click the taskbar item to restore its controls. It needs no tray plugin or panel setup.
+
+The work cycle starts at **40 minutes focus / 18 minutes rest**, matching this workstation's current timer settings. Edit `~/.config/arc-break-taskbar/settings.json` after first launch to choose other durations (`work_minutes`: 5–180, `break_minutes`: 1–60), then restart the app.
+
+## Install
+
+On Debian/Ubuntu, install the GTK bindings once if needed:
+
+```sh
+sudo apt install python3-gi gir1.2-gtk-3.0
+```
+
+Then clone this repository and run:
+
+```sh
+./apps/arc-break-taskbar/install.sh
+```
+
+The installer copies only this app into `~/.local/opt/arc-break-taskbar`, updates the existing Arc Break desktop-menu entry, and creates a `~/.local/bin/arc-break-taskbar` launcher. If a prior Arc Break menu entry exists, the installer preserves a copy so uninstall can restore it. It uses no network, privilege escalation, Genmon, Arc command, tray extension, or systemd unit.
+
+## Local data and behavior
+
+- The timer runs only after the user starts it. There is no automatic launch at login.
+- Settings and resumable timer state are stored under `~/.config/arc-break-taskbar/` and `~/.local/state/arc-break-taskbar/`; files are written atomically with owner-only permissions.
+- The countdown uses a one-second GTK callback, sends desktop notifications at phase changes, and stores no account or personal data.
+- Closing the window while the timer runs minimizes it to the taskbar, so it remains visible and keeps timing. Close the app after stopping the timer to exit.
+- Removing the app with `./apps/arc-break-taskbar/uninstall.sh` removes only its own launcher and installed app files; it preserves the settings and state directories.
+
+## Uninstall
+
+```sh
+./apps/arc-break-taskbar/uninstall.sh
+```
+
+The older `arc break start|stop|status` commands still control the supervised daemon, which keeps separate state and timing. `arc break gui` opens this standalone app. The daemon no longer configures Genmon; run only one timer at a time.

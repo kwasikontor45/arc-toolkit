@@ -70,6 +70,10 @@ GVM database exports from `arc gvm cloud-stop` are stored on the encrypted USB v
 
 The scheduled YARA scanner uses its installed ruleset snapshot at `~/.local/share/arc-toolkit/yara-rules/`; this keeps the rule data available without retaining the upstream rules repository checkout. Refresh the data from the Yara-Rules/rules remote when you intentionally update signatures.
 
+### Standalone Arc Break taskbar app
+
+`apps/arc-break-taskbar/` is a portable GTK timer with its own installer, desktop launcher, settings, and state. It does not call the `arc` command, the legacy `arc-break` daemon, Genmon, or systemd. On Debian/Ubuntu, install GTK 3 Python bindings, then run `apps/arc-break-taskbar/install.sh`; its own README covers removal and the separate state directory. It minimizes into the normal taskbar and keeps the countdown in the window title, so no tray extension or Genmon panel setup is needed. The legacy `arc break start|stop|status` commands remain available for existing workflows. Run one timer at a time.
+
 ## Offline / no-internet
 
 The source machine never depends on the network for day-to-day use — every script is a local

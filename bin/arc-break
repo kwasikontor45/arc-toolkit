@@ -305,10 +305,12 @@ def run_gui():
 
     root = tk.Tk()
     root.title("arc · break")
-    root.resizable(False, False)
-    root.attributes("-topmost", True)
     root.configure(bg=BG)
-    root.geometry("260x330+20+20")
+    root.resizable(True, True)
+    screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
+    win_w, win_h = min(390, screen_w - 32), min(560, screen_h - 64)
+    root.minsize(min(350, win_w), min(500, win_h))
+    root.geometry(f"{win_w}x{win_h}+{max(0, (screen_w-win_w)//2)}+{max(0, (screen_h-win_h)//2)}")
 
     if ICON_PATH.exists():
         try:
@@ -319,18 +321,57 @@ def run_gui():
 
     f = ui.fonts()
     big_font, small_font, btn_font = f["big"], f["small"], f["small"]
+    big_font.configure(size=38)
+    title_font = f["title"]
 
-    # ── Status display -- now a real rounded card, not a flat rectangle ─────────
-    status_outer, status_card = ui.rounded_frame(root, parent_bg=BG, bg=SURFACE, radius=12)
-    status_outer.pack(padx=ui.SPACE_MD, pady=(ui.SPACE_MD, ui.SPACE_SM))
+    # A restrained Mercury mark: a fine orbit, staff, and paired flowing
+    # lines. It is drawn in Tk so it stays crisp at every window size.
+    ambient = ui.circadian()
+    accent = ui.PHASE_ACCENT[ambient["phase"]]
+    header = tk.Frame(root, bg=BG)
+    header.pack(fill="x", padx=16, pady=(14, 10))
+    mark = tk.Canvas(header, width=42, height=42, bg=BG, highlightthickness=0)
+    mark.pack(side="left", padx=(0, 10))
 
-    phase_lbl = tk.Label(status_card, text="WORK",   font=big_font,  bg=SURFACE, fg=FG_WORK)
-    time_lbl  = tk.Label(status_card, text="--:--",  font=big_font,  bg=SURFACE, fg=FG_WORK)
-    phase_lbl.pack(pady=(ui.SPACE_MD, 0))
-    time_lbl.pack()
+    def draw_mark(color, surface):
+        mark.configure(bg=surface)
+        mark.delete("all")
+        mark.create_oval(3, 3, 39, 39, outline=color, width=1)
+        mark.create_line(21, 9, 21, 33, fill=color, width=1.5)
+        mark.create_oval(17, 6, 25, 14, outline=color, width=1.4)
+        mark.create_line(9, 17, 16, 13, 21, 17, 26, 13, 33, 17,
+                         smooth=True, splinesteps=20, fill=color, width=1.5)
+        mark.create_line(9, 25, 16, 29, 21, 25, 26, 29, 33, 25,
+                         smooth=True, splinesteps=20, fill=color, width=1.5)
+        mark.create_oval(18, 32, 24, 38, outline=color, width=1.2)
+
+    draw_mark(accent, BG)
+    brand = tk.Frame(header, bg=BG)
+    brand.pack(side="left", fill="x", expand=True)
+    tk.Label(brand, text="ARC / BREAK", font=title_font, bg=BG, fg=FG_WORK,
+             anchor="w").pack(fill="x")
+    phase_hint = tk.Label(brand, text=f"FOCUS CYCLE  ·  {ambient['phase'].upper()}",
+                          font=small_font, bg=BG, fg=FG_MUTED, anchor="w")
+    phase_hint.pack(fill="x", pady=(2, 0))
+
+    # ── Status display: a softly rimmed glass surface ──────────────────────────
+    status_outer, status_card = ui.rounded_frame(
+        root, parent_bg=BG, bg=SURFACE, radius=16, border=accent, border_width=1)
+    status_outer.pack(fill="x", padx=16, pady=(0, 8))
+
+    live_row = tk.Frame(status_card, bg=SURFACE)
+    live_row.pack(fill="x", padx=14, pady=(12, 0))
+    live_dot = tk.Label(live_row, text="●", font=small_font, bg=SURFACE, fg=accent)
+    live_dot.pack(side="left")
+    tk.Label(live_row, text="TIMER STATUS", font=small_font, bg=SURFACE,
+             fg=FG_MUTED).pack(side="left", padx=(6, 0))
+    phase_lbl = tk.Label(status_card, text="WORK", font=title_font, bg=SURFACE, fg=FG_WORK)
+    time_lbl  = tk.Label(status_card, text="--:--", font=big_font, bg=SURFACE, fg=FG_WORK)
+    phase_lbl.pack(pady=(6, 0))
+    time_lbl.pack(pady=(0, 0))
 
     status_lbl = tk.Label(status_card, text="loading…", font=small_font, bg=SURFACE, fg=FG_MUTED)
-    status_lbl.pack(pady=(3, ui.SPACE_MD))
+    status_lbl.pack(pady=(2, 14))
 
     # ── Daemon helpers ─────────────────────────────────────────────────────────
     def daemon_running():
@@ -385,22 +426,26 @@ def run_gui():
     # main window instead (2026-09-11): one window, one surface, no popup.
     cfg_now = load_config()
 
-    config_outer, config_card = ui.rounded_frame(root, parent_bg=BG, bg=SURFACE, radius=10)
+    config_outer, config_card = ui.rounded_frame(
+        root, parent_bg=BG, bg=SURFACE, radius=13, border=accent, border_width=1)
     config_card.columnconfigure(1, weight=1)
 
+    tk.Label(config_card, text="CYCLE SETTINGS", font=small_font, bg=SURFACE,
+             fg=FG_MUTED).grid(row=0, column=0, columnspan=3, padx=12, pady=(10, 4), sticky="w")
+
     tk.Label(config_card, text="work",  font=small_font, bg=SURFACE, fg=FG_MUTED).grid(
-        row=0, column=0, padx=(10, 4), pady=(8, 4), sticky="w")
+        row=1, column=0, padx=(12, 4), pady=(2, 6), sticky="w")
     work_var = tk.StringVar(value=str(cfg_now["work_minutes"]))
     tk.Entry(config_card, textvariable=work_var, width=4, font=btn_font,
              bg=BG, fg=FG_WORK, insertbackground=FG_WORK, relief="flat", justify="center"
-             ).grid(row=0, column=1, padx=4, pady=(8, 4), sticky="w")
+             ).grid(row=1, column=1, padx=4, pady=(2, 6), sticky="w")
 
     tk.Label(config_card, text="break", font=small_font, bg=SURFACE, fg=FG_MUTED).grid(
-        row=1, column=0, padx=(10, 4), pady=(0, 8), sticky="w")
+        row=2, column=0, padx=(12, 4), pady=(0, 6), sticky="w")
     break_var = tk.StringVar(value=str(cfg_now["break_minutes"]))
     tk.Entry(config_card, textvariable=break_var, width=4, font=btn_font,
              bg=BG, fg=FG_WORK, insertbackground=FG_WORK, relief="flat", justify="center"
-             ).grid(row=1, column=1, padx=4, pady=(0, 8), sticky="w")
+             ).grid(row=2, column=1, padx=4, pady=(0, 6), sticky="w")
 
     def do_config_apply():
         try:
@@ -414,10 +459,10 @@ def run_gui():
 
     btn_apply = ui.button(config_card, "apply", command=do_config_apply,
                            font=small_font, bg=BG, fg=FG_TEAL, hover_bg=FG_STOP)
-    btn_apply.grid(row=0, column=2, rowspan=2, padx=(6, 10), pady=8, sticky="ns")
+    btn_apply.grid(row=1, column=2, rowspan=2, padx=(6, 12), pady=(2, 6), sticky="ns")
 
     config_status = tk.Label(config_card, text="minutes", font=small_font, bg=SURFACE, fg=FG_MUTED)
-    config_status.grid(row=2, column=0, columnspan=3, padx=10, pady=(0, 8), sticky="w")
+    config_status.grid(row=3, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="w")
 
     # ── Button rows -- ui.button() gives a real hover-state transition
     # instead of the old flat tk.Button (static until an actual click) ──────────
@@ -432,9 +477,9 @@ def run_gui():
     btn_start = ui.button(row1, "▶ start", command=do_start, fg=FG_TEAL,  **BTN)
     btn_stop  = ui.button(row1, "■ stop",  command=do_stop,  fg=FG_BREAK, **BTN)
     btn_reset = ui.button(row1, "↺ reset", command=do_reset, fg=FG_MUTED, **BTN)
-    btn_start.grid(row=0, column=0, padx=2, pady=2, sticky="ew")
-    btn_stop.grid( row=0, column=1, padx=2, pady=2, sticky="ew")
-    btn_reset.grid(row=0, column=2, padx=2, pady=2, sticky="ew")
+    btn_start.grid(row=0, column=0, padx=3, pady=3, sticky="ew")
+    btn_stop.grid( row=0, column=1, padx=3, pady=3, sticky="ew")
+    btn_reset.grid(row=0, column=2, padx=3, pady=3, sticky="ew")
 
     # Row 2: skip · N spinbox · snooze
     row2 = tk.Frame(root, bg=BG)
@@ -450,12 +495,15 @@ def run_gui():
         buttonbackground=SURFACE, insertbackground=FG_MUTED,
     )
     btn_snooze = ui.button(row2, "💤 snooze", command=do_snooze, fg=FG_MUTED, **BTN)
-    btn_skip.grid(   row=0, column=0, padx=2, pady=2, sticky="ew")
-    snooze_spin.grid(row=0, column=1, padx=2, pady=2)
-    btn_snooze.grid( row=0, column=2, padx=2, pady=2, sticky="ew")
+    btn_skip.grid(   row=0, column=0, padx=3, pady=3, sticky="ew")
+    snooze_spin.grid(row=0, column=1, padx=3, pady=3)
+    btn_snooze.grid( row=0, column=2, padx=3, pady=3, sticky="ew")
 
     # Row 3: config card, inline (was a separate popup window, see note above)
-    config_outer.pack(fill="x", padx=6, pady=(2, 6))
+    config_outer.pack(fill="x", padx=16, pady=(6, 8))
+
+    tk.Label(root, text="window controls the timer · close keeps it running",
+             font=small_font, bg=BG, fg=FG_MUTED).pack(pady=(2, 10))
 
     # ── Button state sync ─────────────────────────────────────────────────────
     def update_btn_states():
@@ -477,11 +525,19 @@ def run_gui():
     # not for meaning, matching Kataleya's own "useful over pretty" rule.
     def retheme():
         c = ui.circadian()
+        phase_accent = ui.PHASE_ACCENT.get(c["phase"], FG_TEAL)
         root.configure(bg=c["bg"])
-        for row in (row1, row2):
+        for row in (header, brand, row1, row2):
             row.configure(bg=c["bg"])
+        draw_mark(phase_accent, c["bg"])
+        phase_hint.configure(bg=c["bg"], fg=c["fg_muted"],
+                             text=f"FOCUS CYCLE  ·  {c['phase'].upper()}")
+        for child in brand.winfo_children():
+            child.configure(bg=c["bg"])
         status_outer.retheme(new_bg=c["surface"], new_parent_bg=c["bg"])
         config_outer.retheme(new_bg=c["surface"], new_parent_bg=c["bg"])
+        live_row.configure(bg=c["surface"])
+        live_dot.configure(bg=c["surface"], fg=phase_accent)
         phase_lbl.configure(bg=c["surface"])
         time_lbl.configure(bg=c["surface"])
         status_lbl.configure(bg=c["surface"], fg=c["fg_muted"])
@@ -515,7 +571,7 @@ def run_gui():
             phase_lbl.configure(text="STOP", fg=FG_STOP)
             time_lbl.configure( text="--:--", fg=FG_STOP)
             status_lbl.configure(text="not running")
-            root.title("arc · break")
+            root.title("💀 ◖ arc break · stopped ◗")
         else:
             try:
                 state = json.loads(STATE_PATH.read_text())
@@ -529,7 +585,7 @@ def run_gui():
                 status_lbl.configure(text=f"pid {pid_txt}")
                 # Mirror the countdown into the window title so it's visible
                 # in the taskbar/window-list without the window being focused.
-                root.title(f"{phase} {mins:02d}:{secs:02d} — arc break")
+                root.title(f"◖ {phase} {mins:02d}:{secs:02d} · arc break ◗")
             except Exception:
                 phase_lbl.configure(text="ERR",   fg=FG_MUTED)
                 time_lbl.configure( text="--:--",  fg=FG_MUTED)
@@ -566,20 +622,6 @@ def run_gui():
 
 
 # ── Panel display + click (replaces arc-break-panel / arc-break-panel-menu) ─────
-_EMOJI_WORK  = ["🚀","🧠","💻","⌨️","📝","🎯","🔍","👀","⏰","⚡","😤","🔔"]
-_PCT_WORK    = [93, 83, 73, 63, 53, 43, 33, 23, 17, 10, 3]
-_EMOJI_BREAK = ["🌿","☕","🧘","💤","🔔"]
-_PCT_BREAK   = [80, 60, 40, 20]
-
-
-def _phase_emoji(phase, pct):
-    table, cuts = (_EMOJI_WORK, _PCT_WORK) if phase == "work" else (_EMOJI_BREAK, _PCT_BREAK)
-    for cut, emoji in zip(cuts, table):
-        if pct >= cut:
-            return emoji
-    return table[-1]
-
-
 def cmd_genmon():
     """Emits genmon's XML. Replaces the old separate arc-break-panel
     script -- same BreakTimer.current() a `status`/the GUI's tick() use,
@@ -587,14 +629,16 @@ def cmd_genmon():
     self_path = f"{sys.executable} {os.path.abspath(__file__)}"
     cur = BreakTimer().current()
     if not cur:
-        print("<txt>💀 --:--</txt>")
+        print("<txt>💀 ◖ OFF ◗</txt>")
         print(f"<click>{self_path} panel-click</click>")
         print(f"<txtclick>{self_path} panel-click</txtclick>")
         return
     mins, secs = divmod(cur["remaining"], 60)
     pct = cur["remaining"] * 100 // cur["total"]
-    emoji = _phase_emoji(cur["phase"], pct)
-    print(f"<txt>{emoji} {mins:02d}:{secs:02d}</txt>")
+    phase = cur["phase"].upper()
+    # Genmon inherits the panel's label foreground, so the fine capsule glyphs
+    # remain legible across light, dark, and circadian panel themes.
+    print(f"<txt>◖ {phase[0]} {mins:02d}:{secs:02d} ◗</txt>")
     print(f"<click>{self_path} panel-click</click>")
     print(f"<txtclick>{self_path} panel-click</txtclick>")
 

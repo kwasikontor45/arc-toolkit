@@ -57,9 +57,10 @@ import time
 import tkinter as tk
 import traceback
 import webbrowser
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _arc_ui as ui
@@ -171,41 +172,167 @@ def load_image(path):
         return None
 
 
-def get_upcoming_events(limit=3):
-    """Next few Orage events, read straight from its ics (a lightweight regex
-    parser -- no icalendar dependency). Only SUMMARY + DTSTART are read, never
-    DESCRIPTION (more personal detail than belongs in a glanced-at tile).
-    Handles timed (DTSTART:20260918T143000) and all-day (DTSTART;VALUE=DATE:...)
-    forms; all-day events compare by date so one dated today isn't excluded just
-    because midnight already passed."""
+def get_upcoming_events(limit=4):
+    """Next appointments and due to-dos from Orage's local iCalendar file.
+
+    This intentionally reads titles and dates only; descriptions can contain
+    private notes and do not belong in a glanceable operations panel. Supports
+    floating, UTC, and TZID timestamps, all-day entries, and common daily or
+    weekly recurrence rules without an additional iCalendar dependency.
+    """
     if not ORAGE_ICS_PATH.exists():
         return []
     try:
-        text = ORAGE_ICS_PATH.read_text()
+        raw = ORAGE_ICS_PATH.read_text()
     except Exception:
         return []
-    events = []
-    for block in re.findall(r"BEGIN:VEVENT.*?END:VEVENT", text, re.DOTALL):
-        summary_m = re.search(r"^SUMMARY:(.*)$", block, re.MULTILINE)
-        dtstart_m = re.search(r"^DTSTART[^:]*:(\d{8})(?:T(\d{6}))?", block, re.MULTILINE)
-        if not (summary_m and dtstart_m):
-            continue
-        date_part, time_part = dtstart_m.group(1), dtstart_m.group(2)
+
+    lines = []
+    for line in raw.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line.startswith((" ", "\t")) and lines:
+            lines[-1] += line[1:]
+        else:
+            lines.append(line)
+
+    def unescape(value):
+        return (value.replace(r"\n", " ").replace(r"\N", " ")
+                     .replace(r"\,", ",").replace(r"\;", ";").replace(r"\\", "\\").strip())
+
+    def parse_time(params, value):
         try:
-            if time_part:
-                dt, all_day = datetime.strptime(date_part + "T" + time_part, "%Y%m%dT%H%M%S"), False
+            all_day = "VALUE=DATE" in params or (len(value) == 8 and "T" not in value)
+            if all_day:
+                return datetime.strptime(value[:8], "%Y%m%d").date(), True
+            if value.endswith("Z"):
+                return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc), False
+            dt = datetime.strptime(value[:15], "%Y%m%dT%H%M%S")
+            tzid = next((part.split("=", 1)[1] for part in params if part.startswith("TZID=")), None)
+            if tzid:
+                try:
+                    dt = dt.replace(tzinfo=ZoneInfo(tzid))
+                except ZoneInfoNotFoundError:
+                    dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
             else:
-                dt, all_day = datetime.strptime(date_part, "%Y%m%d"), True
-        except ValueError:
+                dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+            return dt, False
+        except (ValueError, TypeError):
+            return None, False
+
+    def next_time(dt, all_day, rule):
+        if not rule:
+            return dt
+        parts = dict(part.split("=", 1) for part in rule.split(";") if "=" in part)
+        freq = parts.get("FREQ", "").upper()
+        interval = max(1, int(parts.get("INTERVAL", "1") or 1))
+        if all_day:
+            now = datetime.now().date()
+        else:
+            now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+        if dt >= now:
+            candidate = dt
+        elif freq == "DAILY":
+            days = max(0, (now.date() - dt.date()).days)
+            steps = (days + interval - 1) // interval
+            candidate = dt + timedelta(days=steps * interval)
+            while candidate < now:
+                candidate += timedelta(days=interval)
+        elif freq == "WEEKLY":
+            weekdays = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
+            byday = {weekdays[x[-2:]] for x in parts.get("BYDAY", "").split(",") if x[-2:] in weekdays}
+            if not byday:
+                byday = {dt.weekday()}
+            anchor = dt.date() - timedelta(days=dt.weekday())
+            candidate = dt
+            for _ in range(3700):
+                weeks = (candidate.date() - anchor).days // 7
+                active_week = weeks >= 0 and weeks % interval == 0
+                if candidate >= now and active_week and (not byday or candidate.weekday() in byday):
+                    break
+                candidate += timedelta(days=1)
+            else:
+                return None
+        else:
+            return None
+        until = parts.get("UNTIL")
+        if until:
+            end, _ = parse_time([], until)
+            if end and candidate > end:
+                return None
+        return candidate
+
+    items, current, depth = [], None, 0
+    for line in lines:
+        if line in ("BEGIN:VEVENT", "BEGIN:VTODO") and current is None:
+            current = {"kind": "EVENT" if line == "BEGIN:VEVENT" else "TODO", "fields": {}}
+            depth = 1
             continue
-        events.append((dt, summary_m.group(1).strip(), all_day))
-    now = datetime.now()
-    upcoming = sorted((e for e in events if (e[0].date() >= now.date() if e[2] else e[0] >= now)),
-                      key=lambda e: e[0])
+        if current is None:
+            continue
+        if line.startswith("BEGIN:"):
+            depth += 1
+            continue
+        if line.startswith("END:"):
+            depth -= 1
+            if depth == 0:
+                fields = current["fields"]
+                if fields.get("STATUS", "").upper() not in ("CANCELLED", "COMPLETED"):
+                    title = fields.get("SUMMARY")
+                    prop, value = fields.get("DUE", (None, None)) if current["kind"] == "TODO" else (None, None)
+                    if not value:
+                        prop, value = fields.get("DTSTART", (None, None))
+                    dt, all_day = parse_time(prop or [], value or "")
+                    if title and dt:
+                        rule = fields.get("RRULE", "")
+                        dt = next_time(dt, all_day, rule)
+                        if dt:
+                            if all_day:
+                                overdue = dt < datetime.now().date()
+                            else:
+                                now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+                                overdue = dt < now
+                            if not (current["kind"] == "EVENT" and overdue):
+                                items.append((dt, all_day, current["kind"], title,
+                                              fields.get("UID", ""), overdue))
+                current = None
+            continue
+        if depth != 1 or ":" not in line:
+            continue
+        prop_name, value = line.split(":", 1)
+        bits = prop_name.split(";")
+        name = bits[0].upper()
+        if name in ("SUMMARY", "UID", "RRULE", "STATUS", "PRIORITY", "CATEGORIES"):
+            current["fields"][name] = unescape(value)
+        elif name in ("DTSTART", "DUE"):
+            current["fields"][name] = (bits[1:], value)
+
+    # A repeated UID represents the same series; retain the earliest copy only.
+    unique, seen = [], set()
+    for item in items:
+        key = item[4] or (item[0], item[2], item[3])
+        if key not in seen:
+            unique.append(item)
+            seen.add(key)
+    def sort_key(item):
+        dt, all_day, kind, _title, _uid, overdue = item
+        if all_day:
+            local_tz = datetime.now().astimezone().tzinfo
+            dt = datetime.combine(dt, datetime.min.time(), tzinfo=local_tz)
+        elif dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        return (0 if overdue else 1, dt.astimezone(timezone.utc),
+                0 if kind == "EVENT" else 1)
+
+    unique.sort(key=sort_key)
     out = []
-    for dt, summary, all_day in upcoming[:limit]:
-        when = dt.strftime("%b %d") if all_day else dt.strftime("%b %d, %I:%M %p").replace(" 0", " ")
-        out.append(f"{when} — {summary}")
+    for dt, all_day, kind, title, _uid, overdue in unique[:limit]:
+        if all_day:
+            when = dt.strftime("%a %b %d")
+        else:
+            shown = dt.astimezone() if dt.tzinfo else dt
+            when = shown.strftime("%a %b %d, %I:%M %p").replace(" 0", " ")
+        label = "EVENT" if kind == "EVENT" else ("OVERDUE TO-DO" if overdue else "TO-DO")
+        title = title if len(title) <= 46 else title[:45].rstrip() + "…"
+        out.append(f"{label} · {when} — {title}")
     return out
 
 
@@ -557,9 +684,9 @@ CATEGORIES = {
     "Studio": [
         Action("LMMS: launch music studio", "flatpak run io.lmms.LMMS", detach=True),
         Action("LMMS: open Reborn practice beat", "flatpak run io.lmms.LMMS "
-               "~/khaos-lab/ref/Reborn_Practice_Beat.mmp", detach=True),
+               "~/khaos-lab/4dev-studio18/ref/Reborn_Practice_Beat.mmp", detach=True),
         Action("Guide: Reborn beat baby steps", "xdg-open "
-               "~/khaos-lab/ref/Reborn_LMMS_Baby_Steps.md", detach=True),
+               "~/khaos-lab/4dev-studio18/ref/Reborn_LMMS_Baby_Steps.md", detach=True),
     ],
     "Security": [
         Action("SOP status", "arc sop status"),
@@ -682,6 +809,7 @@ CATEGORIES = {
         Action("Fix: taskbar panel (has caused a real outage before)", "arc fix panel"),
     ],
     "Personal": [
+        Action("Calendar: show / hide Orage", "env GTK_THEME=Adwaita:light /usr/bin/orage --toggle", detach=True),
         Action("Break timer status", "arc break status"),
         # confirm=False: starting the break timer is the user's own deliberate, harmless,
         # reversible click (the tool must never auto-start -- this button IS the manual start).
@@ -1015,7 +1143,7 @@ class StatusView(TileView):
         (0, 0, "dns", "DNS"), (0, 1, "break", "Break timer"),
         (1, 0, "disk", "Disk"), (1, 1, "services", "Failed services"),
         (2, 0, "uptime", "Uptime / load"), (2, 1, "selfheal", "Self-heal (arc-heal)"),
-        (3, 0, "idsips", "IDS/IPS"), (3, 1, "calendar", "Upcoming (Orage)"),
+        (3, 0, "idsips", "IDS/IPS"), (3, 1, "calendar", "Calendar · events / to-dos"),
         (4, 0, "awslab", "AWS lab (gvm / soclab / wazuh)"), (4, 1, "inventory", "Inventory (arc inv)"),
         (5, 0, "notify", "Notify stack (voice · bubbles · site)"),
         (5, 1, "waydroid", "Waydroid · Android sandbox"),
@@ -1071,7 +1199,7 @@ class StatusView(TileView):
                     f"  ·  evebox {eve.strip() if ok2 else 'missing'}")
 
         def calendar_():
-            up = get_upcoming_events(limit=2)
+            up = get_upcoming_events(limit=4)
             return "\n".join(up) if up else "nothing scheduled"
 
         def awslab():
@@ -1123,6 +1251,10 @@ class StatusView(TileView):
             return TEAL if "suricata active" in val and val.count("running") == 2 else ROSE
         if key == "notify":
             return TEAL if val.count(" ok") == 3 else ROSE
+        if key == "calendar":
+            if "OVERDUE" in val:
+                return ROSE
+            return TEAL if val and val != "nothing scheduled" else FG_MUTED
         if key == "waydroid":
             if val.startswith("container running"):
                 return TEAL
@@ -2243,18 +2375,17 @@ class App:
 
     def _build_panes(self):
         root = self.root
-        # High-contrast, generous rails turn both splits into obvious controls. The
-        # center grip is visible at rest, and the sash responds to both drag and wheel.
-        self.main_pane = tk.PanedWindow(root, orient="vertical", bg=BORDER, sashwidth=11,
-                                        sashpad=2, sashrelief="raised", bd=0, showhandle=True,
-                                        handlepad=4, handlesize=18, opaqueresize=True,
+        # Keep both splitters as fine glass-like seams; hover supplies the accent cue.
+        self.main_pane = tk.PanedWindow(root, orient="vertical", bg=BORDER, sashwidth=5,
+                                        sashpad=0, sashrelief="flat", bd=0, showhandle=False,
+                                        opaqueresize=True,
                                         cursor="arrow")
         self.main_pane.pack(fill="both", expand=True, padx=18, pady=(5, 0))
         body = tk.Frame(self.main_pane, bg=BG)
         self.main_pane.add(body, minsize=240, height=520)
-        body_pane = self.body_pane = tk.PanedWindow(body, orient="horizontal", bg=BORDER, sashwidth=9,
-                                                     sashpad=2, sashrelief="raised", bd=0, showhandle=True,
-                                                     handlepad=4, handlesize=16, opaqueresize=True,
+        body_pane = self.body_pane = tk.PanedWindow(body, orient="horizontal", bg=BORDER, sashwidth=5,
+                                                     sashpad=0, sashrelief="flat", bd=0, showhandle=False,
+                                                     opaqueresize=True,
                                                      cursor="arrow")
         self._bind_splitter_feedback(self.main_pane, "vertical")
         self._bind_splitter_feedback(body_pane, "horizontal")
@@ -2739,8 +2870,8 @@ class App:
             and {"LMMS: launch music studio", "LMMS: open Reborn practice beat",
                  "Guide: Reborn beat baby steps"} <= wired["Studio"]
             and all(shutil.which(cmd) for cmd in ("arc", "arc-sop", "arc-waydroid", "adb", "uad-ng", "flatpak"))
-            and (HOME / "khaos-lab/ref/Reborn_Practice_Beat.mmp").is_file()
-            and (HOME / "khaos-lab/ref/Reborn_LMMS_Baby_Steps.md").is_file()
+            and (HOME / "khaos-lab/4dev-studio18/ref/Reborn_Practice_Beat.mmp").is_file()
+            and (HOME / "khaos-lab/4dev-studio18/ref/Reborn_LMMS_Baby_Steps.md").is_file()
         )
         print(f"  program/project wiring   {'ok' if integration_ok else 'FAILED'} "
               "(Arc SOP · Waydroid manual-start lock/ADB/UAD · LMMS + practice assets)")

@@ -687,6 +687,8 @@ CATEGORIES = {
                "~/khaos-lab/4dev-studio18/ref/Reborn_Practice_Beat.mmp", detach=True),
         Action("Guide: Reborn beat baby steps", "xdg-open "
                "~/khaos-lab/4dev-studio18/ref/Reborn_LMMS_Baby_Steps.md", detach=True),
+        Action("Reference: Lorde — Hammer", "xdg-open "
+               "https://youtu.be/P7xnBdx70GU", detach=True),
     ],
     "Security": [
         Action("SOP status", "arc sop status"),
@@ -2868,7 +2870,7 @@ class App:
                  "Android: open (starts Waydroid + X11 display if needed)"} <= wired["Waydroid"]
             and waydroid_manual_lock
             and {"LMMS: launch music studio", "LMMS: open Reborn practice beat",
-                 "Guide: Reborn beat baby steps"} <= wired["Studio"]
+                 "Guide: Reborn beat baby steps", "Reference: Lorde — Hammer"} <= wired["Studio"]
             and all(shutil.which(cmd) for cmd in ("arc", "arc-sop", "arc-waydroid", "adb", "uad-ng", "flatpak"))
             and (HOME / "khaos-lab/4dev-studio18/ref/Reborn_Practice_Beat.mmp").is_file()
             and (HOME / "khaos-lab/4dev-studio18/ref/Reborn_LMMS_Baby_Steps.md").is_file()

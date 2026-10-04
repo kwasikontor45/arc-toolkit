@@ -60,7 +60,7 @@ The Status dashboard also shows Waydroid beside the notification-stack tile. It 
 
 ### Studio from Khaos Lab
 
-The **Studio** workspace launches the installed LMMS Flatpak, opens the saved `Reborn_Practice_Beat.mmp` exercise directly, or opens its short beginner guide in the default Markdown app (Apostrophe on this workstation). The project and guide stay in `~/khaos-lab/ref/`; the panel only launches the apps and opens those existing files.
+The **Studio** workspace launches the installed LMMS Flatpak, opens the saved `Reborn_Practice_Beat.mmp` exercise directly, opens its short beginner guide in the default Markdown app (Apostrophe on this workstation), or opens Lorde’s “Hammer” video as a listening reference for an original practice beat. The project and guide stay in `~/khaos-lab/4dev-studio18/ref/`; the panel only launches the apps and opens those existing files or link.
 
 The command center adapts its workspace cards and status tiles from one to three columns as the content width changes. Its menu can be tucked away for a narrow window, and action-heavy workspaces have a local filter in addition to global quick-jump. Output remains in a user-resizable lower pane.
 

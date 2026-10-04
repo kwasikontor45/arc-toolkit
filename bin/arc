@@ -245,7 +245,7 @@ cmd_mount() {
     fi
   fi
 
-  local PARTUUID="b00feb5b-4ef4-4a01-a58d-2a6543cbaa90"
+  local PARTUUID="51f4b658-8849-49c2-ae35-03e8194864ba"
   local DEV="/dev/disk/by-partuuid/$PARTUUID"
   local KEY="/etc/luks/storage.key"
 

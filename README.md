@@ -68,6 +68,10 @@ The command center adapts its workspace cards and status tiles from one to three
 
 GVM database exports from `arc gvm cloud-stop` are stored on the encrypted USB vault at `/mnt/storage/Persistent/khaos-lab/gvm-lab/backups/`. The command refuses to stop the cloud lab when that backup destination is unavailable, so large cloud dumps do not accumulate on the workstation disk.
 
+### Arc Pine notification audio
+
+Arc Pine keeps its notification audio under its own named PipeWire client. In Arc Pine → Settings, enable **sound on new notification**, use **test** to preview it, and adjust **Arc Pine alert level** (25–100%). Chimes do not change the system sink volume or mute other applications; speech retains its existing duck-and-restore behavior. Volume-control and power OSD notifications remain muted even when the chime is enabled.
+
 The scheduled YARA scanner uses its installed ruleset snapshot at `~/.local/share/arc-toolkit/yara-rules/`; this keeps the rule data available without retaining the upstream rules repository checkout. Refresh the data from the Yara-Rules/rules remote when you intentionally update signatures.
 
 ### Standalone Arc Break taskbar app

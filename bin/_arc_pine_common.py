@@ -58,6 +58,7 @@ PIPER_VOICE = Path.home() / ".local/share/piper/voices/en_US-lessac-medium.onnx"
 DEFAULT_CONFIG = {
     "sound_enabled": True,
     "sound_file": "/usr/share/sounds/freedesktop/stereo/bell.oga",
+    "audio_volume_percent": 50,
     "speak_enabled": True,
     "app_rules": {"arc-break": {"speak": True}},
     "bubble_theme": "rose-pine-moon",
@@ -69,11 +70,9 @@ DEFAULT_CONFIG = {
     "dnd_end": "07:00",
 }
 
-# Notification playback volume, linear scale per paplay's --volume (65536 = 100%).
-# 96000 =~ 146% -- headroom above unity since the default sink itself isn't maxed
-# (91% as of the 2026-08-25 audit) and other app streams (e.g. Brave) are routinely
-# boosted well above 100% on their own, making a plain 100% notification easy to miss.
-NOTIFY_VOLUME = "96000"
+# Arc Pine identifies its own PulseAudio-compatible stream to PipeWire so
+# per-stream mute/volume state cannot stick to the generic `paplay` client.
+PAPLAY_CLIENT = "ArcPine"
 
 
 def _migrate_app_rules(cfg, file_data):
@@ -131,7 +130,10 @@ def app_rule(cfg, app_name):
 
 
 def is_muted(cfg, app_name):
-    return bool(app_rule(cfg, app_name).get("mute", False))
+    # Honor the old ignored_apps list even when an existing app_rules object
+    # prevented the one-time migration. This keeps volume/power OSD notices
+    # quiet when Arc Pine's own chime is enabled.
+    return bool(app_rule(cfg, app_name).get("mute", False)) or app_name in cfg.get("ignored_apps", [])
 
 
 def should_speak(cfg, app_name):
@@ -209,8 +211,8 @@ def log_notification(app_name, summary, body, urgency_int):
 
 
 def _duck_other_streams():
-    """Mute every other active audio stream (e.g. Brave/YouTube Music) so the
-    notification is heard clearly, restoring exact prior mute state after.
+    """Mute every other active audio stream (e.g. Brave/YouTube Music) so a
+    spoken alert is heard clearly, restoring exact prior mute state after.
     Returns the list of sink-input indexes muted, for _restore_ducked()."""
     try:
         out = subprocess.run(
@@ -241,22 +243,22 @@ def _restore_ducked(muted):
             pass
 
 
-def _paplay_force_unmuted(path):
+def _paplay_force_unmuted(path, volume="65536", stream_name="Arc Pine alert"):
     """subprocess.run(["paplay", ...]) reporting success is NOT proof of
     audible output -- real incident, 2026-08-26: WirePlumber's own
     stream-restore state (~/.local/state/wireplumber/stream-properties)
-    had application.name:paplay permanently remembered as mute:true (most
-    likely set by an accidental cross-thread duck during this same day's
-    earlier ducking-feature testing), so every paplay invocation kept
-    reporting rc=0 while producing total silence -- for hours, across a
-    reboot, with zero error trace anywhere. Belt-and-suspenders fix here:
-    launch paplay non-blocking, immediately force-unmute whatever stream
-    it just created via wpctl (which also corrects WirePlumber's saved
-    preference going forward, not just this one playback), then wait for
-    it to actually finish. Falls back to a plain blocking call if the
-    unmute step itself fails for any reason -- never worse than before.
+    once remembered application.name:paplay as mute:true, so every generic
+    paplay invocation reported success while producing silence. Arc Pine now
+    sets its own client/stream names; immediately force-unmute only its stream
+    via wpctl, then wait for playback to finish. This avoids changing other
+    programs that use paplay. Falls back to a plain blocking call if the
+    unmute step itself fails -- never worse than before.
     """
-    proc = subprocess.Popen(["paplay", f"--volume={NOTIFY_VOLUME}", path],
+    proc = subprocess.Popen([
+        "paplay", f"--client-name={PAPLAY_CLIENT}", f"--stream-name={stream_name}",
+        f"--property=application.name={PAPLAY_CLIENT}",
+        f"--volume={volume}", path,
+    ],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         for _ in range(10):
@@ -268,7 +270,7 @@ def _paplay_force_unmuted(path):
                 # Streams-section lines look like "73. paplay" (id, dot,
                 # space, name, all on one line) -- distinct from the
                 # Clients-section entry, which has trailing [version,...].
-                if stripped.endswith("paplay") and ". " in stripped:
+                if stripped.endswith(stream_name) and ". " in stripped:
                     candidate = stripped.split(".", 1)[0]
                     if candidate.isdigit():
                         stream_id = candidate
@@ -281,10 +283,19 @@ def _paplay_force_unmuted(path):
     proc.wait(timeout=30)
 
 
-def play_sound(sound_file):
+def _volume_arg(volume_percent):
+    try:
+        percent = max(25, min(100, int(volume_percent)))
+    except (TypeError, ValueError):
+        percent = 50
+    return str(round(65536 * percent / 100))
+
+
+def play_sound(sound_file, volume_percent=50):
     if not sound_file or not Path(sound_file).exists():
         return
-    _paplay_force_unmuted(sound_file)
+    stream_name = f"Arc Pine chime {os.getpid()}-{threading.get_ident()}"
+    _paplay_force_unmuted(sound_file, _volume_arg(volume_percent), stream_name)
 
 
 def _wake_sink():
@@ -310,7 +321,7 @@ def _wake_sink():
             Path(path).unlink(missing_ok=True)
 
 
-def speak(text):
+def speak(text, volume_percent=50):
     if not PIPER_BIN.exists() or not PIPER_VOICE.exists():
         return
     if not text.strip():
@@ -324,7 +335,8 @@ def speak(text):
             [str(PIPER_BIN), "-m", str(PIPER_VOICE), "-f", wav_path],
             input=text.encode(), capture_output=True, timeout=15,
         )
-        _paplay_force_unmuted(wav_path)
+        stream_name = f"Arc Pine speech {os.getpid()}-{threading.get_ident()}"
+        _paplay_force_unmuted(wav_path, _volume_arg(volume_percent), stream_name)
     except Exception:
         pass
     finally:
@@ -335,28 +347,24 @@ def speak(text):
                 pass
 
 
-def emit_audio(sound_file, speak_text):
-    """Duck (mute) every other audio stream for the duration of the
-    notification sound/speech, then restore -- guaranteed via finally even
-    if playback errors out, so nothing is ever left muted."""
-    muted = _duck_other_streams()
-    try:
-        threads = []
-        if sound_file:
-            t = threading.Thread(target=play_sound, args=(sound_file,))
-            t.start()
-            threads.append(t)
-        if speak_text:
-            t = threading.Thread(target=speak, args=(speak_text,))
-            t.start()
-            threads.append(t)
-        for t in threads:
-            t.join(timeout=20)
-    finally:
-        _restore_ducked(muted)
+def emit_audio(sound_file, speak_text, audio_volume_percent=50):
+    """Play Arc Pine's short chime on its own stream without muting other
+    applications. Speech retains the older duck/restore behavior so spoken
+    alerts remain clear; the finally path restores every stream Arc Pine muted."""
+    if sound_file:
+        try:
+            play_sound(sound_file, audio_volume_percent)
+        except Exception:
+            pass
+    if speak_text:
+        muted = _duck_other_streams()
+        try:
+            speak(speak_text, audio_volume_percent)
+        finally:
+            _restore_ducked(muted)
 
 
-def emit_audio_async(sound_file, speak_text):
+def emit_audio_async(sound_file, speak_text, audio_volume_percent=50):
     """Fire emit_audio() in a background thread and return it -- both
     callers need this (arc-pined so a slow duck/play never blocks the
     D-Bus loop, arc-pine-notify so it can still join before exiting, since
@@ -364,6 +372,6 @@ def emit_audio_async(sound_file, speak_text):
     there's nothing to play."""
     if not (sound_file or speak_text):
         return None
-    t = threading.Thread(target=emit_audio, args=(sound_file, speak_text))
+    t = threading.Thread(target=emit_audio, args=(sound_file, speak_text, audio_volume_percent))
     t.start()
     return t

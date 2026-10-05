@@ -62,7 +62,10 @@ def handle_notify(args):
     if cfg.get("speak_enabled", True) and not quiet and pine.should_speak(cfg, app_name):
         speak_text = summary if not body else f"{summary}. {body}"
 
-    pine.emit_audio_async(sound_file, speak_text)
+    pine.emit_audio_async(
+        sound_file, speak_text,
+        cfg.get("audio_volume_percent", cfg.get("sound_volume_percent", 50)),
+    )
 
 
 def _refuse_if_already_running():

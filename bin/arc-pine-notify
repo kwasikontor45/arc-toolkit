@@ -68,7 +68,10 @@ def main():
     if cfg.get("speak_enabled", True) and not quiet and pine.should_speak(cfg, app):
         speak_text = summary if not body else f"{summary}. {body}"
 
-    audio_thread = pine.emit_audio_async(sound_file, speak_text)
+    audio_thread = pine.emit_audio_async(
+        sound_file, speak_text,
+        cfg.get("audio_volume_percent", cfg.get("sound_volume_percent", 50)),
+    )
 
     # Snooze is the stronger, deliberate "leave me alone right now" --
     # suppresses the bubble too, not just sound/speech (DND alone still

@@ -441,6 +441,30 @@ class ArcPine(tk.Tk):
                        activebackground=BG, activeforeground=FG, anchor="w",
                        command=lambda: self._save_setting("sound_enabled", self.sound_var.get())
                        ).pack(side="left")
+        ui.button(r, "test", command=self._preview_sound, font=("JetBrains Mono", 8),
+                  bg=SURFACE, fg=TEAL, hover_bg=OVERLAY, padx=8, pady=2).pack(side="left", padx=(8, 0))
+
+        r = row()
+        tk.Label(r, text="Arc Pine alert level", font=("JetBrains Mono", 9), bg=BG, fg=FG,
+                 width=20, anchor="w").pack(side="left")
+        self.audio_volume_var = tk.IntVar(value=50)
+        self.audio_volume_lbl = tk.Label(r, text="50%", font=("JetBrains Mono", 8),
+                                         bg=BG, fg=FG_MUTED, width=5, anchor="e")
+        self.audio_volume_lbl.pack(side="right", padx=(6, 0))
+        self.audio_volume_scale = tk.Scale(
+            r, from_=25, to=100, resolution=5, orient="horizontal", showvalue=False,
+            variable=self.audio_volume_var, length=220, width=10, sliderlength=14,
+            bg=BG, fg=FG, troughcolor=SURFACE, activebackground=TEAL,
+            highlightthickness=0, bd=0,
+            command=lambda value: self.audio_volume_lbl.configure(text=f"{int(float(value))}%"),
+        )
+        self.audio_volume_scale.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self.audio_volume_scale.bind("<ButtonRelease-1>", self._save_audio_volume)
+        self.audio_volume_scale.bind("<KeyRelease>", self._save_audio_volume)
+        tk.Label(self.settings_content,
+                 text="Arc Pine chimes and speech have their own level; other app and desktop volumes stay independent.",
+                 font=("JetBrains Mono", 8), bg=BG, fg=FG_MUTED, anchor="w", wraplength=760,
+                 justify="left").pack(fill="x", padx=14, pady=(0, 4))
 
         r = row()
         self.speak_var = tk.BooleanVar()
@@ -525,6 +549,7 @@ class ArcPine(tk.Tk):
         rows = db_query("SELECT DISTINCT app_name FROM notifications ORDER BY app_name")
         seen = {r["app_name"] for r in rows}
         seen |= set(self.config.get("app_rules", {}).keys())
+        seen |= set(self.config.get("ignored_apps", []))
         return sorted(seen)
 
     def _rebuild_rules_list(self):
@@ -544,10 +569,15 @@ class ArcPine(tk.Tk):
             tk.Label(r, text=app, font=("JetBrains Mono", 9), bg=BG, fg=FG,
                      width=22, anchor="w").pack(side="left")
 
-            mute_var = tk.BooleanVar(value=bool(rule.get("mute", False)))
+            mute_var = tk.BooleanVar(value=bool(
+                rule.get("mute", False) or app in self.config.get("ignored_apps", [])
+            ))
             speak_var = tk.BooleanVar(value=bool(rule.get("speak", False)))
 
             def on_toggle(app=app, mute_var=mute_var, speak_var=speak_var):
+                legacy_ignored = self.config.get("ignored_apps", [])
+                if app in legacy_ignored:
+                    legacy_ignored.remove(app)
                 pine.set_app_rule(self.config, app, mute=mute_var.get(), speak=speak_var.get())
                 pine.save_config(self.config)
 
@@ -565,6 +595,10 @@ class ArcPine(tk.Tk):
         self.max_visible_var.set(self.config.get("bubble_max_visible", 4))
         self.duration_var.set(self.config.get("bubble_duration_ms", 12000) // 1000)
         self.sound_var.set(self.config.get("sound_enabled", True))
+        self.audio_volume_var.set(max(25, min(100, int(
+            self.config.get("audio_volume_percent", self.config.get("sound_volume_percent", 50))
+        ))))
+        self.audio_volume_lbl.configure(text=f"{self.audio_volume_var.get()}%")
         self.speak_var.set(self.config.get("speak_enabled", True))
         self.dnd_var.set(self.config.get("dnd_enabled", False))
         self.dnd_start_var.set(self.config.get("dnd_start", "23:00"))
@@ -574,6 +608,18 @@ class ArcPine(tk.Tk):
     def _save_setting(self, key, value):
         self.config[key] = value
         pine.save_config(self.config)
+
+    def _save_audio_volume(self, _event=None):
+        self._save_setting("audio_volume_percent", max(25, min(100, self.audio_volume_var.get())))
+
+    def _preview_sound(self):
+        cfg = pine.load_config()
+        sound_file = cfg.get("sound_file")
+        if not sound_file or not Path(sound_file).exists():
+            self.status_lbl.configure(text="Arc Pine sound file is missing", fg=ROSE)
+            return
+        pine.emit_audio_async(sound_file, None, self.audio_volume_var.get())
+        self.status_lbl.configure(text="Arc Pine chime preview · other audio left alone", fg=TEAL)
 
     def _update_snooze_indicator(self):
         snoozed = pine.is_snoozed(pine.load_config())

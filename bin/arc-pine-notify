@@ -86,7 +86,9 @@ def main():
     # Must join before exiting; 25s > emit_audio's own internal 20s thread
     # timeout so this never cuts the restore off early.
     if audio_thread is not None:
-        audio_thread.join(timeout=25)
+        # Another notification can hold the shared audio lock. Wait for ours
+        # to finish so process exit cannot interrupt duck/restore cleanup.
+        audio_thread.join()
 
 
 if __name__ == "__main__":

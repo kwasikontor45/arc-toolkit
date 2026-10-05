@@ -149,11 +149,11 @@ class ArcPine(tk.Tk):
         )
         self.history_btn.pack(side="right", padx=(4, 0))
 
-        search_row = tk.Frame(self, bg=BG)
-        search_row.pack(fill="x", padx=16, pady=(4, 10))
+        search_shell, search_row = ui.rounded_frame(self, BG, bg=SURFACE, radius=20, border=BORDER)
+        search_shell.pack(fill="x", padx=16, pady=(4, 10))
         self.search_entry = tk.Entry(search_row, textvariable=self.search_var, font=("JetBrains Mono", 10),
                                       bg=SURFACE, fg=FG, insertbackground=FG, relief="flat",
-                                      highlightthickness=1, highlightbackground=BORDER,
+                                      highlightthickness=0, highlightbackground=BORDER,
                                       highlightcolor=TEAL)
         self.search_entry.pack(fill="x", ipady=7)
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x", padx=16, pady=(0, 6))
@@ -162,8 +162,8 @@ class ArcPine(tk.Tk):
         # Body: history/insights/settings views share the same slot, only
         # one packed at a time -- simplest way to keep this single-window,
         # no extra Toplevel/dialog clutter.
-        self.body = tk.Frame(self, bg=BG)
-        self.body.pack(fill="both", expand=True)
+        body_shell, self.body = ui.rounded_pane(self, BG, bg=SURFACE)
+        body_shell.pack(fill="both", expand=True, padx=12, pady=6)
 
         self.statusbar = tk.Frame(self, bg=BG)
         self.statusbar.pack(fill="x", padx=16, pady=(5, 11))
@@ -220,7 +220,7 @@ class ArcPine(tk.Tk):
         container.pack(fill="both", expand=True, padx=10)
 
         canvas = self.history_canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
-        scrollbar = tk.Scrollbar(container, orient="vertical", command=canvas.yview,
+        scrollbar = ui.PillScrollbar(container, orient="vertical", command=canvas.yview,
                                  bg=OVERLAY, troughcolor=BG, activebackground=TEAL,
                                  bd=0, highlightthickness=0, width=11)
         self.list_frame = tk.Frame(canvas, bg=BG)
@@ -370,7 +370,7 @@ class ArcPine(tk.Tk):
         scroll_wrap = tk.Frame(self.settings_view, bg=BG)
         scroll_wrap.pack(fill="both", expand=True, padx=10, pady=(4, 0))
         self.settings_canvas = tk.Canvas(scroll_wrap, bg=BG, highlightthickness=0)
-        settings_scroll = tk.Scrollbar(scroll_wrap, orient="vertical", command=self.settings_canvas.yview,
+        settings_scroll = ui.PillScrollbar(scroll_wrap, orient="vertical", command=self.settings_canvas.yview,
                                        bg=OVERLAY, troughcolor=BG, activebackground=TEAL,
                                        bd=0, highlightthickness=0, width=11)
         self.settings_content = tk.Frame(self.settings_canvas, bg=BG)
@@ -468,7 +468,7 @@ class ArcPine(tk.Tk):
 
         r = row()
         self.speak_var = tk.BooleanVar()
-        tk.Checkbutton(r, text="speak notifications (arc-break only)", variable=self.speak_var,
+        tk.Checkbutton(r, text="speak notifications (apps enabled below)", variable=self.speak_var,
                        font=("JetBrains Mono", 9), bg=BG, fg=FG, selectcolor=SURFACE,
                        activebackground=BG, activeforeground=FG, anchor="w",
                        command=lambda: self._save_setting("speak_enabled", self.speak_var.get())
@@ -510,7 +510,7 @@ class ArcPine(tk.Tk):
         rules_container = tk.Frame(self.settings_content, bg=BG)
         rules_container.pack(fill="both", expand=True, padx=14, pady=(6, 0))
         rules_canvas = self.rules_canvas = tk.Canvas(rules_container, bg=BG, highlightthickness=0, height=160)
-        rules_scroll = tk.Scrollbar(rules_container, orient="vertical", command=rules_canvas.yview,
+        rules_scroll = ui.PillScrollbar(rules_container, orient="vertical", command=rules_canvas.yview,
                                    bg=OVERLAY, troughcolor=BG, activebackground=TEAL,
                                    bd=0, highlightthickness=0, width=9)
         self.rules_list = tk.Frame(rules_canvas, bg=BG)

@@ -247,7 +247,11 @@ check_watcher_daemons() {
     note "OK::site-funnel::not public"
   fi
   local pu
-  for pu in arc-pine-bubbles arc-pined orage-alarms; do
+  for pu in arc-pine-bubbles arc-pined orage-alarms khaos-hub easyeffects; do
+    if [[ "$pu" == "khaos-hub" || "$pu" == "easyeffects" ]] && ! systemctl --user is-enabled --quiet "$pu.service"; then
+      note "OK::watcher:${pu}::disabled by user; left stopped"
+      continue
+    fi
     if systemctl --user is-active --quiet "$pu"; then
       note "OK::watcher:${pu}::active"
     else
@@ -260,6 +264,24 @@ check_watcher_daemons() {
       fi
     fi
   done
+  # Recover a crashed taskbar timer only when its saved user intent is active.
+  # Explicit Stop and missing/uninstalled app state never start a new timer.
+  if [[ -f "$HOME/.config/systemd/user/arc-break-taskbar.service" ]] && python3 -c '
+import json, pathlib, sys
+try:
+    state = json.loads((pathlib.Path.home()/".local/state/arc-break-taskbar/timer.json").read_text())
+    sys.exit(0 if state.get("phase") in ("focus", "break") else 1)
+except (OSError, ValueError):
+    sys.exit(1)
+'; then
+    if pgrep -f '^/usr/bin/python3 .*/arc_break_taskbar.py' >/dev/null; then
+      note "OK::watcher:arc-break-taskbar::active timer present"
+    elif systemctl --user start arc-break-taskbar.service; then
+      note "HEAL::watcher:arc-break-taskbar::restored saved active timer"
+    else
+      note "FLAG::watcher:arc-break-taskbar::active timer recovery failed"
+    fi
+  fi
   # Stock XFCE popups take the Kataleya phase colour from a generated CSS file (arc-notify-theme.timer);
   # if the timer missed a boundary (asleep/off), the popups would keep the old phase colour.
   local want have

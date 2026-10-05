@@ -249,7 +249,7 @@ def _rounded_points(x1, y1, x2, y2, r):
     ]
 
 
-def rounded_frame(parent, parent_bg, bg=SURFACE, radius=10, border=None, border_width=1):
+def rounded_frame(parent, parent_bg, bg=SURFACE, radius=14, border=None, border_width=1):
     """A real rounded-corner card, Canvas-drawn. Returns (outer, inner):
     pack/grid `outer` into your real layout, then pack/grid your content
     into `inner`. `parent_bg` must match whatever's actually behind this
@@ -269,13 +269,14 @@ def rounded_frame(parent, parent_bg, bg=SURFACE, radius=10, border=None, border_
     # once immediately (even at its pre-content size), THEN <Configure>
     # correctly fires on every real resize from here on -- same fix shape
     # as arc-pine-bubbles' bubble-placement bug earlier this project.
-    outer.create_window(0, 0, window=inner, anchor="nw", tags="win")
+    inset = 8
+    outer.create_window(inset, inset, window=inner, anchor="nw", tags="win")
 
     def redraw(event=None):
         outer.delete("shape")
-        w = max(inner.winfo_reqwidth(), 1)
-        h = max(inner.winfo_reqheight(), 1)
-        outer.config(width=w, height=h)
+        w = max(outer.winfo_width(), inner.winfo_reqwidth() + inset * 2, 1)
+        h = max(inner.winfo_reqheight() + inset * 2, 1)
+        outer.config(width=inner.winfo_reqwidth() + inset * 2, height=h)
         pts = _rounded_points(1, 1, w - 1, h - 1, radius)
         if border:
             outer.create_polygon(pts, smooth=True, fill=state["bg"], outline=border,
@@ -298,15 +299,178 @@ def rounded_frame(parent, parent_bg, bg=SURFACE, radius=10, border=None, border_
         redraw()
 
     inner.bind("<Configure>", redraw)
+    def resize(event):
+        outer.itemconfigure('win', width=max(1, event.width - inset * 2))
+        redraw()
+    outer.bind('<Configure>', resize)
     redraw()
     outer.retheme = retheme
     return outer, inner
 
 
+def rounded_pane(parent, parent_bg, bg=SURFACE, radius=18):
+    """Resizable pane shell; its content stays inset from rounded corners."""
+    outer = tk.Canvas(parent, bg=parent_bg, bd=0, highlightthickness=0)
+    inner = tk.Frame(outer, bg=bg)
+    window = outer.create_window(8, 8, window=inner, anchor='nw')
+    def resize(event):
+        width, height = max(17, outer.winfo_width()), max(17, outer.winfo_height())
+        outer.itemconfigure(window, width=width - 16, height=height - 16)
+        outer.delete('pane-shape')
+        outer.create_polygon(_rounded_points(0, 0, width, height, radius),
+                             smooth=True, fill=inner.cget('bg'), outline='', tags='pane-shape')
+        outer.tag_lower('pane-shape')
+    outer.bind('<Configure>', resize)
+    outer.bind('<Expose>', resize)
+    return outer, inner
+
+
+class PillScrollbar(tk.Canvas):
+    """Rounded thumb, drag/page/wheel/keyboard controls; Scrollbar-compatible."""
+    def __init__(self, parent, orient='vertical', command=None, **options):
+        self.command = command
+        self.orient = orient
+        self.first, self.last = 0.0, 1.0
+        self.thumb = options.pop('bg', OVERLAY)
+        self.track = options.pop('troughcolor', parent.cget('bg'))
+        self.hover = options.pop('activebackground', TEAL)
+        width = max(12, options.pop('width', 14))
+        for key in ('bd', 'borderwidth', 'highlightthickness', 'relief'):
+            options.pop(key, None)
+        super().__init__(parent, bg=self.track, width=width, height=width,
+                         bd=0, highlightthickness=0, takefocus=1, **options)
+        self.active = False
+        self.drag_offset = None
+        self.bind('<Configure>', lambda _event: self.redraw())
+        self.bind('<Enter>', lambda _event: self.set_active(True))
+        self.bind('<Leave>', lambda _event: self.set_active(False))
+        self.bind('<Button-1>', self.press)
+        self.bind('<B1-Motion>', self.drag)
+        self.bind('<ButtonRelease-1>', lambda _event: setattr(self, 'drag_offset', None))
+        self.bind('<Button-4>', lambda _event: self.scroll(-1))
+        self.bind('<Button-5>', lambda _event: self.scroll(1))
+        self.bind('<MouseWheel>', lambda event: self.scroll(-1 if event.delta > 0 else 1))
+        self.bind('<Up>', lambda _event: self.scroll(-1))
+        self.bind('<Down>', lambda _event: self.scroll(1))
+        self.bind('<Prior>', lambda _event: self.scroll(-1, 'pages'))
+        self.bind('<Next>', lambda _event: self.scroll(1, 'pages'))
+        self.bind('<Home>', lambda _event: self.command and self.command('moveto', 0))
+        self.bind('<End>', lambda _event: self.command and self.command('moveto', 1))
+
+    def configure(self, cnf=None, **kwargs):
+        values = dict(cnf or {}, **kwargs)
+        if 'command' in values:
+            self.command = values.pop('command')
+        if 'activebackground' in values:
+            self.hover = values.pop('activebackground')
+        if 'troughcolor' in values:
+            self.track = values.pop('troughcolor')
+            values['bg'] = self.track
+        elif 'bg' in values:
+            self.thumb = values.pop('bg')
+        result = super().configure(**values)
+        if hasattr(self, 'first'):
+            self.redraw()
+        return result
+    config = configure
+
+    def set(self, first, last):
+        self.first = max(0, min(1, float(first)))
+        self.last = max(self.first, min(1, float(last)))
+        self.redraw()
+
+    def geometry_values(self):
+        length = self.winfo_height() if self.orient == 'vertical' else self.winfo_width()
+        span = max(1, length - 6)
+        size = min(span, max(28, (self.last - self.first) * span))
+        travel = max(0, span - size)
+        position = 3 + travel * self.first / max(0.0001, 1 - (self.last - self.first))
+        return position, size, travel
+
+    def redraw(self):
+        self.delete('thumb')
+        pos, size, _travel = self.geometry_values()
+        color = self.hover if self.active else self.thumb
+        if self.orient == 'vertical':
+            bounds = (3, pos, max(4, self.winfo_width() - 3), pos + size)
+        else:
+            bounds = (pos, 3, pos + size, max(4, self.winfo_height() - 3))
+        radius = min(6, (bounds[2] - bounds[0]) / 2, (bounds[3] - bounds[1]) / 2)
+        self.create_polygon(_rounded_points(*bounds, radius), smooth=True, fill=color, outline='', tags='thumb')
+
+    def set_active(self, active):
+        self.active = active
+        self.redraw()
+
+    def scroll(self, count, units='units'):
+        if self.command:
+            self.command('scroll', count, units)
+        return 'break'
+
+    def press(self, event):
+        self.focus_set()
+        axis = event.y if self.orient == 'vertical' else event.x
+        pos, size, _travel = self.geometry_values()
+        if pos <= axis <= pos + size:
+            self.drag_offset = axis - pos
+        else:
+            self.scroll(-1 if axis < pos else 1, 'pages')
+
+    def drag(self, event):
+        if self.drag_offset is None or not self.command:
+            return
+        axis = event.y if self.orient == 'vertical' else event.x
+        _pos, _size, travel = self.geometry_values()
+        fraction = max(0, min(1, (axis - self.drag_offset - 3) / max(1, travel)))
+        self.command('moveto', fraction * (1 - (self.last - self.first)))
+
+
+class RoundedLabel(tk.Canvas):
+    """A Canvas button surface with rounded corners and Label-style colors."""
+    def __init__(self, parent, text='', font=None, bg=SURFACE, fg=FG, padx=10, pady=6, **options):
+        self.look = dict(text=text, font=font, bg=bg, fg=fg, padx=padx, pady=pady, anchor='center')
+        super().__init__(parent, bg=parent.cget('bg'), bd=0, highlightthickness=0, takefocus=1, **options)
+        self.resize_to_text()
+        self.bind('<Configure>', lambda _event: self.redraw())
+
+    def resize_to_text(self):
+        font = tkfont.Font(font=self.look['font'])
+        lines = self.look['text'].split('\n')
+        super().configure(width=max(font.measure(line) for line in lines) + self.look['padx'] * 2,
+                          height=font.metrics('linespace') * len(lines) + self.look['pady'] * 2)
+
+    def configure(self, cnf=None, **kwargs):
+        values = dict(cnf or {}, **kwargs)
+        resized = any(key in values for key in ('text', 'font', 'padx', 'pady'))
+        for key in tuple(values):
+            if key in self.look:
+                self.look[key] = values.pop(key)
+        result = super().configure(**values)
+        if resized:
+            self.resize_to_text()
+        self.redraw()
+        return result
+    config = configure
+
+    def cget(self, key):
+        return self.look[key] if key in self.look else super().cget(key)
+
+    def redraw(self):
+        self.delete('surface')
+        width, height = self.winfo_width(), self.winfo_height()
+        super().configure(bg=self.master.cget('bg'))
+        self.create_polygon(_rounded_points(0, 0, width, height, min(14, height / 2)),
+                            smooth=True, fill=self.look['bg'], outline='', tags='surface')
+        left = self.look['anchor'] in ('w', 'nw', 'sw')
+        self.create_text(self.look['padx'] if left else width / 2, height / 2,
+                         text=self.look['text'], font=self.look['font'], fill=self.look['fg'],
+                         anchor='w' if left else 'center', tags='surface')
+
+
 def button(parent, text, command=None, font=None, bg=SURFACE, fg=TEAL,
            hover_bg=OVERLAY, hover_fg=None, disabled_fg=FG_MUTED,
            padx=10, pady=6):
-    """Label-based button with a real hover-state transition, replacing
+    """Rounded Canvas button with keyboard activation and a hover transition, replacing
     the flat tk.Button pattern every app previously copy-pasted (static
     bg, no feedback until an actual click). Returns the Label with one
     extra method, .set_enabled(bool) -- plain tk.Label has no built-in
@@ -316,7 +480,7 @@ def button(parent, text, command=None, font=None, bg=SURFACE, fg=TEAL,
     hover_fg = hover_fg or fg
     state = {"enabled": True, "fg": fg, "bg": bg, "hover_bg": hover_bg, "hover_fg": hover_fg}
     anim = {"job": None, "bg": bg, "fg": fg}
-    lbl = tk.Label(parent, text=text, font=font, bg=bg, fg=fg,
+    lbl = RoundedLabel(parent, text=text, font=font, bg=bg, fg=fg,
                     padx=padx, pady=pady, cursor="hand2")
 
     def on_enter(_e):
@@ -375,6 +539,10 @@ def button(parent, text, command=None, font=None, bg=SURFACE, fg=TEAL,
     lbl.bind("<Enter>", on_enter)
     lbl.bind("<Leave>", on_leave)
     lbl.bind("<Button-1>", on_click)
+    lbl.bind('<Return>', on_click)
+    lbl.bind('<space>', on_click)
+    lbl.bind('<FocusIn>', on_enter)
+    lbl.bind('<FocusOut>', on_leave)
     lbl.set_enabled = set_enabled
     lbl.set_look = set_look
     lbl.retheme = retheme

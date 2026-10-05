@@ -57,6 +57,7 @@ import time
 import tkinter as tk
 import traceback
 import webbrowser
+import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -610,6 +611,7 @@ CATEGORIES = {
     "Help": [],       # command-center guide and category jump-off
     "SOP": [],        # read the rules, review GAMEPLAN, start + acknowledge a session
     "Status": [],     # special view: live host/security dashboard
+    "Calendar": [],   # shared live Hub check marks over localhost
     "Cockpit": [],    # special view: network / cloud / remote-access overview
     "Inventory": [],  # special view: register vs reality (arc inv), added 2026-09-19
     "Logs": [],       # special view: review / purge curated logs
@@ -812,12 +814,12 @@ CATEGORIES = {
     ],
     "Personal": [
         Action("Calendar: show / hide Orage", "/usr/bin/orage --toggle", detach=True),
-        Action("Break timer status", "arc break status"),
+        Action("Break timer status", "arc-break-taskbar --status"),
         # confirm=False: starting the break timer is the user's own deliberate, harmless,
         # reversible click (the tool must never auto-start -- this button IS the manual start).
-        Action("Break: start", "arc break start", confirm=False),
-        Action("Break: stop", "arc break stop"),
-        Action("Break: open GUI", "arc-break gui", detach=True),
+        Action("Break: start", "arc-break-taskbar --start", confirm=False, detach=True),
+        Action("Break: stop", "arc-break-taskbar --stop"),
+        Action("Break: open GUI", "arc-break-taskbar", detach=True),
         Action("Open arc-pine (notification history/settings)", "arc-pine", detach=True),
         Action("Notification history: count", "arc notify status"),
         Action("Notify stack: state (voice / bubbles / private site)",
@@ -986,7 +988,7 @@ class ConsolePane:
         self._item = self.canvas.create_window(self._pad, self._pad, anchor="nw", window=self.text)
         self.canvas.bind("<Configure>", self._resize)
         self._tags = {}
-        self.scroll = tk.Scrollbar(parent, orient="vertical", command=self.text.yview,
+        self.scroll = ui.PillScrollbar(parent, orient="vertical", command=self.text.yview,
                                    bg=OVERLAY, troughcolor=BG, activebackground=app.phase_accent,
                                    bd=0, highlightthickness=0, width=13)
         self.scroll.pack(side="right", fill="y")
@@ -1077,8 +1079,8 @@ class TileView(View):
         self.labels = {}
         self._tile_frames = []
         for _row, _col, key, title in self.TILES:
-            f = tk.Frame(self.frame, bg=OVERLAY, padx=2, pady=2)
-            self._tile_frames.append(f)
+            shell, f = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16)
+            self._tile_frames.append(shell)
             accent = tk.Frame(f, bg=self.app.phase_accent, height=1)
             accent.pack(fill="x")
             self.app.phase_lines.append(accent)
@@ -1088,7 +1090,7 @@ class TileView(View):
                            anchor="w")
             val.pack(anchor="w", fill="x", padx=10, pady=(0, 8))
             # wrap long values to the tile instead of clipping them off both edges
-            f.bind("<Configure>", lambda e, v=val: v.configure(wraplength=max(e.width - 30, 80)))
+            f.bind("<Configure>", lambda e, v=val: v.configure(wraplength=max(e.width - 30, 80)), add='+')
             self.labels[key] = val
         self.frame.bind("<Configure>", self._layout_tiles, add="+")
         self._layout_tiles(SimpleNamespace(width=max(self.frame.winfo_width(), 600)))
@@ -1141,6 +1143,12 @@ class TileView(View):
 class StatusView(TileView):
     NAME = "status"
     EVERY = 15000
+
+    def build(self):
+        super().build()
+        tile = self.labels['calendar'].master
+        tk.Button(tile, text='Check events / to-dos', command=lambda: self.app.select('Calendar'),
+                  bg=OVERLAY, fg=TEAL, relief='flat').pack(anchor='w', padx=10, pady=(0, 8))
     TILES = [
         (0, 0, "dns", "DNS"), (0, 1, "break", "Break timer"),
         (1, 0, "disk", "Disk"), (1, 1, "services", "Failed services"),
@@ -1160,8 +1168,8 @@ class StatusView(TileView):
             return line.split("mode:")[-1].strip() if line else (out[:60] or "unavailable")
 
         def brk():
-            ok, out = r("arc break status", timeout=10)
-            return strip_banner(out, cmd="arc break status") or "unavailable"
+            ok, out = r("arc-break-taskbar --status", timeout=5)
+            return out.strip() if ok else 'Taskbar timer unavailable'
 
         def disk():
             ok, out = r("df -h / --output=used,avail,pcent", timeout=8)
@@ -1264,6 +1272,108 @@ class StatusView(TileView):
                 return GOLD
             return ROSE
         return FG
+
+
+class CalendarView(View):
+    scrollable = True
+
+    def build(self):
+        self.signature = None
+        self.latest_update = ''
+        self.busy = False
+        tk.Label(self.frame, text='Events & to-dos', bg=SURFACE, fg=FG,
+                 font=self.app.f.label).pack(anchor='w', padx=16, pady=12)
+        tk.Label(self.frame, text='Checks sync with local Khaos Hub. Orage appointments and alarms stay unchanged.',
+                 wraplength=520, justify='left', bg=SURFACE, fg=FG_MUTED).pack(anchor='w', padx=16)
+        tk.Button(self.frame, text='Open Khaos Hub', command=lambda: webbrowser.open('http://127.0.0.1:8766/'),
+                  bg=OVERLAY, fg=TEAL, relief='flat').pack(anchor='w', padx=16, pady=8)
+        self.message = tk.Label(self.frame, text='Loading calendar…', bg=SURFACE, fg=FG_MUTED)
+        self.message.pack(anchor='w', padx=16)
+        self.rows = tk.Frame(self.frame, bg=SURFACE)
+        self.rows.pack(fill='both', expand=True, padx=16, pady=8)
+        self.poll('calendar-live', 2000, self.read_calendar, self.apply_calendar)
+
+    @staticmethod
+    def request(path, data=None, token=None):
+        headers = {'Origin': 'http://127.0.0.1:8766'}
+        if token:
+            headers['X-Hub-Token'] = token
+        if data is not None:
+            headers['Content-Type'] = 'application/json'
+        request = urllib.request.Request('http://127.0.0.1:8766' + path,
+                  data=json.dumps(data).encode() if data is not None else None, headers=headers)
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return json.load(response)
+
+    def read_calendar(self):
+        try:
+            return self.request('/api/calendar')
+        except Exception:
+            return {'error': 'Local Hub calendar unavailable. Orage remains available from System.'}
+
+    def apply_calendar(self, data):
+        if not self.alive() or self.busy:
+            return
+        if 'error' in data:
+            self.message.configure(text=data['error'], fg=ROSE)
+            for widget in self.rows.winfo_children():
+                widget.configure(state='disabled')
+            self.signature = None
+            return
+        if data.get('updated', '') < self.latest_update:
+            return
+        self.latest_update = data.get('updated', '')
+        self.message.configure(text='Live · updates every 2 seconds', fg=TEAL)
+        signature = json.dumps(data['items'], sort_keys=True)
+        if signature == self.signature:
+            return
+        self.signature = signature
+        for widget in self.rows.winfo_children():
+            widget.destroy()
+        for item in data['items']:
+            value = tk.BooleanVar(value=item['done'])
+            button = tk.Checkbutton(self.rows, text=f"{item['title']}\n{item['kind']} · {item['when']}",
+                      variable=value, command=lambda i=item, v=value: self.toggle(i, v),
+                      bg=SURFACE, fg=FG, selectcolor=OVERLAY, activebackground=SURFACE,
+                      activeforeground=TEAL, anchor='w', justify='left', wraplength=500)
+            button._value = value
+            button.pack(fill='x', anchor='w', pady=5)
+        if not data['items']:
+            self.message.configure(text='No events in the next two weeks or to-dos.')
+        self.app.refresh_scroll(self.frame)
+
+    def toggle(self, item, value):
+        if self.busy:
+            value.set(item['done'])
+            return
+        self.busy = True
+        self.message.configure(text='Saving…')
+        desired = value.get()
+        for widget in self.rows.winfo_children():
+            widget.configure(state='disabled')
+        def save():
+            try:
+                token = self.request('/api/session')['token']
+                result = self.request('/api/calendar/check',
+                       {'id': item['id'], 'done': desired, 'revision': item['revision']}, token)
+            except Exception:
+                result = {'error': 'Change not saved. Refresh and retry; another view may have changed it.'}
+            self.app.bridge.post(self.saved, result)
+        threading.Thread(target=save, daemon=True).start()
+
+    def saved(self, data):
+        self.busy = False
+        if not self.alive():
+            return
+        self.signature = None
+        if 'error' in data:
+            self.message.configure(text=data['error'], fg=ROSE)
+            self.kick('calendar-live')
+        else:
+            self.apply_calendar(data)
+
+    def refresh(self):
+        self.kick('calendar-live')
 
 
 class CockpitView(TileView):
@@ -1745,7 +1855,7 @@ class LogsView(View):
                  anchor="w").pack(fill="x", padx=14, pady=(12, 4))
         tf = tk.Frame(d.shell, bg=SURFACE)
         tf.pack(fill="both", expand=True, padx=14, pady=(0, 8))
-        sb = tk.Scrollbar(tf)
+        sb = ui.PillScrollbar(tf)
         sb.pack(side="right", fill="y")
         box = tk.Text(tf, bg=SURFACE, fg=FG, font=("JetBrains Mono", 10), wrap="word",
                       yscrollcommand=sb.set, relief="flat")
@@ -1822,7 +1932,7 @@ class FindView(View):
                   hover_bg=BG, padx=14, pady=6).pack(side="left")
         tf = tk.Frame(self.frame, bg=BG)
         tf.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-        sb = tk.Scrollbar(tf)
+        sb = ui.PillScrollbar(tf)
         sb.pack(side="right", fill="y")
         self.box = tk.Text(tf, bg=SURFACE, fg=FG, font=("JetBrains Mono", 10), wrap="word",
                            yscrollcommand=sb.set, relief="flat", height=24)
@@ -1974,7 +2084,7 @@ class SopView(View):
                  bg=SURFACE, fg=FG_MUTED, anchor="w").pack(fill="x", padx=14, pady=(12, 5))
         frame = tk.Frame(d.shell, bg=SURFACE)
         frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
-        scroll = tk.Scrollbar(frame)
+        scroll = ui.PillScrollbar(frame)
         scroll.pack(side="right", fill="y")
         text = tk.Text(frame, bg=SURFACE, fg=FG, font=self.app.f.mono, wrap="word",
                        yscrollcommand=scroll.set, relief="flat")
@@ -2018,6 +2128,7 @@ class HelpView(View):
     DESCRIPTIONS = {
         "SOP": "Read SOT/GAMEPLAN, satisfy the gate, and review compliance",
         "Status": "Live workstation health and security snapshot",
+        "Calendar": "Check events and to-dos; shared live with local Khaos Hub",
         "Cockpit": "At-a-glance network, cloud, and remote-access controls",
         "Inventory": "Track registered assets and find drift or untracked items",
         "Logs": "Review recent system, security, and self-heal activity",
@@ -2214,7 +2325,7 @@ class ActionsView(View):
 
 # ── the app ──────────────────────────────────────────────────────────────────
 class App:
-    SPECIAL_VIEWS = {"Help": HelpView, "SOP": SopView, "Status": StatusView, "Cockpit": CockpitView, "Inventory": InventoryView,
+    SPECIAL_VIEWS = {"Help": HelpView, "SOP": SopView, "Status": StatusView, "Calendar": CalendarView, "Cockpit": CockpitView, "Inventory": InventoryView,
                      "Logs": LogsView, "Find": FindView}
 
     def __init__(self):
@@ -2322,10 +2433,10 @@ class App:
         self.phase_lbl.pack(side="right", padx=(0, 14))
         # The quick-jump gets its own full-width row, leaving the brand and window controls clear.
         self.search_var = tk.StringVar()
-        quickbar = tk.Frame(root, bg=BG)
-        quickbar.pack(fill="x", padx=18, pady=(0, 9))
+        quickbar_shell, quickbar = ui.rounded_frame(root, BG, bg=OVERLAY, radius=20, border=BORDER)
+        quickbar_shell.pack(fill="x", padx=18, pady=(0, 9))
         self.search_entry = tk.Entry(quickbar, textvariable=self.search_var, font=f.small, bg=OVERLAY,
-                                     fg=FG, insertbackground=FG, relief="flat", highlightthickness=1,
+                                     fg=FG, insertbackground=FG, relief="flat", highlightthickness=0,
                                      highlightbackground=OVERLAY, highlightcolor=GOLD)
         self.search_entry.pack(fill="x", ipady=7)
         self._placeholder = "⌕   Find a workspace or action…     Ctrl+F"
@@ -2393,33 +2504,34 @@ class App:
         self._bind_splitter_feedback(body_pane, "horizontal")
         body_pane.pack(fill="both", expand=True)
         # Canvas, not Frame, so the watermark can sit behind the nav buttons.
-        self.sidebar_frame = tk.Frame(body_pane, bg=BG, width=216)
+        self.sidebar_frame, sidebar_inner = ui.rounded_pane(body_pane, BORDER, bg=BG)
+        self.sidebar_frame.configure(width=216)
         self.sidebar_frame.pack_propagate(False)
-        self.sidebar = tk.Canvas(self.sidebar_frame, bg=BG, width=207, highlightthickness=0)
-        self.sidebar_scroll = tk.Scrollbar(self.sidebar_frame, orient="vertical", command=self.sidebar.yview,
+        self.sidebar = tk.Canvas(sidebar_inner, bg=BG, width=207, highlightthickness=0)
+        self.sidebar_scroll = ui.PillScrollbar(sidebar_inner, orient="vertical", command=self.sidebar.yview,
                                            bg=OVERLAY, troughcolor=BG, activebackground=self.phase_accent,
                                            bd=0, highlightthickness=0, width=8)
         self.sidebar.configure(yscrollcommand=self.sidebar_scroll.set)
         self.sidebar.pack(side="left", fill="both", expand=True)
         self.sidebar_scroll.pack(side="right", fill="y")
         body_pane.add(self.sidebar_frame, minsize=188, width=216)
-        content_wrap = self.content_wrap = tk.Frame(body_pane, bg=SURFACE)
-        body_pane.add(content_wrap, minsize=300)
+        self.content_wrap, content_wrap = ui.rounded_pane(body_pane, BORDER, bg=SURFACE)
+        body_pane.add(self.content_wrap, minsize=300)
         self.content = tk.Canvas(content_wrap, bg=SURFACE, highlightthickness=0)
         # A real scrollbar wired to a scrollregion kept honest by the embedded widget's actual
         # required size (fixes SOC being clipped with no way to reach the bottom rows). Shown
         # only when a view actually overflows.
-        self.content_scroll = tk.Scrollbar(content_wrap, orient="vertical", command=self.content.yview, bg=OVERLAY,
+        self.content_scroll = ui.PillScrollbar(content_wrap, orient="vertical", command=self.content.yview, bg=OVERLAY,
                                            troughcolor=BG, activebackground=self.phase_accent,
                                            bd=0, highlightthickness=0, width=14)
         self.content.configure(yscrollcommand=self.content_scroll.set)
         self.content.pack(side="left", fill="both", expand=True, padx=(10, 0))
         if self.content_bg:
             self.content.create_image(0, 0, anchor="nw", image=self.content_bg)
-        console_frame = tk.Frame(self.main_pane, bg=BG)
+        console_shell, console_frame = ui.rounded_pane(self.main_pane, BORDER, bg=BG)
         # Keep output available without letting it dominate the work area at startup.
-        self.console_frame = console_frame
-        self.main_pane.add(console_frame, minsize=86, height=148)
+        self.console_frame = console_shell
+        self.main_pane.add(console_shell, minsize=86, height=148)
         self.console = ConsolePane(self, console_frame)
         # An always-visible operational rail makes state discoverable while moving between
         # every workspace. The nearby splitter grip above controls output height.

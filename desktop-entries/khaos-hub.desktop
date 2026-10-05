@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Khaos Hub
+Comment=Live local calendar and shared Khaos Lab check marks
+Exec=xdg-open http://127.0.0.1:8766/
+Icon=khaos-lab
+Terminal=false
+Categories=Utility;

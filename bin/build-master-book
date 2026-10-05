@@ -14,7 +14,7 @@ REWRITE_IMAGES="$HOME/.local/bin/build-master-book-rewrite-images.py"
 
 EXCLUDE_DIRS=(-path "*/.git/*" -o -path "*/node_modules/*" -o -path "*/__pycache__/*" \
   -o -path "*/.venv/*" -o -path "*/venv/*" -o -path "*/site-packages/*" \
-  -o -path "*/master-archive/*")
+  -o -path "*/master-archive/*" -o -path "*/bio..:☠️:..hazard/*")
 # master-archive excluded because $OUT lives inside it, which lives inside
 # the khaos-lab tree being walked -- without this, the khaos-lab pass finds
 # its own in-progress output partway through (already containing the full
@@ -24,7 +24,10 @@ EXCLUDE_DIRS=(-path "*/.git/*" -o -path "*/node_modules/*" -o -path "*/__pycache
 # files on disk vs 171 tree-headers in the built book, all dupes traced to
 # exactly this self-inclusion.
 
-: > "$OUT"
+mkdir -p "${OUT%/*}"
+book_output_path="$OUT"
+OUT=$(mktemp "${book_output_path}.tmp.XXXXXX")
+trap 'rm -f "$OUT"' EXIT
 count=0
 
 for tree in "${TREES[@]}"; do
@@ -50,5 +53,7 @@ for tree in "${TREES[@]}"; do
 done
 
 lines=$(wc -l < "$OUT")
-echo "built: $OUT"
+mv -f "$OUT" "$book_output_path"
+trap - EXIT
+echo "built: $book_output_path"
 echo "$count files, $lines lines"

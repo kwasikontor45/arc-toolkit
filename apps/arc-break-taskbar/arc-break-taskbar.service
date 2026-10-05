@@ -1,0 +1,7 @@
+[Unit]
+Description=Arc Break taskbar timer (resume active state only)
+
+[Service]
+ExecStart=%h/.local/opt/arc-break-taskbar/arc_break_taskbar.py --resume-only
+Restart=on-failure
+RestartSec=3

@@ -1,0 +1,12 @@
+[Unit]
+Description=Khaos Hub local calendar and shared check marks
+
+[Service]
+ExecStart=%h/.local/bin/khaos-hub
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

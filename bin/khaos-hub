@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""Local Hub calendar: Orage is read-only; this service owns check marks."""
+import argparse
+import hashlib
+import json
+import os
+import secrets
+import sqlite3
+import threading
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from dateutil import rrule, tz
+
+HOME = Path.home()
+SOURCE = HOME / '.local/share/orage/orage.ics'
+STATE = HOME / '.local/share/khaos-hub'
+WEB = Path(__file__).resolve().parent.parent / 'apps/khaos-hub/web'
+PORT = 8766
+ORIGIN = f'http://127.0.0.1:{PORT}'
+TOKEN = secrets.token_urlsafe(32)
+LOCK = threading.Lock()
+
+
+def parse_date(prop, value):
+    zone = tz.tzlocal()
+    for param in prop.split(';')[1:]:
+        if param.startswith('TZID='):
+            zone = tz.gettz(param[5:].strip('"')) or zone
+    if value.endswith('Z'):
+        return datetime.strptime(value, '%Y%m%dT%H%M%SZ').replace(tzinfo=timezone.utc)
+    if len(value) == 8:
+        return datetime.strptime(value, '%Y%m%d').replace(tzinfo=zone)
+    return datetime.strptime(value, '%Y%m%dT%H%M%S').replace(tzinfo=zone)
+
+
+def calendar_items(source=None, now=None):
+    source = source or SOURCE
+    now = now or datetime.now(tz.tzlocal())
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    lines = []
+    raw = source.read_text()
+    if not raw.lstrip().startswith('BEGIN:VCALENDAR') or not raw.rstrip().endswith('END:VCALENDAR'):
+        raise OSError('Calendar is being rewritten; retry')
+    for line in raw.splitlines():
+        if line.startswith((' ', '\t')) and lines:
+            lines[-1] += line[1:]
+        else:
+            lines.append(line)
+    components, current, depth = [], None, 0
+    for line in lines:
+        if line in ('BEGIN:VEVENT', 'BEGIN:VTODO') and current is None:
+            current = {'kind': line[6:], 'fields': {}}
+            depth = 1
+        elif current is not None:
+            if line.startswith('BEGIN:'):
+                depth += 1
+            elif line.startswith('END:'):
+                depth -= 1
+                if depth == 0:
+                    components.append(current)
+                    current = None
+            elif depth == 1 and ':' in line:
+                prop, value = line.split(':', 1)
+                current['fields'].setdefault(prop.split(';')[0].upper(), []).append((prop, value))
+    items, seen, overrides = [], set(), set()
+    for component in components:
+        fields = component['fields']
+        if 'RECURRENCE-ID' in fields and 'UID' in fields:
+            try:
+                overrides.add((fields['UID'][0][1], parse_date(*fields['RECURRENCE-ID'][0]).isoformat()))
+            except ValueError:
+                pass
+    for component in components:
+        f = component['fields']
+        value = lambda key, default='': f.get(key, [('', default)])[0][1]
+        uid, title = value('UID'), value('SUMMARY')
+        if not uid or not title or value('STATUS') == 'CANCELLED':
+            continue
+        title = title.replace(r'\n', ' ').replace(r'\,', ',').replace(r'\;', ';').replace(r'\\', '\\')
+        date_field = f.get('DUE', f.get('DTSTART', [])) if component['kind'] == 'VTODO' else f.get('DTSTART', [])
+        try:
+            start = parse_date(*date_field[0]) if date_field else None
+            dates = [start]
+            if value('RRULE') and start and 'RECURRENCE-ID' not in f:
+                series = rrule.rruleset()
+                series.rrule(rrule.rrulestr(value('RRULE'), dtstart=start))
+                for prop, vals in f.get('EXDATE', []):
+                    for val in vals.split(','):
+                        series.exdate(parse_date(prop, val))
+                for prop, vals in f.get('RDATE', []):
+                    for val in vals.split(','):
+                        series.rdate(parse_date(prop, val))
+                dates = []
+                for occurrence in series.xafter(today, count=60, inc=True):
+                    if occurrence > today + timedelta(days=14):
+                        break
+                    dates.append(occurrence)
+            for date in dates:
+                if component['kind'] == 'VEVENT' and (date is None or date < today or date > today + timedelta(days=14)):
+                    continue
+                stamp = date.isoformat() if date and (value('RRULE') or 'RECURRENCE-ID' in f) else ''
+                if 'RECURRENCE-ID' in f:
+                    stamp = parse_date(*f['RECURRENCE-ID'][0]).isoformat()
+                if 'RECURRENCE-ID' not in f and date and (uid, date.isoformat()) in overrides:
+                    continue
+                key = hashlib.sha256((uid + '\0' + stamp).encode()).hexdigest()
+                if key in seen:
+                    continue
+                seen.add(key)
+                items.append({'id': key, 'title': title, 'kind': 'To-do' if component['kind'] == 'VTODO' else 'Event',
+                              'when': date.astimezone().strftime('%a %b %d · %H:%M') if date else 'No due date',
+                              'date': date.isoformat() if date else '',
+                              'source_done': value('STATUS') == 'COMPLETED'})
+        except (ValueError, TypeError, OverflowError):
+            continue
+    return sorted(items, key=lambda item: (item['date'] or '9999', item['kind'], item['title']))
+
+
+@contextmanager
+def connection():
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    db = sqlite3.connect(STATE / 'checks.db', timeout=5)
+    db.execute('CREATE TABLE IF NOT EXISTS checks (id TEXT PRIMARY KEY, done INTEGER NOT NULL, revision INTEGER NOT NULL)')
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
+
+
+def snapshot():
+    items = calendar_items()
+    with connection() as db:
+        marks = dict((key, (bool(done), revision)) for key, done, revision in db.execute('SELECT id,done,revision FROM checks'))
+    for item in items:
+        item['done'], item['revision'] = marks.get(item['id'], (item.pop('source_done'), 0))
+        item.pop('source_done', None)
+    return {'items': items, 'updated': datetime.now().isoformat(), 'scope': 'Shared Hub/Lab check marks; Orage appointments and alarms stay unchanged.'}
+
+
+def set_checked(data):
+    if type(data.get('done')) is not bool or type(data.get('revision')) is not int:
+        raise ValueError('Invalid check mark')
+    with LOCK:
+        item = next((i for i in snapshot()['items'] if i['id'] == data.get('id')), None)
+        if not item:
+            raise ValueError('Appointment is no longer available')
+        if item['revision'] != data['revision']:
+            raise RuntimeError('Changed in another view. Refresh and retry.')
+        with connection() as db:
+            db.execute('INSERT INTO checks VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET done=excluded.done,revision=excluded.revision',
+                       (item['id'], int(data['done']), item['revision'] + 1))
+        return snapshot()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(5)
+
+    def reply(self, code, body, mime='application/json'):
+        payload = json.dumps(body).encode() if mime == 'application/json' else body
+        self.send_response(code)
+        self.send_header('Content-Type', mime)
+        self.send_header('Content-Length', str(len(payload)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Content-Security-Policy', "default-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def allowed(self):
+        return (self.headers.get('Host') == f'127.0.0.1:{PORT}'
+                and self.headers.get('Sec-Fetch-Site') not in ('cross-site', 'same-site')
+                and self.headers.get('Origin', ORIGIN) == ORIGIN)
+
+    def do_GET(self):
+        if not self.allowed():
+            return self.reply(403, {'error': 'Local access only'})
+        path = urlsplit(self.path).path
+        try:
+            if path == '/api/calendar':
+                return self.reply(200, snapshot())
+            if path == '/api/session':
+                return self.reply(200, {'token': TOKEN})
+            assets = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript'),
+                      '/app.css': ('app.css', 'text/css'), '/icon.svg': ('icon.svg', 'image/svg+xml'),
+                      '/manifest.webmanifest': ('manifest.webmanifest', 'application/manifest+json')}
+            if path in assets:
+                name, mime = assets[path]
+                return self.reply(200, (WEB / name).read_bytes(), mime)
+            self.reply(404, {'error': 'Not found'})
+        except (OSError, sqlite3.Error):
+            self.reply(503, {'error': 'Calendar unavailable; retry shortly.'})
+
+    def do_POST(self):
+        if not self.allowed() or self.headers.get('X-Hub-Token') != TOKEN:
+            return self.reply(403, {'error': 'Refresh your local Hub session'})
+        if self.path != '/api/calendar/check':
+            return self.reply(404, {'error': 'Not found'})
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= 2048 or self.headers.get('Content-Type') != 'application/json':
+                raise ValueError('Invalid request')
+            data = json.loads(self.rfile.read(length))
+            if not isinstance(data, dict):
+                raise ValueError('Invalid request')
+            self.reply(200, set_checked(data))
+        except RuntimeError as e:
+            self.reply(409, {'error': str(e)})
+        except (ValueError, TypeError) as e:
+            self.reply(400, {'error': str(e)})
+        except (OSError, sqlite3.Error):
+            self.reply(503, {'error': 'Could not save; refresh and retry.'})
+
+    def log_message(self, *_args):
+        pass  # Do not log private calendar entries.
+
+
+if __name__ == '__main__':
+    argparse.ArgumentParser(description=__doc__).parse_args()
+    os.umask(0o077)
+    server = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
+    server.daemon_threads = True
+    print(f'Khaos Hub local calendar: {ORIGIN}', flush=True)
+    server.serve_forever()

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#080b10">
+  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none';">
+  <title>Khaos Hub · Local calendar</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="side-rail" aria-label="Primary navigation">
+      <a class="brand-mark" href="#overview" aria-label="Khaos Hub overview">K<span>✳</span></a>
+      <nav class="rail-nav" aria-label="Sections">
+        <button class="rail-link is-active" type="button" data-page="overview" aria-label="Overview" aria-current="page"><span class="rail-glyph">◫</span><span>Overview</span></button>
+        <button class="rail-link" type="button" data-page="guide" aria-label="Guide"><span class="rail-glyph">⌘</span><span>Guide</span></button>
+      </nav>
+      <div class="rail-foot"><span class="rail-led"></span><span>LOCAL</span></div>
+    </aside>
+
+    <main class="main-shell">
+      <header class="topbar">
+        <div class="topbar-brand"><span class="brand-mark small" aria-hidden="true">K<span>✳</span></span><span>KHAOS <b>HUB</b></span></div>
+        <div class="topbar-state"><span class="state-led"></span><span>LOCAL CALENDAR</span></div>
+      </header>
+
+      <section class="page page-overview" data-view="overview" aria-labelledby="page-title">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">KHAOS LAB <span>/</span> PRIVATE HUB</p>
+            <h1 id="page-title">Systems, at a glance.</h1>
+            <p class="lede">A quiet command view for the things you run.</p>
+          </div>
+          <div class="sample-stamp"><span class="stamp-led"></span><span>SAMPLE SNAPSHOT<br><b>06:00 · OCT 05</b></span></div>
+        </div>
+
+        <div class="preview-banner" role="status">
+          <span class="preview-icon" aria-hidden="true">i</span>
+          <span><strong>Local preview.</strong> Calendar is live on this computer. System tiles below remain example values.</span>
+          <span class="fixture-tag">LOCAL</span>
+        </div>
+
+        <section aria-labelledby="calendar-title" class="calendar-section"><h2 id="calendar-title">Events &amp; to-dos</h2><p>Check marks sync with Khaos Lab. Orage appointments and alarms stay unchanged.</p><p id="calendar-state" role="status">Connecting to calendar…</p><div id="calendar-list"></div></section>
+        <div class="section-head">
+          <div><p class="eyebrow">OVERVIEW</p><h2>System pulse</h2></div>
+          <div class="scenario-control" role="group" aria-label="Preview sample scenario">
+            <button class="scenario is-selected" type="button" data-scenario="0" aria-pressed="true">Nominal</button>
+            <button class="scenario" type="button" data-scenario="1" aria-pressed="false">Partial</button>
+            <button class="scenario" type="button" data-scenario="2" aria-pressed="false">Offline</button>
+          </div>
+        </div>
+
+        
+        <div class="status-grid" id="status-grid" aria-label="Sample status cards"></div>
+        <footer class="page-foot"><span>LIVE CALENDAR · SAMPLE SYSTEM TILES</span><span>Tap any tile to inspect its planned source</span></footer>
+      </section>
+
+      <section class="page page-guide" data-view="guide" aria-labelledby="guide-title" hidden>
+        <div class="page-heading guide-heading">
+          <div><p class="eyebrow">KHAOS LAB <span>/</span> FIELD NOTES</p><h1 id="guide-title">A clear view.<br>Nothing hidden.</h1><p class="lede">Live calendar checks, with clearly labeled sample system tiles.</p></div>
+          <div class="guide-orbit" aria-hidden="true"><span></span><i></i><b>KH</b></div>
+        </div>
+        <div class="guide-grid">
+          <article class="guide-card"><span class="guide-index">01</span><h2>Sample states</h2><p>Nominal, partial failure, and host offline fixtures. Switch scenarios on Overview to see how each tile responds.</p></article>
+          <article class="guide-card"><span class="guide-index">02</span><h2>Shared check marks</h2><p>Check and uncheck calendar entries here or in Khaos Lab. The views sync every two seconds. Orage appointments and alarms remain unchanged.</p></article>
+          <article class="guide-card"><span class="guide-index">03</span><h2>Private by default</h2><p>This calendar runs on this computer only. Phone access still needs a reviewed private connection.</p></article>
+          <article class="guide-card guide-wide"><span class="guide-index">04</span><h2>Planned status surfaces</h2><p>Host and Tailnet · Host health · Services · SOC / IDS · Backup · Inventory summary · Cloud lab.</p></article>
+        </div>
+        <footer class="page-foot"><span>PREVIEW 0.1.0</span><span>Live calendar · sample system status</span></footer>
+      </section>
+
+      <nav class="mobile-nav" aria-label="Primary navigation">
+        <button class="mobile-link is-active" type="button" data-page="overview" aria-current="page"><span aria-hidden="true">◫</span>Overview</button>
+        <button class="mobile-link" type="button" data-page="guide"><span aria-hidden="true">⌘</span>Guide</button>
+      </nav>
+    </main>
+  </div>
+
+  <dialog class="detail-dialog" aria-labelledby="detail-title">
+    <form method="dialog" class="dialog-surface">
+      <button class="dialog-close" aria-label="Close details">×</button>
+      <p class="eyebrow">PLANNED SOURCE</p>
+      <h2 id="detail-title">Status detail</h2>
+      <p class="detail-value" id="detail-value"></p>
+      <p class="detail-source" id="detail-source"></p>
+      <p class="detail-note">Fixture only. This build does not contact or read that source.</p>
+      <button class="dialog-done" value="close">Done</button>
+    </form>
+  </dialog>
+</body>
+</html>

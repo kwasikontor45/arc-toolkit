@@ -21,6 +21,8 @@ duplicated logic.
 """
 
 import json
+import fcntl
+import logging
 import os
 import subprocess
 import sqlite3
@@ -60,7 +62,7 @@ DEFAULT_CONFIG = {
     "sound_file": "/usr/share/sounds/freedesktop/stereo/bell.oga",
     "audio_volume_percent": 50,
     "speak_enabled": True,
-    "app_rules": {"arc-break": {"speak": True}},
+    "app_rules": {"arc-break": {"speak": True}, "orage": {"speak": True}},
     "bubble_theme": "rose-pine-moon",
     "bubble_max_visible": 4,
     "bubble_duration_ms": 12000,
@@ -73,6 +75,7 @@ DEFAULT_CONFIG = {
 # Arc Pine identifies its own PulseAudio-compatible stream to PipeWire so
 # per-stream mute/volume state cannot stick to the generic `paplay` client.
 PAPLAY_CLIENT = "ArcPine"
+_AUDIO_LOCK = threading.Lock()
 
 
 def _migrate_app_rules(cfg, file_data):
@@ -134,6 +137,8 @@ def app_rule(cfg, app_name):
         "arc_break_taskbar.py", "studio.kontor.ArcBreakTaskbar", "Arc Break",
     ):
         app_name = "arc-break"
+    if app_name not in rules and app_name in ("Orage", "orage-calendar", "org.xfce.Orage", "org.xfce.orage"):
+        app_name = "orage"
     return rules.get(app_name, {})
 
 
@@ -232,6 +237,11 @@ def _duck_other_streams():
         return []
     muted = []
     for s in streams:
+        props = s.get("properties", {})
+        # Never mute an effects processor's output: it carries our speech too.
+        if (props.get("application.id") == "com.github.wwmm.easyeffects"
+                or props.get("application.name", "").lower() in ("easyeffects", "easy effects", "arcpine")):
+            continue
         idx = s.get("index")
         if idx is None or s.get("mute"):
             continue
@@ -288,7 +298,14 @@ def _paplay_force_unmuted(path, volume="65536", stream_name="Arc Pine alert"):
                 break
     except Exception:
         pass
-    proc.wait(timeout=30)
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise
+    if proc.returncode:
+        raise RuntimeError('Audio playback failed')
 
 
 def _volume_arg(volume_percent):
@@ -331,6 +348,7 @@ def _wake_sink():
 
 def speak(text, volume_percent=50):
     if not PIPER_BIN.exists() or not PIPER_VOICE.exists():
+        logging.warning('Arc Pine speech unavailable: Piper binary or voice missing')
         return
     if not text.strip():
         return
@@ -341,12 +359,14 @@ def speak(text, volume_percent=50):
             wav_path = tmp.name
         subprocess.run(
             [str(PIPER_BIN), "-m", str(PIPER_VOICE), "-f", wav_path],
-            input=text.encode(), capture_output=True, timeout=15,
+            input=text.encode(), capture_output=True, timeout=15, check=True,
         )
+        if Path(wav_path).stat().st_size <= 44:
+            raise RuntimeError('Speech synthesis produced no audio')
         stream_name = f"Arc Pine speech {os.getpid()}-{threading.get_ident()}"
         _paplay_force_unmuted(wav_path, _volume_arg(volume_percent), stream_name)
-    except Exception:
-        pass
+    except Exception as error:
+        logging.warning('Arc Pine speech failed: %s', type(error).__name__)
     finally:
         if wav_path:
             try:
@@ -359,17 +379,25 @@ def emit_audio(sound_file, speak_text, audio_volume_percent=50):
     """Play Arc Pine's short chime on its own stream without muting other
     applications. Speech retains the older duck/restore behavior so spoken
     alerts remain clear; the finally path restores every stream Arc Pine muted."""
-    if sound_file:
+    # Serialize notifications across both watcher threads and one-shot alarm
+    # processes. One alert must not restore playback during another's speech.
+    DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with _AUDIO_LOCK, (DATA_DIR / 'audio.lock').open('a') as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
         try:
-            play_sound(sound_file, audio_volume_percent)
-        except Exception:
-            pass
-    if speak_text:
-        muted = _duck_other_streams()
-        try:
-            speak(speak_text, audio_volume_percent)
+            if sound_file:
+                try:
+                    play_sound(sound_file, audio_volume_percent)
+                except Exception:
+                    pass
+            if speak_text:
+                muted = _duck_other_streams()
+                try:
+                    speak(speak_text, audio_volume_percent)
+                finally:
+                    _restore_ducked(muted)
         finally:
-            _restore_ducked(muted)
+            fcntl.flock(guard, fcntl.LOCK_UN)
 
 
 def emit_audio_async(sound_file, speak_text, audio_volume_percent=50):

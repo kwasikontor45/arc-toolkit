@@ -22,7 +22,7 @@ The installer copies only this app into `~/.local/opt/arc-break-taskbar`, update
 
 ## Local data and behavior
 
-- The timer runs only after the user starts it. There is no automatic launch at login.
+- A new timer starts only when the user starts it. At login, a previously active timer resumes minimized with its saved remainder; explicit Stop prevents resuming. A paused timer stays paused. Powered-off time does not consume focus/rest time; state checkpoints every five seconds and at normal shutdown. Uninstall restores the previous login-resume entry.
 - Settings and resumable timer state are stored under `~/.config/arc-break-taskbar/` and `~/.local/state/arc-break-taskbar/`; files are written atomically with owner-only permissions.
 - The countdown uses a one-second GTK callback, sends desktop notifications at phase changes, and stores no account or personal data.
 - When Arc Pine is running, taskbar notifications inherit its `arc-break` sound, speech, and mute policy. Speech also respects Arc Pine's global speech toggle, snooze, and quiet hours. A separate app rule for `arc_break_taskbar.py` overrides the inherited policy. Without Arc Pine, desktop notifications continue normally.
@@ -36,3 +36,7 @@ The installer copies only this app into `~/.local/opt/arc-break-taskbar`, update
 ```
 
 The older `arc break start|stop|status` commands still control the supervised daemon, which keeps separate state and timing. `arc break gui` opens this standalone app. The daemon no longer configures Genmon; run only one timer at a time.
+
+Official logo: the unchanged https://kwasikontor.dev/favikon.png, installed as icon.png. The live countdown overlays that image; the launcher/window/header retain the same identity.
+
+The optional user unit owns a running timer independently of tool sessions and restarts after a crash. Login resume remains conditional on saved active state. Arc Heal restores a missing process only for an active saved phase, and respects explicit Stop. Lab status/start/stop/open controls use this taskbar timer. CLI: --status, --start, --stop, --resume-only.

@@ -6,6 +6,8 @@ home=${HOME:?HOME is not set}
 opt_root=${XDG_DATA_HOME:-"$home/.local/share"}/applications
 install_root="$home/.local/opt/arc-break-taskbar"
 bin_root="$home/.local/bin"
+autostart_root="${XDG_CONFIG_HOME:-$home/.config}/autostart"
+unit_root="${XDG_CONFIG_HOME:-$home/.config}/systemd/user"
 desktop_file="$opt_root/arc-break.desktop"
 old_desktop_file="$opt_root/arc-break-taskbar.desktop"
 
@@ -37,13 +39,19 @@ if [ -f "$desktop_file" ] && [ ! -f "$install_root/arc-break.desktop.previous" ]
 fi
 install -m 0755 "$script_dir/arc_break_taskbar.py" "$install_root/arc_break_taskbar.py"
 install -m 0644 "$script_dir/README.md" "$install_root/README.md"
+install -m 0644 "$script_dir/icon.png" "$install_root/icon.png"
+mkdir -p "$unit_root"
+install -m 0644 "$script_dir/arc-break-taskbar.service" "$unit_root/arc-break-taskbar.service"
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+fi
 cat > "$desktop_file" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Arc Break
 Comment=Start a small focus and rest timer in the taskbar
 Exec="$install_root/arc_break_taskbar.py"
-Icon=preferences-system-time
+Icon=$install_root/icon.png
 Terminal=false
 Categories=Utility;Clock;
 StartupNotify=true
@@ -54,5 +62,21 @@ cat > "$bin_root/arc-break-taskbar" <<EOF
 exec "$install_root/arc_break_taskbar.py" "\$@"
 EOF
 chmod 0755 "$bin_root/arc-break-taskbar"
+mkdir -p "$autostart_root"
+resume_file="$autostart_root/arc-break-resume.desktop"
+if [ -f "$resume_file" ] && [ ! -f "$install_root/arc-break-resume.desktop.previous" ]; then
+  cp -p "$resume_file" "$install_root/arc-break-resume.desktop.previous"
+fi
+cat > "$resume_file" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Arc Break (resume active timer)
+Comment=Resume the saved focus/rest timer after login; explicit Stop stays stopped
+Exec="$install_root/arc_break_taskbar.py" --resume-only
+Icon=$install_root/icon.png
+X-GNOME-Autostart-Delay=5
+NoDisplay=false
+EOF
+chmod 0644 "$resume_file"
 printf 'Installed Arc Break in %s\nLauncher: %s\nCommand: %s/arc-break-taskbar\n' \
   "$install_root" "$desktop_file" "$bin_root"

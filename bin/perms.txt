@@ -59,6 +59,7 @@
 755 disable-middle-paste
 775 emoji-pick
 700 kbd-backlight
+755 khaos-hub
 775 khaos-lab
 711 lt
 755 rename-case

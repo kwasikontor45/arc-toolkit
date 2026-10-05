@@ -1,4 +1,5 @@
 [Unit]
+ConditionPathIsMountPoint=/mnt/storage
 Description=arc sync -- vault to MEGA cloud backup
 
 [Service]

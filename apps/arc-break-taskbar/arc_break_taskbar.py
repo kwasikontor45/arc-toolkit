@@ -7,6 +7,7 @@ systemd dependency. While running, closing the window minimizes it to the taskba
 from __future__ import annotations
 
 import json
+import base64
 import math
 import os
 import signal
@@ -23,6 +24,7 @@ from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk
 
 APP_ID = "studio.kontor.ArcBreakTaskbar"
 APP_NAME = "Arc Break"
+LOGO_FILE = Path(__file__).resolve().with_name('icon.png')
 CONFIG_ROOT = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "arc-break-taskbar"
 STATE_ROOT = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "arc-break-taskbar"
 CONFIG_FILE = CONFIG_ROOT / "settings.json"
@@ -34,6 +36,39 @@ TEXT = "#e0def4"
 MUTED = "#908caa"
 WORK = "#f6c177"
 REST = "#ebbcba"
+
+
+def boot_id():
+    try:
+        return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    except OSError:
+        return ''
+
+
+def restore_timer(saved, work_minutes, break_minutes, now, current_boot):
+    phase = saved.get('phase')
+    if phase not in ('focus', 'break'):
+        return 'stopped', 0, 0
+    duration = (work_minutes if phase == 'focus' else break_minutes) * 60
+    try:
+        paused = max(0, min(duration, int(saved.get('paused_left', 0) or 0)))
+        deadline = float(saved.get('deadline', 0) or 0)
+        remaining = float(saved.get('remaining', max(1, deadline - now)) or duration)
+        if not math.isfinite(deadline) or not math.isfinite(remaining):
+            raise ValueError('Invalid timer state')
+    except (ValueError, TypeError, OverflowError):
+        return 'stopped', 0, 0
+    if paused:
+        return phase, 0, paused
+    if saved.get('boot_id') != current_boot:
+        # Powered-off time is not focus/rest time; pick up the saved remainder.
+        if 'remaining' not in saved and deadline <= now:
+            remaining = duration
+        return phase, now + max(1, min(duration, remaining)), 0
+    if deadline <= now:
+        phase = 'break' if phase == 'focus' else 'focus'
+        return phase, now + (work_minutes if phase == 'focus' else break_minutes) * 60, 0
+    return phase, deadline, 0
 
 
 def atomic_json(path: Path, data: dict) -> None:
@@ -48,6 +83,11 @@ def atomic_json(path: Path, data: dict) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temp, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         try:
             temp.unlink(missing_ok=True)
@@ -81,8 +121,10 @@ class ArcBreak:
             self.paused_left = max(0, min(3 * 60 * 60, int(saved.get("paused_left", 0) or 0)))
         except (TypeError, ValueError, OverflowError):
             self.paused_left = 0
-        if self.phase != "stopped" and self.deadline <= time.time() and not self.paused_left:
-            self.phase, self.deadline = "stopped", 0
+        self.phase, self.deadline, self.paused_left = restore_timer(
+            saved, self.work_minutes, self.break_minutes, time.time(), boot_id())
+        self._last_save = 0
+        self._save()
         self.window = None
         self._window_timer_mode = self.phase != "stopped"
         self.clock_label = None
@@ -90,6 +132,7 @@ class ArcBreak:
         self.primary_button = None
         self.controls_row = None
         self._taskbar_icon_key = None
+        self._logo_data = base64.b64encode(LOGO_FILE.read_bytes()).decode() if LOGO_FILE.exists() else ''
         self._style()
         self._update()
         GLib.timeout_add_seconds(1, self._tick)
@@ -114,8 +157,10 @@ class ArcBreak:
             return
         circumference = 169.65
         arc = max(0.0, min(1.0, progress)) * circumference
+        logo = f'<image x="0" y="0" width="64" height="64" href="data:image/png;base64,{self._logo_data}"/>' if self._logo_data else ''
         svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
           <circle cx="32" cy="32" r="27" fill="{BG}" stroke="#524f67" stroke-width="4"/>
+          {logo}
           <circle cx="32" cy="32" r="27" fill="none" stroke="{color}" stroke-width="4"
             stroke-linecap="round" stroke-dasharray="{arc:.1f} {circumference}"
             transform="rotate(-90 32 32)"/>
@@ -136,7 +181,11 @@ class ArcBreak:
     def _style(self):
         css = Gtk.CssProvider()
         css.load_from_data(f"""
-          window.arc-break {{ background: {BG}; color: {TEXT}; }}
+          window.arc-break {{ background: {BG}; color: {TEXT}; border-radius: 18px; }}
+          window.arc-break > box {{ background: {SURFACE}; border-radius: 18px; padding: 8px; }}
+          scrollbar {{ background: transparent; }}
+          scrollbar trough {{ border-radius: 999px; }}
+          scrollbar slider {{ border-radius: 999px; min-width: 10px; min-height: 28px; background: {ACCENT}; }}
           .arc-title {{ color: {TEXT}; font-size: 20px; font-weight: 600; }}
           .arc-clock {{ color: {ACCENT}; font-size: 48px; font-weight: 300; }}
           .arc-subtle {{ color: {MUTED}; font-size: 12px; }}
@@ -158,12 +207,18 @@ class ArcBreak:
         self.window.set_default_size(310, 255 if self._window_timer_mode else 185)
         self.window.set_resizable(True)
         self.window.set_position(Gtk.WindowPosition.CENTER)
-        self.window.set_icon_name("preferences-system-time")
+        if LOGO_FILE.exists():
+            self.window.set_icon_from_file(str(LOGO_FILE))
+        else:
+            self.window.set_icon_name("preferences-system-time")
         self.window.get_style_context().add_class("arc-break")
         self.window.connect("delete-event", self._close_window)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_border_width(20)
         self.window.add(box)
+        if LOGO_FILE.exists():
+            logo = Gtk.Image.new_from_pixbuf(GdkPixbuf.Pixbuf.new_from_file_at_scale(str(LOGO_FILE), 48, 48, True))
+            box.pack_start(logo, False, False, 0)
         title = Gtk.Label(label="ARC / BREAK")
         title.get_style_context().add_class("arc-title")
         box.pack_start(title, False, False, 0)
@@ -253,12 +308,17 @@ class ArcBreak:
     def _tick(self):
         if self.phase != "stopped" and not self.paused_left and time.time() >= self.deadline:
             self._advance()
+        if self.phase != 'stopped' and time.monotonic() - self._last_save >= 5:
+            self._save()
         self._update()
         return GLib.SOURCE_CONTINUE
 
     def _save(self):
         atomic_json(STATE_FILE, {"phase": self.phase, "deadline": self.deadline,
-                                 "paused_left": self.paused_left})
+                                 "paused_left": self.paused_left,
+                                 "remaining": max(0, self.deadline - time.time()) if not self.paused_left else self.paused_left,
+                                 "boot_id": boot_id()})
+        self._last_save = time.monotonic()
 
     def _update(self):
         if self.phase == "stopped":
@@ -289,7 +349,10 @@ class ArcBreak:
                 self.window.set_title(f"Arc Break · {phase_text.title()} · {time_text}")
             if self.phase == "stopped":
                 if self._taskbar_icon_key != ("stopped",):
-                    self.window.set_icon_name("preferences-system-time")
+                    if LOGO_FILE.exists():
+                        self.window.set_icon_from_file(str(LOGO_FILE))
+                    else:
+                        self.window.set_icon_name("preferences-system-time")
                     self._taskbar_icon_key = ("stopped",)
             else:
                 self._set_taskbar_icon(icon_text, color, icon_progress)
@@ -308,7 +371,8 @@ class ArcBreak:
         self.app.send_notification(None, note)
 
     def _quit_signal(self):
-        self.quit()
+        self._save()
+        self.app.quit()
         return GLib.SOURCE_REMOVE
 
     def quit(self, *_args):
@@ -317,7 +381,20 @@ class ArcBreak:
 
 
 def main():
-    app = Gtk.Application.new(APP_ID, Gio.ApplicationFlags.FLAGS_NONE)
+    if '--status' in sys.argv[1:]:
+        saved = read_json(STATE_FILE, {})
+        phase = saved.get('phase', 'stopped')
+        if phase not in ('focus', 'break'):
+            print('stopped · explicitly stopped or not started')
+        else:
+            left = saved.get('paused_left') or max(0, int(saved.get('deadline', 0) - time.time()))
+            minutes, seconds = divmod(int(left), 60)
+            print(f"{phase} · {'paused · ' if saved.get('paused_left') else ''}{minutes:02d}:{seconds:02d}")
+        return 0
+    resume_only = '--resume-only' in sys.argv[1:]
+    if resume_only and read_json(STATE_FILE, {}).get('phase') not in ('focus', 'break'):
+        return 0
+    app = Gtk.Application.new(APP_ID, Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
     holder = {}
 
     def activate(application):
@@ -326,6 +403,24 @@ def main():
         holder["controller"].show()
 
     app.connect("activate", activate)
+    def command_line(application, command):
+        args = list(command.get_arguments())[1:]
+        if '--stop' in args:
+            if 'controller' in holder:
+                holder['controller'].stop()
+            else:
+                atomic_json(STATE_FILE, {'phase': 'stopped', 'deadline': 0, 'paused_left': 0})
+                application.quit()
+            return 0
+        activate(application)
+        if '--start' in args:
+            holder['controller'].start()
+            holder['controller'].window.iconify()
+        elif '--resume-only' in args:
+            holder['controller'].window.iconify()
+        return 0
+    app.connect('command-line', command_line)
+    app.connect('shutdown', lambda *_args: holder.get('controller') and holder['controller']._save())
     return app.run(sys.argv)
 
 

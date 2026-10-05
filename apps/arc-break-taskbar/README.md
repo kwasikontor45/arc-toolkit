@@ -25,6 +25,7 @@ The installer copies only this app into `~/.local/opt/arc-break-taskbar`, update
 - The timer runs only after the user starts it. There is no automatic launch at login.
 - Settings and resumable timer state are stored under `~/.config/arc-break-taskbar/` and `~/.local/state/arc-break-taskbar/`; files are written atomically with owner-only permissions.
 - The countdown uses a one-second GTK callback, sends desktop notifications at phase changes, and stores no account or personal data.
+- When Arc Pine is running, taskbar notifications inherit its `arc-break` sound, speech, and mute policy. Speech also respects Arc Pine's global speech toggle, snooze, and quiet hours. A separate app rule for `arc_break_taskbar.py` overrides the inherited policy. Without Arc Pine, desktop notifications continue normally.
 - Closing the window while the timer runs minimizes it to the taskbar, so it remains visible and keeps timing. Close the app after stopping the timer to exit.
 - Removing the app with `./apps/arc-break-taskbar/uninstall.sh` removes only its own launcher and installed app files; it preserves the settings and state directories.
 

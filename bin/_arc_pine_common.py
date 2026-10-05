@@ -126,7 +126,15 @@ def save_config(cfg):
 
 
 def app_rule(cfg, app_name):
-    return cfg.get("app_rules", {}).get(app_name, {})
+    rules = cfg.get("app_rules", {})
+    # Gio's standalone taskbar timer reports its script name, rather than
+    # the old daemon's arc-break identity. Inherit the user's break policy
+    # unless they have explicitly configured the taskbar app separately.
+    if app_name not in rules and app_name in (
+        "arc_break_taskbar.py", "studio.kontor.ArcBreakTaskbar", "Arc Break",
+    ):
+        app_name = "arc-break"
+    return rules.get(app_name, {})
 
 
 def is_muted(cfg, app_name):

@@ -118,9 +118,13 @@ def calendar_items(source=None, now=None):
                     # VEVENTs as events. Keep that distinction visible to both UIs.
                     start_prop = date_field[0][0] if date_field else ''
                     kind = 'Appointment' if date and 'VALUE=DATE' not in start_prop and len(date_field[0][1]) > 8 else 'Event'
+                all_day = bool(date_field and ('VALUE=DATE' in date_field[0][0] or len(date_field[0][1]) == 8))
+                when = (date.strftime('%a %b %d') if date and all_day else
+                        date.astimezone().strftime('%a %b %d · %H:%M') if date else 'No due date')
                 items.append({'id': key, 'title': title, 'kind': kind,
-                              'when': date.astimezone().strftime('%a %b %d · %H:%M') if date else 'No due date',
+                              'when': when,
                               'date': date.isoformat() if date else '',
+                              'all_day': all_day,
                               'repeating': bool(value('RRULE')),
                               'source_done': value('STATUS') == 'COMPLETED'})
         except (ValueError, TypeError, OverflowError):

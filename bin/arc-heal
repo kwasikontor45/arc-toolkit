@@ -247,8 +247,8 @@ check_watcher_daemons() {
     note "OK::site-funnel::not public"
   fi
   local pu
-  for pu in arc-pine-bubbles arc-pined orage-alarms khaos-hub easyeffects; do
-    if [[ "$pu" == "khaos-hub" || "$pu" == "easyeffects" ]] && ! systemctl --user is-enabled --quiet "$pu.service"; then
+  for pu in arc-pine-bubbles arc-pined orage-alarms khaos-hub; do
+    if [[ "$pu" == "khaos-hub" ]] && ! systemctl --user is-enabled --quiet "$pu.service"; then
       note "OK::watcher:${pu}::disabled by user; left stopped"
       continue
     fi

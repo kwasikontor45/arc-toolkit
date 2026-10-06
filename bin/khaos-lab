@@ -2518,6 +2518,9 @@ class App:
         self._console_room_done = False
         self._sidebar_visible = True
         self._sidebar_auto_hidden = False
+        self._is_fullscreen = False
+        self._windowed_geometry = None
+        self._windowed_state = None
         self._console_user_resized = False
         self._sash_dragging = False
         self.phase_name, self.phase_accent = ui.phase_info()
@@ -2533,6 +2536,8 @@ class App:
         root.bind("<Configure>", self._on_root_configure, add="+")
         root.bind("<Control-f>", lambda _e: (self.search_entry.focus_set(), "break")[1])
         root.bind("<F1>", lambda _e: (self.select("Help"), "break")[1])
+        root.bind("<F11>", self.toggle_fullscreen)
+        root.bind("<Escape>", self.exit_fullscreen)
 
         gate_open, gate_detail = check_sop_gate()
         gate_text, gate_color = gate_status(gate_open, gate_detail)
@@ -2574,6 +2579,11 @@ class App:
         self.nav_toggle = ui.button(header, "menu", command=self.toggle_nav, font=f.small, bg=BG,
                                     fg=FG_MUTED, hover_bg=OVERLAY, hover_fg=self.phase_accent, padx=8, pady=4)
         self.nav_toggle.pack(side="left", padx=(0, 8))
+        self.fullscreen_toggle = ui.button(header, "⛶  Full screen  ·  F11",
+                                           command=self.toggle_fullscreen, font=f.small, bg=OVERLAY,
+                                           fg=FG_MUTED, hover_bg=BG, hover_fg=self.phase_accent,
+                                           padx=10, pady=5)
+        self.fullscreen_toggle.pack(side="right", padx=(8, 0))
         tk.Label(header, text="khaos", font=f.big, bg=BG, fg=GOLD).pack(side="left")
         tk.Label(header, text="/", font=f.big, bg=BG, fg=FG_MUTED).pack(side="left")
         self.brand_accent = tk.Label(header, text="lab", font=f.big, bg=BG, fg=self.phase_accent)
@@ -2634,8 +2644,35 @@ class App:
             self.nav_toggle.configure(text="menu" if self._sidebar_visible else "show menu")
         self.root.after_idle(lambda: self.refresh_scroll(self.view.frame) if self.view else None)
 
+    def toggle_fullscreen(self, _event=None):
+        """Use the whole display for the work area; F11 or Escape restores the window."""
+        if not self._is_fullscreen:
+            self._windowed_geometry = self.root.geometry()
+            self._windowed_state = self.root.state()
+            self._is_fullscreen = True
+            self.root.attributes("-fullscreen", True)
+            self.fullscreen_toggle.configure(text="Exit full screen  ·  Esc")
+        else:
+            self.exit_fullscreen()
+        return "break"
+
+    def exit_fullscreen(self, _event=None):
+        if not self._is_fullscreen:
+            return
+        self._is_fullscreen = False
+        self.root.attributes("-fullscreen", False)
+        if self._windowed_geometry:
+            self.root.geometry(self._windowed_geometry)
+        if self._windowed_state == "zoomed":
+            self.root.state("zoomed")
+        self.fullscreen_toggle.configure(text="Full screen  ·  F11")
+        return "break"
+
     def _on_root_configure(self, event):
         if event.widget is not self.root:
+            return
+        if self._is_fullscreen:
+            self.root.after_idle(self._fit_console_pane)
             return
         # Auto-tuck navigation only at genuinely narrow widths; wide screens never get
         # an unsolicited layout change, and a manual toggle takes priority.
@@ -2703,7 +2740,15 @@ class App:
         self.statusbar = tk.Frame(root, bg=BG)
         self.statusbar.pack(fill="x", padx=18, pady=(5, 11))
         tk.Frame(self.statusbar, bg=self.phase_accent, width=3).pack(side="left", fill="y", padx=(0, 9))
-        self.status_route = tk.Label(self.statusbar, text="", font=self.f.small, bg=BG, fg=FG)
+        self.route_menu = tk.Menu(self.root, tearoff=0, bg=OVERLAY, fg=FG,
+                                  activebackground=SURFACE, activeforeground=GOLD,
+                                  borderwidth=0, relief="flat")
+        for workspace in CATEGORIES:
+            self.route_menu.add_command(label=workspace, command=lambda n=workspace: self.select(n))
+        self.status_route = tk.Menubutton(self.statusbar, text="WORKSPACE  /  STATUS  ▾",
+                                          font=self.f.small, bg=BG, fg=FG, activebackground=OVERLAY,
+                                          activeforeground=GOLD, relief="flat", bd=0, padx=2, pady=2,
+                                          cursor="hand2", menu=self.route_menu)
         self.status_route.pack(side="left")
         self.status_gate = tk.Label(self.statusbar, text="", font=self.f.small, bg=BG, fg=FG_MUTED)
         self.status_gate.pack(side="right", padx=(12, 0))
@@ -2873,7 +2918,7 @@ class App:
     def select(self, name):
         self.current = name
         if hasattr(self, "status_route"):
-            self.status_route.configure(text=f"WORKSPACE  /  {name.upper()}")
+            self.status_route.configure(text=f"WORKSPACE  /  {name.upper()}  ▾")
         for n, b in self.nav_buttons.items():
             b.set_look(bg=OVERLAY if n == name else BG,
                        fg=self.phase_accent if n == name else FG_MUTED)
@@ -3103,6 +3148,8 @@ class App:
         publishes -- not a guessed panel size). A forced position once put the bottom edge under
         the taskbar and silently hid the last widget. The xprop call runs off the UI thread."""
         self.root.after(10000, self._geometry_watchdog)
+        if self._is_fullscreen:
+            return
         self.bg(lambda: self.runner.run("xprop -root _NET_WORKAREA", timeout=3), self._apply_workarea)
 
     def _apply_workarea(self, res):
@@ -3170,6 +3217,25 @@ class App:
         print(f"  responsive tile layouts  {'ok' if all(layouts) else 'FAILED'} ({layouts})")
         print(f"  workspace filter         {'ok' if filter_ok else 'FAILED'}")
         print(f"  adaptive navigation      {'ok' if nav_narrow and nav_wide else 'FAILED'}")
+        self.select("Status")
+        self.toggle_nav()
+        self.route_menu.invoke(list(CATEGORIES).index("Phone"))
+        route_picker_ok = self.current == "Phone" and not self._sidebar_visible
+        self.route_menu.invoke(list(CATEGORIES).index("Status"))
+        route_picker_ok = route_picker_ok and self.current == "Status" and not self._sidebar_visible
+        self.toggle_nav()
+        fullscreen_ok = False
+        try:
+            self.toggle_fullscreen()
+            self.root.update_idletasks()
+            entered = self._is_fullscreen and self.fullscreen_toggle.cget("text").startswith("Exit full screen")
+            self.exit_fullscreen()
+            self.root.update_idletasks()
+            fullscreen_ok = entered and not self._is_fullscreen and self.fullscreen_toggle.cget("text").startswith("Full screen")
+        except tk.TclError:
+            self.exit_fullscreen()
+        print(f"  hidden-menu workspace jump {'ok' if route_picker_ok else 'FAILED'}")
+        print(f"  full-screen enter/restore  {'ok' if fullscreen_ok else 'FAILED'}")
         wired = {category: {a.label for a in CATEGORIES.get(category, [])}
                  for category in ("Phone", "Waydroid", "Studio")}
         waydroid_launcher = shutil.which("arc-waydroid")
@@ -3229,6 +3295,7 @@ class App:
         gate_ok = gate_ok and locked_action_blocked and locked_button_blocked and recovery_action_available
         print(f"  SOP operation gate        {'ok' if gate_ok else 'FAILED'} (locked ops denied; setup retained)")
         bad = (self.errors or leaked or not gate_ok or not filter_ok or not all(layouts)
+               or not route_picker_ok or not fullscreen_ok
                or not (nav_narrow and nav_wide) or not integration_ok)
         print("  " + ("FAILED" if bad else "all views built with no callback errors"))
         for e in self.errors:

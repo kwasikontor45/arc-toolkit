@@ -31,6 +31,12 @@ command catalog grows; topic pages reuse the detailed reference entries. See
 [HELP-CHEATSHEET.md](HELP-CHEATSHEET.md) for a quick-start card covering the CLI,
 khaos-lab navigation, and Glow pager.
 
+In Khaos Lab, click the current **WORKSPACE / … ▾** label in the lower status rail
+to jump directly to any section while the sidebar is hidden. Click **Full screen · F11**
+in the title row to expand the control panel; press **F11** or **Escape** to restore its
+previous window size. The split workspace, menu, and output pane continue to resize with
+the available display.
+
 | Command | What it does |
 |---|---|
 | `arc sot` | Show this help |

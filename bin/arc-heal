@@ -464,34 +464,27 @@ check_aws_lab_idle() {
 check_aws_lab_sync() {
   _aws_lab_conf_quiet || return 0
   command -v aws >/dev/null 2>&1 || return 0
-  # Uses launch-time as the "has this instance ever actually been used"
-  # signal: an instance with a LaunchTime exists the moment it's first
-  # created (running or not), so a stopped instance whose launch was more
-  # than a day ago has, by construction, been through at least one real
-  # start/stop cycle -- if the backup directory is still empty at that
-  # point, its cloud-stop sync step silently failed at some point and
-  # nobody caught the scrolled-by warning at the time.
-  local gvm_state gvm_launch
+  # EC2 LaunchTime is reset after every start; do not use it as an age or
+  # first-use signal. Once the lab is stopped, require a USB SQL dump every
+  # time so a restart cannot hide a missing restore point for another day.
+  local gvm_state
   gvm_state=$(aws ec2 describe-instances --instance-ids "$GVM_INSTANCE_ID" --region "$AWS_LAB_REGION" \
     --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)
-  gvm_launch=$(aws ec2 describe-instances --instance-ids "$GVM_INSTANCE_ID" --region "$AWS_LAB_REGION" \
-    --query 'Reservations[0].Instances[0].LaunchTime' --output text 2>/dev/null)
-  if [[ "$gvm_state" == "stopped" && -n "$gvm_launch" ]]; then
-    local launch_epoch now_epoch
-    launch_epoch=$(date -d "$gvm_launch" +%s 2>/dev/null)
-    now_epoch=$(date +%s)
-    if [[ -n "$launch_epoch" ]] && (( now_epoch - launch_epoch > 86400 )); then
-      if ! mountpoint -q /mnt/storage; then
-        note "FLAG::aws-lab-sync::USB vault is not mounted; GVM database-backup state cannot be checked"
-        return
-      fi
-      if [[ -z "$(find /mnt/storage/Persistent/khaos-lab/gvm-lab/backups -name '*.sql' 2>/dev/null)" ]]; then
-        note "FLAG::aws-lab-sync::gvm-cloud has existed >24h with zero backups in the USB vault — a cloud-stop sync step likely failed silently at some point"
-        return
-      fi
+  if [[ -z "$gvm_state" || "$gvm_state" == "None" ]]; then
+    note "FLAG::aws-lab-sync::could not verify gvm-cloud state from AWS"
+    return
+  fi
+  if [[ "$gvm_state" == "stopped" ]]; then
+    if ! mountpoint -q /mnt/storage; then
+      note "FLAG::aws-lab-sync::USB vault is not mounted; GVM database-backup state cannot be checked"
+      return
+    fi
+    if ! find /mnt/storage/Persistent/khaos-lab/gvm-lab/backups -type f -name '*.sql' -print -quit 2>/dev/null | grep -q .; then
+      note "FLAG::aws-lab-sync::gvm-cloud is stopped but the USB vault has no SQL database dump — no restore point is available"
+      return
     fi
   fi
-  note "OK::aws-lab-sync::gvm backup directory has data, or instance too new to expect any yet"
+  note "OK::aws-lab-sync::gvm-cloud is running, or a database dump exists in the USB vault"
 }
 
 check_aws_lab_conflict() {

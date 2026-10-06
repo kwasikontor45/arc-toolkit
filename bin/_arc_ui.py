@@ -271,19 +271,34 @@ def rounded_frame(parent, parent_bg, bg=SURFACE, radius=14, border=None, border_
     # as arc-pine-bubbles' bubble-placement bug earlier this project.
     inset = 8
     outer.create_window(inset, inset, window=inner, anchor="nw", tags="win")
+    # Reuse the same canvas shapes while a card is resized. Deleting and
+    # recreating a polygon for every Configure used to cause visible redraw
+    # shimmer on Xfce's compositor; thin highlights give the surface a quiet
+    # liquid-glass edge without turning it into a heavy box.
+    shadow = outer.create_polygon(0, 0, 0, 0, smooth=True,
+                                  fill=_lerp_hex(parent_bg, "#000000", 0.28), outline="")
+    face = outer.create_polygon(0, 0, 0, 0, smooth=True, fill=bg,
+                                outline=border or _lerp_hex(bg, "#ffffff", 0.11),
+                                width=max(1, border_width))
+    sheen = outer.create_line(0, 0, 0, 0, fill=_lerp_hex(bg, "#ffffff", 0.18),
+                              width=1, capstyle="round")
 
     def redraw(event=None):
-        outer.delete("shape")
         w = max(outer.winfo_width(), inner.winfo_reqwidth() + inset * 2, 1)
         h = max(inner.winfo_reqheight() + inset * 2, 1)
-        outer.config(width=inner.winfo_reqwidth() + inset * 2, height=h)
-        pts = _rounded_points(1, 1, w - 1, h - 1, radius)
-        if border:
-            outer.create_polygon(pts, smooth=True, fill=state["bg"], outline=border,
-                                  width=border_width, tags="shape")
-        else:
-            outer.create_polygon(pts, smooth=True, fill=state["bg"], outline=state["bg"], tags="shape")
-        outer.tag_lower("shape")
+        wanted = (inner.winfo_reqwidth() + inset * 2, h)
+        if (outer.cget("width"), outer.cget("height")) != tuple(map(str, wanted)):
+            outer.config(width=wanted[0], height=wanted[1])
+        pts = _rounded_points(1, 1, w - 2, h - 2, radius)
+        shadow_pts = [v + (1 if i % 2 else 0) for i, v in enumerate(pts)]
+        outer.coords(shadow, *shadow_pts)
+        outer.coords(face, *pts)
+        outer.coords(sheen, pts[0] + 2, pts[1], pts[2] - 2, pts[3])
+        outer.itemconfigure(face, fill=state["bg"],
+                            outline=border or _lerp_hex(state["bg"], "#ffffff", 0.11))
+        outer.itemconfigure(sheen, fill=_lerp_hex(state["bg"], "#ffffff", 0.18))
+        outer.tag_lower(shadow)
+        outer.tag_lower(face, "win")
 
     def retheme(new_bg=None, new_parent_bg=None):
         """Live re-color for the circadian engine -- changes the card's
@@ -313,13 +328,31 @@ def rounded_pane(parent, parent_bg, bg=SURFACE, radius=18):
     outer = tk.Canvas(parent, bg=parent_bg, bd=0, highlightthickness=0)
     inner = tk.Frame(outer, bg=bg)
     window = outer.create_window(8, 8, window=inner, anchor='nw')
+    shadow = outer.create_polygon(0, 0, 0, 0, smooth=True,
+                                  fill=_lerp_hex(parent_bg, "#000000", 0.3), outline="")
+    face = outer.create_polygon(0, 0, 0, 0, smooth=True, fill=bg,
+                                outline=_lerp_hex(bg, "#ffffff", 0.12), width=1)
+    sheen = outer.create_line(0, 0, 0, 0, fill=_lerp_hex(bg, "#ffffff", 0.2),
+                              width=1, capstyle="round")
+    last_size = [0, 0]
+    last_bg = [bg]
     def resize(event):
         width, height = max(17, outer.winfo_width()), max(17, outer.winfo_height())
+        face_bg = inner.cget('bg')
+        if last_size == [width, height] and last_bg[0] == face_bg:
+            return
+        last_size[:] = [width, height]
+        last_bg[0] = face_bg
         outer.itemconfigure(window, width=width - 16, height=height - 16)
-        outer.delete('pane-shape')
-        outer.create_polygon(_rounded_points(0, 0, width, height, radius),
-                             smooth=True, fill=inner.cget('bg'), outline='', tags='pane-shape')
-        outer.tag_lower('pane-shape')
+        pts = _rounded_points(1, 1, width - 2, height - 2, radius)
+        outer.coords(shadow, *[v + (1 if i % 2 else 0) for i, v in enumerate(pts)])
+        outer.coords(face, *pts)
+        outer.coords(sheen, pts[0] + 2, pts[1], pts[2] - 2, pts[3])
+        outer.itemconfigure(face, fill=face_bg,
+                            outline=_lerp_hex(face_bg, "#ffffff", 0.12))
+        outer.itemconfigure(sheen, fill=_lerp_hex(face_bg, "#ffffff", 0.2))
+        outer.tag_lower(shadow)
+        outer.tag_lower(face, window)
     outer.bind('<Configure>', resize)
     outer.bind('<Expose>', resize)
     return outer, inner
@@ -426,10 +459,17 @@ class PillScrollbar(tk.Canvas):
 
 
 class RoundedLabel(tk.Canvas):
-    """A Canvas button surface with rounded corners and Label-style colors."""
-    def __init__(self, parent, text='', font=None, bg=SURFACE, fg=FG, padx=10, pady=6, **options):
+    """A compact glass pill button used throughout the desktop interfaces."""
+    def __init__(self, parent, text='', font=None, bg=SURFACE, fg=FG, padx=10, pady=6,
+                 takefocus=1, **options):
         self.look = dict(text=text, font=font, bg=bg, fg=fg, padx=padx, pady=pady, anchor='center')
-        super().__init__(parent, bg=parent.cget('bg'), bd=0, highlightthickness=0, takefocus=1, **options)
+        super().__init__(parent, bg=parent.cget('bg'), bd=0, highlightthickness=0,
+                         takefocus=takefocus, **options)
+        self._shadow = self.create_polygon(0, 0, 0, 0, smooth=True, outline='', tags='shadow')
+        self._face = self.create_polygon(0, 0, 0, 0, smooth=True, width=1, tags='face')
+        self._sheen = self.create_line(0, 0, 0, 0, width=1, capstyle='round', tags='sheen')
+        self._label_shadow = self.create_text(0, 0, tags='label-shadow')
+        self._label = self.create_text(0, 0, tags='label')
         self.resize_to_text()
         self.bind('<Configure>', lambda _event: self.redraw())
 
@@ -456,15 +496,36 @@ class RoundedLabel(tk.Canvas):
         return self.look[key] if key in self.look else super().cget(key)
 
     def redraw(self):
-        self.delete('surface')
         width, height = self.winfo_width(), self.winfo_height()
+        if width < 2 or height < 2:
+            return
         super().configure(bg=self.master.cget('bg'))
-        self.create_polygon(_rounded_points(0, 0, width, height, min(14, height / 2)),
-                            smooth=True, fill=self.look['bg'], outline='', tags='surface')
+        radius = min(height / 2, width / 2)
+        points = _rounded_points(1, 1, width - 2, height - 2, radius)
+        shadow_points = [v + (1 if i % 2 == 0 else 1) for i, v in enumerate(points)]
+        bg = self.look['bg']
+        edge = _lerp_hex(bg, '#ffffff', .24)
+        low_edge = _lerp_hex(bg, '#000000', .23)
+        self.coords(self._shadow, *shadow_points)
+        self.itemconfigure(self._shadow, fill=_lerp_hex(self.master.cget('bg'), '#000000', .28))
+        self.coords(self._face, *points)
+        self.itemconfigure(self._face, fill=bg, outline=edge)
+        self.coords(self._sheen, radius + 2, 2, width - radius - 2, 2)
+        self.itemconfigure(self._sheen, fill=_lerp_hex(bg, '#ffffff', .38))
         left = self.look['anchor'] in ('w', 'nw', 'sw')
-        self.create_text(self.look['padx'] if left else width / 2, height / 2,
-                         text=self.look['text'], font=self.look['font'], fill=self.look['fg'],
-                         anchor='w' if left else 'center', tags='surface')
+        x = self.look['padx'] if left else width / 2
+        anchor = 'w' if left else 'center'
+        self.coords(self._label_shadow, x, height / 2 + 1)
+        self.itemconfigure(self._label_shadow, text=self.look['text'], font=self.look['font'],
+                           fill=low_edge, anchor=anchor)
+        self.coords(self._label, x, height / 2)
+        self.itemconfigure(self._label, text=self.look['text'], font=self.look['font'],
+                           fill=self.look['fg'], anchor=anchor)
+        self.tag_lower(self._shadow)
+        self.tag_raise(self._face)
+        self.tag_raise(self._sheen)
+        self.tag_raise(self._label_shadow)
+        self.tag_raise(self._label)
 
 
 def button(parent, text, command=None, font=None, bg=SURFACE, fg=TEAL,

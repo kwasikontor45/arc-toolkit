@@ -40,6 +40,12 @@ fi
 install -m 0755 "$script_dir/arc_break_taskbar.py" "$install_root/arc_break_taskbar.py"
 install -m 0644 "$script_dir/README.md" "$install_root/README.md"
 install -m 0644 "$script_dir/icon.png" "$install_root/icon.png"
+shared_ui="$script_dir/../../bin/_arc_ui.py"
+if [ ! -f "$shared_ui" ]; then
+  printf '%s\n' "Missing shared circadian UI engine: $shared_ui" >&2
+  exit 1
+fi
+install -m 0644 "$shared_ui" "$install_root/_arc_ui.py"
 mkdir -p "$unit_root"
 install -m 0644 "$script_dir/arc-break-taskbar.service" "$unit_root/arc-break-taskbar.service"
 if command -v systemctl >/dev/null 2>&1; then
@@ -75,7 +81,7 @@ Comment=Resume the saved focus/rest timer after login; explicit Stop stays stopp
 Exec="$install_root/arc_break_taskbar.py" --resume-only
 Icon=$install_root/icon.png
 X-GNOME-Autostart-Delay=5
-NoDisplay=false
+NoDisplay=true
 EOF
 chmod 0644 "$resume_file"
 printf 'Installed Arc Break in %s\nLauncher: %s\nCommand: %s/arc-break-taskbar\n' \

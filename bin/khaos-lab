@@ -1147,8 +1147,9 @@ class StatusView(TileView):
     def build(self):
         super().build()
         tile = self.labels['calendar'].master
-        tk.Button(tile, text='Check events / to-dos', command=lambda: self.app.select('Calendar'),
-                  bg=OVERLAY, fg=TEAL, relief='flat').pack(anchor='w', padx=10, pady=(0, 8))
+        ui.button(tile, 'Check events / to-dos', command=lambda: self.app.select('Calendar'),
+                  font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                  padx=12, pady=5).pack(anchor='w', padx=10, pady=(0, 8))
     TILES = [
         (0, 0, "dns", "DNS"), (0, 1, "break", "Break timer"),
         (1, 0, "disk", "Disk"), (1, 1, "services", "Failed services"),
@@ -1281,17 +1282,26 @@ class CalendarView(View):
         self.signature = None
         self.latest_update = ''
         self.busy = False
+        self.checks = []
         tk.Label(self.frame, text='Events & to-dos', bg=SURFACE, fg=FG,
-                 font=self.app.f.label).pack(anchor='w', padx=16, pady=12)
+                 font=self.app.f.label).pack(anchor='w', padx=16, pady=(14, 7))
         tk.Label(self.frame, text='Checks sync with local Khaos Hub. Orage appointments and alarms stay unchanged.',
                  wraplength=520, justify='left', bg=SURFACE, fg=FG_MUTED).pack(anchor='w', padx=16)
-        tk.Button(self.frame, text='Open Khaos Hub', command=lambda: webbrowser.open('http://127.0.0.1:8766/'),
-                  bg=OVERLAY, fg=TEAL, relief='flat').pack(anchor='w', padx=16, pady=8)
+        ui.button(self.frame, 'Open Khaos Hub', command=lambda: webbrowser.open('http://127.0.0.1:8766/'),
+                  font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                  padx=13, pady=5).pack(anchor='w', padx=16, pady=9)
         self.message = tk.Label(self.frame, text='Loading calendar…', bg=SURFACE, fg=FG_MUTED)
         self.message.pack(anchor='w', padx=16)
         self.rows = tk.Frame(self.frame, bg=SURFACE)
         self.rows.pack(fill='both', expand=True, padx=16, pady=8)
         self.poll('calendar-live', 2000, self.read_calendar, self.apply_calendar)
+
+    def _set_checks_enabled(self, enabled):
+        for check in self.checks:
+            try:
+                check.configure(state='normal' if enabled else 'disabled')
+            except tk.TclError:
+                pass
 
     @staticmethod
     def request(path, data=None, token=None):
@@ -1316,8 +1326,7 @@ class CalendarView(View):
             return
         if 'error' in data:
             self.message.configure(text=data['error'], fg=ROSE)
-            for widget in self.rows.winfo_children():
-                widget.configure(state='disabled')
+            self._set_checks_enabled(False)
             self.signature = None
             return
         if data.get('updated', '') < self.latest_update:
@@ -1330,14 +1339,30 @@ class CalendarView(View):
         self.signature = signature
         for widget in self.rows.winfo_children():
             widget.destroy()
+        self.checks = []
         for item in data['items']:
             value = tk.BooleanVar(value=item['done'])
-            button = tk.Checkbutton(self.rows, text=f"{item['title']}\n{item['kind']} · {item['when']}",
-                      variable=value, command=lambda i=item, v=value: self.toggle(i, v),
-                      bg=SURFACE, fg=FG, selectcolor=OVERLAY, activebackground=SURFACE,
-                      activeforeground=TEAL, anchor='w', justify='left', wraplength=500)
-            button._value = value
-            button.pack(fill='x', anchor='w', pady=5)
+            card, body = ui.rounded_frame(self.rows, SURFACE, bg=OVERLAY, radius=16,
+                                          border=ui._lerp_hex(OVERLAY, '#ffffff', .2))
+            card.pack(fill='x', anchor='w', pady=4, padx=2)
+            line = tk.Frame(body, bg=OVERLAY)
+            line.pack(fill='x', padx=10, pady=(7, 1))
+            check = tk.Checkbutton(line, text=item['title'], variable=value,
+                      command=lambda i=item, v=value: self.toggle(i, v),
+                      bg=OVERLAY, fg=FG, selectcolor=BG, activebackground=OVERLAY,
+                      activeforeground=TEAL, anchor='w', justify='left', wraplength=420,
+                      font=self.app.f.label, padx=5, pady=4, relief='flat', bd=0)
+            check.pack(side='left', fill='x', expand=True)
+            kind = str(item['kind']).upper()
+            badge = ui.RoundedLabel(line, text=kind, font=self.app.f.small,
+                                    bg=SURFACE, fg=GOLD if 'EVENT' in kind else TEAL,
+                                    padx=9, pady=3, takefocus=0)
+            badge.pack(side='right', padx=(8, 2))
+            tk.Label(body, text=item['when'], bg=OVERLAY, fg=FG_MUTED,
+                     font=self.app.f.small, anchor='w', wraplength=460,
+                     justify='left').pack(anchor='w', padx=43, pady=(0, 8))
+            check._value = value
+            self.checks.append(check)
         if not data['items']:
             self.message.configure(text='No events in the next two weeks or to-dos.')
         self.app.refresh_scroll(self.frame)
@@ -1349,8 +1374,7 @@ class CalendarView(View):
         self.busy = True
         self.message.configure(text='Saving…')
         desired = value.get()
-        for widget in self.rows.winfo_children():
-            widget.configure(state='disabled')
+        self._set_checks_enabled(False)
         def save():
             try:
                 token = self.request('/api/session')['token']
@@ -2305,10 +2329,10 @@ class ActionsView(View):
         label = tk.Label(row, text=f"{prefix}{action.label}", font=f.label, bg=SURFACE, fg=FG, anchor="w",
                          padx=9, pady=5)
         label.pack(side="left", fill="x", expand=True)
-        btn = tk.Button(row, text="confirm" if gated else "open" if action.detach else "run",
+        btn = ui.button(row, "confirm" if gated else "open" if action.detach else "run",
                         command=lambda a=action: self.app.run_action(a),
-                        font=f.small, bg=OVERLAY, fg=ROSE if gated else TEAL, activebackground=BG,
-                        activeforeground=TEAL, relief="flat", bd=0, padx=11, pady=3, cursor="hand2")
+                        font=f.small, bg=OVERLAY, fg=ROSE if gated else TEAL,
+                        hover_bg=BG, hover_fg=FG, padx=11, pady=4)
         btn.pack(side="right", padx=7, pady=3)
 
         def hover(on):
@@ -2585,7 +2609,14 @@ class App:
                 return
             console_h = min(250, max(110, round(total * 0.25)))
             console_h = min(console_h, max(86, total - 240))
-            self.main_pane.sash_place(0, 0, max(0, total - console_h))
+            target_y = max(0, total - console_h)
+            _x, current_y = self.main_pane.sash_coord(0)
+            # Configure events can arrive in short bursts while the WM and
+            # compositor settle a maximized window. Reapplying the same sash
+            # position on every event made the split line shimmer and forced
+            # Tk to relayout the full workspace repeatedly.
+            if abs(current_y - target_y) > 2:
+                self.main_pane.sash_place(0, 0, target_y)
         except tk.TclError:
             pass
 

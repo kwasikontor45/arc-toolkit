@@ -13,6 +13,58 @@ const cards = [
 let scenario = 0;
 let activePage = "overview";
 
+// Mirror the local Arc/Kataleya circadian engine: interpolate the same four
+// ambient anchors by local clock time, and keep functional phase accents.
+const circadianAnchors = [
+  {hour: 6, bg: "#201f30", surface: "#26243c", overlay: "#352f4d", fg: "#e3e0f2", muted: "#b4adc6"},
+  {hour: 13, bg: "#0f1c24", surface: "#15252f", overlay: "#1e3542", fg: "#dbe8ec", muted: "#9fbec7"},
+  {hour: 18, bg: "#2b2035", surface: "#342942", overlay: "#493655", fg: "#f1e7da", muted: "#b9a28e"},
+  {hour: 24, bg: "#232136", surface: "#2a273f", overlay: "#393552", fg: "#e0def4", muted: "#aaa7c0"}
+];
+const phaseAccents = {choice: "#5ec8ed", desire: "#f6c177", "still-pine": "#c4a7e7", nyx: "#ea9a97"};
+function hexRgb(hex) { return hex.match(/[a-f\d]{2}/gi).map(value => parseInt(value, 16)); }
+function rgbHex(rgb) { return `#${rgb.map(value => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0")).join("")}`; }
+function blendHex(a, b, amount) {
+  const aa = hexRgb(a), bb = hexRgb(b);
+  return rgbHex(aa.map((value, index) => value + (bb[index] - value) * amount));
+}
+function circadianPhase(hour) {
+  if (hour < 6 || hour >= 21) return "nyx";
+  if (hour < 11) return "choice";
+  if (hour < 17) return "desire";
+  return "still-pine";
+}
+function updateCircadianTheme() {
+  const now = new Date();
+  let hour = now.getHours() + now.getMinutes() / 60;
+  const effectiveHour = hour < 6 ? hour + 24 : hour;
+  let first = circadianAnchors[3], second = circadianAnchors[0], position = (effectiveHour - 24) / 6;
+  for (let index = 0; index < circadianAnchors.length; index += 1) {
+    const a = circadianAnchors[index];
+    const b = circadianAnchors[(index + 1) % circadianAnchors.length];
+    const end = b.hour > a.hour ? b.hour : b.hour + 24;
+    if (effectiveHour >= a.hour && effectiveHour < end) {
+      first = a; second = b; position = (effectiveHour - a.hour) / (end - a.hour); break;
+    }
+  }
+  const root = document.documentElement;
+  const colors = {};
+  for (const role of ["bg", "surface", "overlay", "fg", "muted"]) colors[role] = blendHex(first[role], second[role], position);
+  const accent = phaseAccents[circadianPhase(hour)];
+  const rgb = color => hexRgb(color).join(",");
+  root.style.setProperty("--ink", colors.bg);
+  root.style.setProperty("--ink-rgb", rgb(colors.bg));
+  root.style.setProperty("--surface-rgb", rgb(colors.surface));
+  root.style.setProperty("--overlay-rgb", rgb(colors.overlay));
+  root.style.setProperty("--paper", colors.fg);
+  root.style.setProperty("--paper-rgb", rgb(colors.fg));
+  root.style.setProperty("--muted", colors.muted);
+  root.style.setProperty("--phase-rgb", rgb(accent));
+  root.style.setProperty("--mint", accent);
+}
+updateCircadianTheme();
+setInterval(updateCircadianTheme, 60_000);
+
 function renderCards() {
   const grid = document.querySelector("#status-grid");
   const fragment = document.createDocumentFragment();
@@ -108,16 +160,22 @@ function showCalendar(data) {
   const activeId = document.activeElement?.dataset?.calendarId;
   const fragment = document.createDocumentFragment();
   data.items.forEach(item => {
-    const label = document.createElement("label"); label.className = "calendar-row";
+    const kind = String(item.kind || "to-do");
+    const rowType = kind.toLowerCase().includes("event") ? "event" : "todo";
+    const label = document.createElement("label");
+    label.className = `calendar-row calendar-${rowType}${item.done ? " is-complete" : ""}`;
     const input = document.createElement("input"); input.type = "checkbox";
     input.checked = item.done; input.dataset.calendarId = item.id;
     input.setAttribute("aria-label", `Mark ${item.title} complete`);
-    const text = document.createElement("span");
+    const text = document.createElement("span"); text.className = "calendar-copy";
     const title = document.createElement("strong"); title.textContent = item.title;
-    const when = document.createElement("small"); when.textContent = `${item.kind} · ${item.when}`;
-    text.append(title, when); label.append(input, text);
+    const meta = document.createElement("span"); meta.className = "calendar-meta";
+    const kindBadge = document.createElement("small"); kindBadge.className = "calendar-kind"; kindBadge.textContent = kind;
+    const when = document.createElement("small"); when.className = "calendar-when"; when.textContent = item.when;
+    meta.append(kindBadge, when); text.append(title, meta); label.append(input, text);
     input.addEventListener("change", async () => {
       if (calendarBusy) { input.checked = item.done; return; }
+      label.classList.toggle("is-complete", input.checked);
       calendarBusy = true; input.disabled = true;
       try {
         if (!calendarToken) calendarToken = (await calendarRequest("/api/session")).token;

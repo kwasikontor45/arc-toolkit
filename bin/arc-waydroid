@@ -193,6 +193,7 @@ def start_container():
     # requests its bus name. Keep the unit persistently masked between user
     # launches; only this explicit Open path briefly unmasks it, starts it,
     # then restores the mask while the active service is running.
+    ensure_network_rules()
     unmask = run(["sudo", "-n", "/usr/bin/systemctl", "unmask", UNIT], timeout=15)
     if unmask.returncode:
         detail = (unmask.stderr or unmask.stdout).strip()
@@ -211,6 +212,24 @@ def start_container():
         if stopped.returncode or remasked.returncode:
             raise RuntimeError("Waydroid start lock restoration failed; inspect `arc-waydroid status` immediately.")
         raise RuntimeError("Could not keep the manual-start lock; Waydroid was stopped.")
+
+
+def ensure_network_rules():
+    # UFW denies routed traffic by default. Allow DHCP/DNS to the Waydroid
+    # bridge and forward guest traffic through the host's selected route;
+    # omitting a fixed egress interface lets Wi-Fi/Ethernet/VPN routing change
+    # without pinning Android to a stale host interface name.
+    commands = [
+        ["sudo", "-n", "/usr/sbin/ufw", "allow", "in", "on", "waydroid0",
+         "comment", "Waydroid guest DHCP and host access"],
+        ["sudo", "-n", "/usr/sbin/ufw", "route", "allow", "in", "on", "waydroid0",
+         "comment", "Waydroid guest forwarding"],
+    ]
+    for command in commands:
+        result = run(command, timeout=15)
+        if result.returncode:
+            detail = (result.stderr or result.stdout).strip()
+            raise RuntimeError(detail or "could not restore the Waydroid UFW network rules")
 
 
 def stop_container():

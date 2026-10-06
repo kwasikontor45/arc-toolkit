@@ -2,4 +2,5 @@
 # device-node modes Waydroid broadens while its container runs.
 Cmnd_Alias ARC_WAYDROID_UNIT = /usr/bin/systemctl start waydroid-container.service, /usr/bin/systemctl stop waydroid-container.service, /usr/bin/systemctl unmask waydroid-container.service, /usr/bin/systemctl mask waydroid-container.service
 Cmnd_Alias ARC_WAYDROID_MODES = /usr/bin/chmod 0600 /dev/binder /dev/hwbinder /dev/vndbinder /dev/dma_heap/system, /usr/bin/chmod 0660 /dev/dri/renderD128 /dev/fb0 /dev/video0 /dev/video1
-architect-of-chaos ALL=(root) NOPASSWD: ARC_WAYDROID_UNIT, ARC_WAYDROID_MODES
+Cmnd_Alias ARC_WAYDROID_NETWORK = /usr/sbin/ufw allow in on waydroid0 comment Waydroid guest DHCP and host access, /usr/sbin/ufw route allow in on waydroid0 comment Waydroid guest forwarding
+architect-of-chaos ALL=(root) NOPASSWD: ARC_WAYDROID_UNIT, ARC_WAYDROID_MODES, ARC_WAYDROID_NETWORK

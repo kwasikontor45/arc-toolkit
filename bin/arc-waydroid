@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Small, manual-start Waydroid operator for the Khaos Lab control panel.
 
-Commands: status, open, stop, apps, logs, adb-connect, adb-disconnect. This is
+Commands: status, open, restart, stop, apps, logs, adb-connect, adb-disconnect. This is
 intentionally independent from khaos-lab: it can also be used directly from a
 terminal.
 """
@@ -71,19 +71,33 @@ def waydroid_adb_target():
         raise RuntimeError("Cannot read Waydroid's system-service state from this session.")
     if active is False:
         raise RuntimeError("Open Waydroid first, then connect ADB.")
-    result = run(["waydroid", "status"], timeout=10)
-    if result.returncode:
-        raise RuntimeError((result.stderr or result.stdout).strip() or "Could not read Waydroid status.")
-    match = re.search(r"^IP address:\s*([^\s]+)", result.stdout, re.MULTILINE)
-    if not match:
-        raise RuntimeError("Waydroid has no reported IP yet. Open Android, then retry ADB connect.")
-    try:
-        address = ipaddress.ip_address(match.group(1))
-    except ValueError as exc:
-        raise RuntimeError("Waydroid returned an invalid IP address.") from exc
-    if not address.is_private or address.is_loopback or address.is_unspecified:
-        raise RuntimeError("Waydroid returned a non-private address; refusing an ADB connection.")
-    return f"{address.compressed}:5555"
+    # Android can finish booting before Waydroid's bridge assigns the guest IP.
+    # Re-read status briefly so the panel's single reconnect action can ride
+    # through that normal startup window without caching a stale address.
+    deadline = time.monotonic() + 16
+    last_state = "Waydroid has no reported IP yet."
+    while True:
+        result = run(["waydroid", "status"], timeout=10)
+        if result.returncode:
+            raise RuntimeError((result.stderr or result.stdout).strip() or "Could not read Waydroid status.")
+        match = re.search(r"^IP address:\s*([^\s]+)", result.stdout, re.MULTILINE)
+        if match:
+            raw_address = match.group(1)
+            try:
+                address = ipaddress.ip_address(raw_address)
+            except ValueError as exc:
+                state = raw_address.strip().upper()
+                if state not in {"UNKNOWN", "NONE", "N/A", "<UNKNOWN>"}:
+                    raise RuntimeError("Waydroid returned an invalid IP address; no ADB connection was attempted.") from exc
+                last_state = "Waydroid reports no guest IP yet (UNKNOWN). Android networking has not assigned an address."
+            else:
+                if not address.is_private or address.is_loopback or address.is_unspecified:
+                    raise RuntimeError("Waydroid returned a non-private address; refusing an ADB connection.")
+                return f"{address.compressed}:5555"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(f"{last_state} Wait for Android networking to finish, then retry ADB connect.")
+        time.sleep(min(2, remaining))
 
 
 def adb_devices_output():
@@ -343,6 +357,12 @@ def stop_android():
     print("Waydroid session stopped; the container remains manual-start and Weston was closed if this launcher opened it.")
 
 
+def restart_android():
+    """Restart only the manual Waydroid session, preserving its start lock."""
+    stop_android()
+    open_android()
+
+
 def status():
     active = service_active()
     active_label = "running" if active is True else "stopped" if active is False else "unknown (system bus unavailable)"
@@ -380,11 +400,11 @@ def logs():
 
 
 def main():
-    commands = {"status": status, "open": open_android, "stop": stop_android,
+    commands = {"status": status, "open": open_android, "restart": restart_android, "stop": stop_android,
                 "apps": apps, "logs": logs, "adb-connect": adb_connect,
                 "adb-disconnect": adb_disconnect}
     if len(sys.argv) != 2 or sys.argv[1] not in commands:
-        print("Usage: arc-waydroid {status|open|stop|apps|logs|adb-connect|adb-disconnect}", file=sys.stderr)
+        print("Usage: arc-waydroid {status|open|restart|stop|apps|logs|adb-connect|adb-disconnect}", file=sys.stderr)
         return 2
     try:
         commands[sys.argv[1]]()

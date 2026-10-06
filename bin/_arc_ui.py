@@ -8,17 +8,13 @@ font setup, and its own flat tk.Button/tk.Frame styling -- three
 slightly-drifted copies of the same look. This module is the single
 source of truth for the palette, and provides:
 
-  - rounded_frame(): a genuinely rounded-corner card (Canvas-drawn, not a
-    padding illusion), for anything that should read as a "card" rather
-    than a flat rectangle.
-  - button(): a label-based button with a real hover-state color
-    transition (Tkinter has no CSS :hover, but <Enter>/<Leave> binding
-    gets you the same felt effect) instead of a static flat rectangle.
+  - rounded_frame(): a Canvas-drawn surface for grouped content.
+  - button(): a compact, restrained control with hover feedback and
+    keyboard activation.
   - circadian(): a real time-of-day color engine, modeled directly on
     Kataleya's own circadian phase system (choice/still-pine/desire/nyx)
-    -- the user's own words, "my signature-design or style." Four anchor
-    palettes (dawn-iris, midnight-ocean day, golden-hour gold, and the
-    existing Rose Pine Moon for night), continuously interpolated against
+    -- the user's own words, "my signature-design or style." Four dark
+    mineral anchor palettes, continuously interpolated against
     the real clock rather than hard-cut at phase boundaries -- matching
     Kataleya's own most recent design direction (its GAMEPLAN explicitly
     moved away from the four phases as discrete buckets toward continuous
@@ -35,20 +31,18 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import font as tkfont
 
-# ── Palette -- Rose Pine Moon, canonical fallback/default -- every app
-# should import these, not redefine them. Equivalent to circadian()'s
-# "nyx" (night) anchor -- kept as plain constants too since not every call
-# site needs live time-of-day drift (a one-shot popup, a status icon). ──
-BG       = "#232136"
-SURFACE  = "#2a273f"
-OVERLAY  = "#393552"
-FG       = "#e0def4"
-FG_MUTED = "#6e6a86"
-GOLD     = "#f6c177"
-ROSE     = "#eb6f92"
-PINE     = "#3e8fb0"
-TEAL     = "#9ccfd8"
-IRIS     = "#c4a7e7"
+# ── Palette -- Phosphor Noir. Mineral graphite and verdigris, with warm
+# circadian accents; Rose Pine remains a color influence, not the whole UI. ──
+BG       = "#0c1211"
+SURFACE  = "#121d1a"
+OVERLAY  = "#192723"
+FG       = "#e5eee8"
+FG_MUTED = "#9caaa2"
+GOLD     = "#dbb77d"
+ROSE     = "#d9877f"
+PINE     = "#8fc4aa"
+TEAL     = "#88bfb2"
+IRIS     = "#ada2c9"
 
 # Semantic aliases -- read at the call site instead of the palette. Same
 # colors, names that describe *why*, not just which Rose Pine Moon hue.
@@ -66,10 +60,10 @@ COLOR_ERROR = ROSE
 # to a real hour of day. Only the five "ambient" roles drift (bg/surface/
 # overlay/fg/fg_muted) -- functional colors above stay fixed for legibility.
 PHASES = {
-    "choice":     {"hour": 6,  "bg": "#201f30", "surface": "#26243c", "overlay": "#352f4d", "fg": "#e3e0f2", "fg_muted": "#726d8f"},  # dawn, iris-leaning
-    "desire":     {"hour": 13, "bg": "#0f1c24", "surface": "#15252f", "overlay": "#1e3542", "fg": "#dbe8ec", "fg_muted": "#5c7681"},  # day (canonical desire 11-17), midnight ocean
-    "still-pine": {"hour": 18, "bg": "#2b2035", "surface": "#342942", "overlay": "#493655", "fg": "#f1e7da", "fg_muted": "#8d7968"},  # golden hour (canonical still-pine 17-21), gold-leaning
-    "nyx":        {"hour": 24, "bg": BG,        "surface": SURFACE,  "overlay": OVERLAY,   "fg": FG,        "fg_muted": FG_MUTED},   # night, Rose Pine Moon as-is
+    "choice":     {"hour": 6,  "bg": "#111918", "surface": "#192321", "overlay": "#24322e", "fg": "#e3eee8", "fg_muted": "#9aada4"},  # cool green dawn
+    "desire":     {"hour": 13, "bg": "#0c1717", "surface": "#142322", "overlay": "#1d302e", "fg": "#dcece8", "fg_muted": "#93aaa5"},  # deep mineral day
+    "still-pine": {"hour": 18, "bg": "#191712", "surface": "#242018", "overlay": "#342d20", "fg": "#f0e8d9", "fg_muted": "#b6a487"},  # low amber dusk
+    "nyx":        {"hour": 24, "bg": BG,        "surface": SURFACE,  "overlay": OVERLAY,   "fg": FG,        "fg_muted": FG_MUTED},   # night, deepest mineral palette
 }
 _PHASE_ORDER = ["choice", "desire", "still-pine", "nyx"]
 
@@ -80,11 +74,11 @@ _PHASE_ORDER = ["choice", "desire", "still-pine", "nyx"]
 # anchors above stay where they are (palette drifts on its own schedule); the
 # `phase` label and PHASE_ACCENT below always follow the canonical table.
 PHASE_START = {"choice": 6, "desire": 11, "still-pine": 17, "nyx": 21}
-PHASE_ACCENT = {  # Kataleya's own accent per phase
-    "choice":     "#5ec8ed",
-    "desire":     "#f6c177",
-    "still-pine": "#c4a7e7",
-    "nyx":        "#ea9a97",
+PHASE_ACCENT = {  # muted toolkit accents keyed to Kataleya's canonical phases
+    "choice":     "#80b9c9",
+    "desire":     "#d8b375",
+    "still-pine": "#a2c6a5",
+    "nyx":        "#b391a0",
 }
 
 
@@ -208,14 +202,14 @@ SPACE_MD = 12
 SPACE_LG = 20
 SPACE_XL = 32
 
-FONT_FAMILY = "JetBrains Mono"
+FONT_FAMILY = "DejaVu Sans"
 
 
 def fonts():
     """Font objects need a Tk root to already exist, so this is a function,
     not module-level constants -- call it after your root window is up.
-    Falls back to the platform default family if JetBrains Mono isn't
-    installed, same defensive pattern arc-break already used."""
+    Uses a common sans family for everyday controls; reserve monospace for
+    live command output and technical values."""
     try:
         return {
             "title": tkfont.Font(family=FONT_FAMILY, size=14, weight="bold"),
@@ -249,8 +243,8 @@ def _rounded_points(x1, y1, x2, y2, r):
     ]
 
 
-def rounded_frame(parent, parent_bg, bg=SURFACE, radius=14, border=None, border_width=1):
-    """A real rounded-corner card, Canvas-drawn. Returns (outer, inner):
+def rounded_frame(parent, parent_bg, bg=SURFACE, radius=8, border=None, border_width=1):
+    """A restrained grouped surface. Returns (outer, inner):
     pack/grid `outer` into your real layout, then pack/grid your content
     into `inner`. `parent_bg` must match whatever's actually behind this
     card (the canvas's own corners are still square -- they show
@@ -273,15 +267,11 @@ def rounded_frame(parent, parent_bg, bg=SURFACE, radius=14, border=None, border_
     outer.create_window(inset, inset, window=inner, anchor="nw", tags="win")
     # Reuse the same canvas shapes while a card is resized. Deleting and
     # recreating a polygon for every Configure used to cause visible redraw
-    # shimmer on Xfce's compositor; thin highlights give the surface a quiet
-    # liquid-glass edge without turning it into a heavy box.
-    shadow = outer.create_polygon(0, 0, 0, 0, smooth=True,
-                                  fill=_lerp_hex(parent_bg, "#000000", 0.28), outline="")
+    # shimmer on Xfce's compositor. The surface uses a quiet outline without
+    # a drop shadow or faux glass highlight.
     face = outer.create_polygon(0, 0, 0, 0, smooth=True, fill=bg,
-                                outline=border or _lerp_hex(bg, "#ffffff", 0.11),
+                                outline=border or _lerp_hex(bg, "#ffffff", 0.09),
                                 width=max(1, border_width))
-    sheen = outer.create_line(0, 0, 0, 0, fill=_lerp_hex(bg, "#ffffff", 0.18),
-                              width=1, capstyle="round")
 
     def redraw(event=None):
         w = max(outer.winfo_width(), inner.winfo_reqwidth() + inset * 2, 1)
@@ -289,15 +279,10 @@ def rounded_frame(parent, parent_bg, bg=SURFACE, radius=14, border=None, border_
         wanted = (inner.winfo_reqwidth() + inset * 2, h)
         if (outer.cget("width"), outer.cget("height")) != tuple(map(str, wanted)):
             outer.config(width=wanted[0], height=wanted[1])
-        pts = _rounded_points(1, 1, w - 2, h - 2, radius)
-        shadow_pts = [v + (1 if i % 2 else 0) for i, v in enumerate(pts)]
-        outer.coords(shadow, *shadow_pts)
+        pts = _rounded_points(1, 1, w - 2, h - 2, min(radius, 8))
         outer.coords(face, *pts)
-        outer.coords(sheen, pts[0] + 2, pts[1], pts[2] - 2, pts[3])
         outer.itemconfigure(face, fill=state["bg"],
-                            outline=border or _lerp_hex(state["bg"], "#ffffff", 0.11))
-        outer.itemconfigure(sheen, fill=_lerp_hex(state["bg"], "#ffffff", 0.18))
-        outer.tag_lower(shadow)
+                            outline=border or _lerp_hex(state["bg"], "#ffffff", 0.09))
         outer.tag_lower(face, "win")
 
     def retheme(new_bg=None, new_parent_bg=None):
@@ -323,17 +308,13 @@ def rounded_frame(parent, parent_bg, bg=SURFACE, radius=14, border=None, border_
     return outer, inner
 
 
-def rounded_pane(parent, parent_bg, bg=SURFACE, radius=18):
+def rounded_pane(parent, parent_bg, bg=SURFACE, radius=8):
     """Resizable pane shell; its content stays inset from rounded corners."""
     outer = tk.Canvas(parent, bg=parent_bg, bd=0, highlightthickness=0)
     inner = tk.Frame(outer, bg=bg)
     window = outer.create_window(8, 8, window=inner, anchor='nw')
-    shadow = outer.create_polygon(0, 0, 0, 0, smooth=True,
-                                  fill=_lerp_hex(parent_bg, "#000000", 0.3), outline="")
     face = outer.create_polygon(0, 0, 0, 0, smooth=True, fill=bg,
-                                outline=_lerp_hex(bg, "#ffffff", 0.12), width=1)
-    sheen = outer.create_line(0, 0, 0, 0, fill=_lerp_hex(bg, "#ffffff", 0.2),
-                              width=1, capstyle="round")
+                                outline=_lerp_hex(bg, "#ffffff", 0.09), width=1)
     last_size = [0, 0]
     last_bg = [bg]
     def resize(event):
@@ -344,14 +325,10 @@ def rounded_pane(parent, parent_bg, bg=SURFACE, radius=18):
         last_size[:] = [width, height]
         last_bg[0] = face_bg
         outer.itemconfigure(window, width=width - 16, height=height - 16)
-        pts = _rounded_points(1, 1, width - 2, height - 2, radius)
-        outer.coords(shadow, *[v + (1 if i % 2 else 0) for i, v in enumerate(pts)])
+        pts = _rounded_points(1, 1, width - 2, height - 2, min(radius, 8))
         outer.coords(face, *pts)
-        outer.coords(sheen, pts[0] + 2, pts[1], pts[2] - 2, pts[3])
         outer.itemconfigure(face, fill=face_bg,
-                            outline=_lerp_hex(face_bg, "#ffffff", 0.12))
-        outer.itemconfigure(sheen, fill=_lerp_hex(face_bg, "#ffffff", 0.2))
-        outer.tag_lower(shadow)
+                            outline=_lerp_hex(face_bg, "#ffffff", 0.09))
         outer.tag_lower(face, window)
     outer.bind('<Configure>', resize)
     outer.bind('<Expose>', resize)
@@ -459,7 +436,7 @@ class PillScrollbar(tk.Canvas):
 
 
 class RoundedLabel(tk.Canvas):
-    """A compact glass pill button used throughout the desktop interfaces."""
+    """A compact, keyboard-focusable control with a quiet beveled edge."""
     def __init__(self, parent, text='', font=None, bg=SURFACE, fg=FG, padx=10, pady=6,
                  takefocus=1, **options):
         self.look = dict(text=text, font=font, bg=bg, fg=fg, padx=padx, pady=pady, anchor='center')
@@ -500,38 +477,31 @@ class RoundedLabel(tk.Canvas):
         if width < 2 or height < 2:
             return
         super().configure(bg=self.master.cget('bg'))
-        radius = min(height / 2, width / 2)
+        radius = min(7, height / 3, width / 3)
         points = _rounded_points(1, 1, width - 2, height - 2, radius)
-        shadow_points = [v + (1 if i % 2 == 0 else 1) for i, v in enumerate(points)]
         bg = self.look['bg']
-        edge = _lerp_hex(bg, '#ffffff', .24)
-        low_edge = _lerp_hex(bg, '#000000', .23)
-        self.coords(self._shadow, *shadow_points)
-        self.itemconfigure(self._shadow, fill=_lerp_hex(self.master.cget('bg'), '#000000', .28))
+        edge = _lerp_hex(bg, '#ffffff', .12)
+        low_edge = self.look['fg']
+        self.itemconfigure(self._shadow, state='hidden')
         self.coords(self._face, *points)
         self.itemconfigure(self._face, fill=bg, outline=edge)
-        self.coords(self._sheen, radius + 2, 2, width - radius - 2, 2)
-        self.itemconfigure(self._sheen, fill=_lerp_hex(bg, '#ffffff', .38))
+        self.itemconfigure(self._sheen, state='hidden')
         left = self.look['anchor'] in ('w', 'nw', 'sw')
         x = self.look['padx'] if left else width / 2
         anchor = 'w' if left else 'center'
-        self.coords(self._label_shadow, x, height / 2 + 1)
-        self.itemconfigure(self._label_shadow, text=self.look['text'], font=self.look['font'],
-                           fill=low_edge, anchor=anchor)
+        self.itemconfigure(self._label_shadow, state='hidden')
         self.coords(self._label, x, height / 2)
         self.itemconfigure(self._label, text=self.look['text'], font=self.look['font'],
                            fill=self.look['fg'], anchor=anchor)
         self.tag_lower(self._shadow)
         self.tag_raise(self._face)
-        self.tag_raise(self._sheen)
-        self.tag_raise(self._label_shadow)
         self.tag_raise(self._label)
 
 
 def button(parent, text, command=None, font=None, bg=SURFACE, fg=TEAL,
            hover_bg=OVERLAY, hover_fg=None, disabled_fg=FG_MUTED,
            padx=10, pady=6):
-    """Rounded Canvas button with keyboard activation and a hover transition, replacing
+    """Compact Canvas button with keyboard activation and hover feedback, replacing
     the flat tk.Button pattern every app previously copy-pasted (static
     bg, no feedback until an actual click). Returns the Label with one
     extra method, .set_enabled(bool) -- plain tk.Label has no built-in

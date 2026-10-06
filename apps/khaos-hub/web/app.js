@@ -16,12 +16,12 @@ let activePage = "overview";
 // Mirror the local Arc/Kataleya circadian engine: interpolate the same four
 // ambient anchors by local clock time, and keep functional phase accents.
 const circadianAnchors = [
-  {hour: 6, bg: "#201f30", surface: "#26243c", overlay: "#352f4d", fg: "#e3e0f2", muted: "#b4adc6"},
-  {hour: 13, bg: "#0f1c24", surface: "#15252f", overlay: "#1e3542", fg: "#dbe8ec", muted: "#9fbec7"},
-  {hour: 18, bg: "#2b2035", surface: "#342942", overlay: "#493655", fg: "#f1e7da", muted: "#b9a28e"},
-  {hour: 24, bg: "#232136", surface: "#2a273f", overlay: "#393552", fg: "#e0def4", muted: "#aaa7c0"}
+  {hour: 6, bg: "#131a19", surface: "#1a2421", overlay: "#26332e", fg: "#e3eae6", muted: "#a6b3ac"},
+  {hour: 13, bg: "#0c1717", surface: "#142322", overlay: "#1d302e", fg: "#dcece8", muted: "#93aaa5"},
+  {hour: 18, bg: "#1a1712", surface: "#242018", overlay: "#342d20", fg: "#efe7d7", muted: "#b3a183"},
+  {hour: 24, bg: "#0c1211", surface: "#121d1a", overlay: "#192723", fg: "#e5eee8", muted: "#9caaa2"}
 ];
-const phaseAccents = {choice: "#5ec8ed", desire: "#f6c177", "still-pine": "#c4a7e7", nyx: "#ea9a97"};
+const phaseAccents = {choice: "#80b9c9", desire: "#d8b375", "still-pine": "#a2c6a5", nyx: "#b391a0"};
 function hexRgb(hex) { return hex.match(/[a-f\d]{2}/gi).map(value => parseInt(value, 16)); }
 function rgbHex(rgb) { return `#${rgb.map(value => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0")).join("")}`; }
 function blendHex(a, b, amount) {
@@ -145,6 +145,9 @@ renderCards();
 let calendarToken = "";
 let calendarBusy = false;
 let calendarSignature = "";
+let showCompleted = false;
+const expandedCalendarGroups = new Set(["To-dos"]);
+const expandedCalendarRows = new Set();
 async function calendarRequest(path, options = {}) {
   const response = await fetch(path, {cache: "no-store", ...options});
   const data = await response.json();
@@ -159,9 +162,15 @@ function showCalendar(data) {
   const list = document.querySelector("#calendar-list");
   const activeId = document.activeElement?.dataset?.calendarId;
   const fragment = document.createDocumentFragment();
-  data.items.forEach(item => {
+  const active = data.items.filter(item => !item.done);
+  const complete = data.items.filter(item => item.done);
+  const groups = [
+    ["To-dos", "todo", active.filter(item => item.kind === "To-do")],
+    ["Appointments", "appointment", active.filter(item => item.kind === "Appointment")],
+    ["Events", "event", active.filter(item => item.kind === "Event")]
+  ];
+  function makeRow(item, rowType) {
     const kind = String(item.kind || "to-do");
-    const rowType = kind.toLowerCase().includes("event") ? "event" : "todo";
     const label = document.createElement("label");
     label.className = `calendar-row calendar-${rowType}${item.done ? " is-complete" : ""}`;
     const input = document.createElement("input"); input.type = "checkbox";
@@ -187,9 +196,63 @@ function showCalendar(data) {
         calendarSignature = "";
       } finally { calendarBusy = false; input.disabled = false; }
     });
-    fragment.append(label);
+    return label;
+  }
+  groups.forEach(([name, type, items]) => {
+    const section = document.createElement("section"); section.className = "calendar-group";
+    const heading = document.createElement("button"); heading.type = "button";
+    heading.className = "calendar-group-toggle";
+    const open = expandedCalendarGroups.has(name);
+    heading.setAttribute("aria-expanded", String(open));
+    heading.textContent = `${open ? "−" : "+"}  ${name} · ${items.length}`;
+    heading.addEventListener("click", () => {
+      if (open) expandedCalendarGroups.delete(name); else expandedCalendarGroups.add(name);
+      calendarSignature = ""; showCalendar(data);
+    });
+    section.append(heading);
+    if (open) {
+      if (!items.length) {
+        const empty = document.createElement("p"); empty.className = "calendar-empty";
+        empty.textContent = "Nothing scheduled in this two-week window."; section.append(empty);
+      }
+      const visible = expandedCalendarRows.has(name) ? items : items.slice(0, 10);
+      visible.forEach(item => section.append(makeRow(item, type)));
+      if (items.length > 10) {
+        const more = document.createElement("button"); more.type = "button";
+        more.className = "calendar-more-toggle";
+        more.textContent = expandedCalendarRows.has(name) ? "Show fewer" : `Show all · ${items.length - 10} more`;
+        more.addEventListener("click", () => {
+          if (expandedCalendarRows.has(name)) expandedCalendarRows.delete(name); else expandedCalendarRows.add(name);
+          calendarSignature = ""; showCalendar(data);
+        });
+        section.append(more);
+      }
+    }
+    fragment.append(section);
   });
-  if (!data.items.length) fragment.append(document.createTextNode("No events in the next two weeks or to-dos."));
+  if (complete.length) {
+    const toggle = document.createElement("button"); toggle.type = "button";
+    toggle.className = "calendar-completed-toggle";
+    toggle.setAttribute("aria-expanded", String(showCompleted));
+    toggle.textContent = `${showCompleted ? "Hide" : "Show"} completed · ${complete.length}`;
+    toggle.addEventListener("click", () => { showCompleted = !showCompleted; calendarSignature = ""; showCalendar(data); });
+    fragment.append(toggle);
+    if (showCompleted) {
+      const visible = expandedCalendarRows.has("Completed") ? complete : complete.slice(0, 10);
+      visible.forEach(item => fragment.append(makeRow(item, "completed")));
+      if (complete.length > 10) {
+        const more = document.createElement("button"); more.type = "button";
+        more.className = "calendar-more-toggle";
+        more.textContent = expandedCalendarRows.has("Completed") ? "Show fewer completed" : `Show all completed · ${complete.length - 10} more`;
+        more.addEventListener("click", () => {
+          if (expandedCalendarRows.has("Completed")) expandedCalendarRows.delete("Completed"); else expandedCalendarRows.add("Completed");
+          calendarSignature = ""; showCalendar(data);
+        });
+        fragment.append(more);
+      }
+    }
+  }
+  if (!data.items.length) fragment.append(document.createTextNode("Nothing scheduled in the next two weeks."));
   list.replaceChildren(fragment);
   if (activeId) Array.from(list.querySelectorAll("input")).find(input => input.dataset.calendarId === activeId)?.focus();
 }

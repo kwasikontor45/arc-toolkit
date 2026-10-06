@@ -111,9 +111,17 @@ def calendar_items(source=None, now=None):
                 if key in seen:
                     continue
                 seen.add(key)
-                items.append({'id': key, 'title': title, 'kind': 'To-do' if component['kind'] == 'VTODO' else 'Event',
+                if component['kind'] == 'VTODO':
+                    kind = 'To-do'
+                else:
+                    # Orage stores timed VEVENTs as appointments and date-only
+                    # VEVENTs as events. Keep that distinction visible to both UIs.
+                    start_prop = date_field[0][0] if date_field else ''
+                    kind = 'Appointment' if date and 'VALUE=DATE' not in start_prop and len(date_field[0][1]) > 8 else 'Event'
+                items.append({'id': key, 'title': title, 'kind': kind,
                               'when': date.astimezone().strftime('%a %b %d · %H:%M') if date else 'No due date',
                               'date': date.isoformat() if date else '',
+                              'repeating': bool(value('RRULE')),
                               'source_done': value('STATUS') == 'COMPLETED'})
         except (ValueError, TypeError, OverflowError):
             continue

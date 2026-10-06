@@ -400,6 +400,13 @@ def check_sop_gate(timeout=5):
         return False, f"SOP gate check unavailable: {e}"
 
 
+def gate_status(ok, detail=''):
+    """Show an owner bypass as a distinct, temporary policy state."""
+    if ok and 'owner bypass active' in str(detail).lower():
+        return "SOP GATE  ·  BYPASS ACTIVE", GOLD
+    return ("SOP GATE  ·  OPEN", PINE) if ok else ("SOP GATE  ·  LOCKED", ROSE)
+
+
 # ── execution core ───────────────────────────────────────────────────────────
 class Runner:
     """The ONE way this app runs commands.
@@ -676,6 +683,7 @@ CATEGORIES = {
         Action("Android: status (container, session, display)", "arc-waydroid status", timeout=15),
         Action("Android: open (starts Waydroid + X11 display if needed)", "arc-waydroid open",
                confirm=True, timeout=150),
+        Action("Android: restart session", "arc-waydroid restart", confirm=True, timeout=210),
         Action("ADB: connect Waydroid (then manage under Phone)", "arc-waydroid adb-connect", timeout=60),
         Action("ADB: disconnect Waydroid", "arc-waydroid adb-disconnect", timeout=20),
         Action("Android: stop + restore host device permissions", "arc-waydroid stop",
@@ -1285,7 +1293,7 @@ class CalendarView(View):
         self.checks = []
         tk.Label(self.frame, text='Events & to-dos', bg=SURFACE, fg=FG,
                  font=self.app.f.label).pack(anchor='w', padx=16, pady=(14, 7))
-        tk.Label(self.frame, text='Checks sync with local Khaos Hub. Orage appointments and alarms stay unchanged.',
+        tk.Label(self.frame, text='Appointments, events, and to-dos stay grouped. Repeating tasks are checked one occurrence at a time; completed items can be tucked away without deleting them.',
                  wraplength=520, justify='left', bg=SURFACE, fg=FG_MUTED).pack(anchor='w', padx=16)
         ui.button(self.frame, 'Open Khaos Hub', command=lambda: webbrowser.open('http://127.0.0.1:8766/'),
                   font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
@@ -1294,6 +1302,9 @@ class CalendarView(View):
         self.message.pack(anchor='w', padx=16)
         self.rows = tk.Frame(self.frame, bg=SURFACE)
         self.rows.pack(fill='both', expand=True, padx=16, pady=8)
+        self.show_completed = tk.BooleanVar(value=False)
+        self.expanded_groups = {'To-dos'}
+        self.expanded_rows = set()
         self.poll('calendar-live', 2000, self.read_calendar, self.apply_calendar)
 
     def _set_checks_enabled(self, enabled):
@@ -1340,32 +1351,94 @@ class CalendarView(View):
         for widget in self.rows.winfo_children():
             widget.destroy()
         self.checks = []
-        for item in data['items']:
+        items = data['items']
+        active_items = [item for item in items if not item['done']]
+        done_items = [item for item in items if item['done']]
+        grouped = [('To-dos', [i for i in active_items if i['kind'] == 'To-do']),
+                   ('Appointments', [i for i in active_items if i['kind'] == 'Appointment']),
+                   ('Events', [i for i in active_items if i['kind'] == 'Event'])]
+        for heading, group in grouped:
+            expanded = heading in self.expanded_groups
+            ui.button(self.rows, f"{'−' if expanded else '+'}  {heading}  ·  {len(group)}",
+                      command=lambda h=heading: self._toggle_group(data, h),
+                      font=self.app.f.label, bg=SURFACE, fg=FG,
+                      hover_bg=OVERLAY, padx=4, pady=5).pack(anchor='w', pady=(10, 2))
+            visible = group if heading in self.expanded_rows else group[:10]
+            if expanded:
+                if group:
+                    for item in visible:
+                        self._calendar_row(item)
+                else:
+                    tk.Label(self.rows, text='Nothing scheduled in this two-week window.',
+                             bg=SURFACE, fg=FG_MUTED, font=self.app.f.small).pack(anchor='w', padx=4, pady=5)
+            if expanded and len(group) > 10:
+                ui.button(self.rows, f"{'Show fewer' if heading in self.expanded_rows else f'Show all · {len(group)-10} more'}",
+                          command=lambda h=heading: self._toggle_all_rows(data, h),
+                          font=self.app.f.small, bg=SURFACE, fg=FG_MUTED,
+                          hover_bg=OVERLAY, padx=4, pady=4).pack(anchor='w', pady=(2, 5))
+        if done_items:
+            ui.button(self.rows, f"{'Hide' if self.show_completed.get() else 'Show'} completed  ·  {len(done_items)}",
+                      command=lambda: self._toggle_completed(data), font=self.app.f.small,
+                      bg=OVERLAY, fg=FG_MUTED, hover_bg=BG, padx=10, pady=4).pack(anchor='w', pady=(14, 4))
+            if self.show_completed.get():
+                visible_done = done_items if 'Completed' in self.expanded_rows else done_items[:10]
+                for item in visible_done:
+                    self._calendar_row(item)
+                if len(done_items) > 10:
+                    ui.button(self.rows, f"{'Show fewer' if 'Completed' in self.expanded_rows else f'Show all completed · {len(done_items)-10} more'}",
+                              command=lambda: self._toggle_all_rows(data, 'Completed'),
+                              font=self.app.f.small, bg=SURFACE, fg=FG_MUTED,
+                              hover_bg=OVERLAY, padx=4, pady=4).pack(anchor='w', pady=(2, 5))
+        if not active_items and not done_items:
+            self.message.configure(text='Nothing scheduled in the next two weeks.')
+        elif not active_items:
+            self.message.configure(text='All caught up. Completed items are tucked away below.')
+        self.app.refresh_scroll(self.frame)
+
+    def _toggle_completed(self, data):
+        self.show_completed.set(not self.show_completed.get())
+        # Force a render without waiting for the next poll.
+        self.signature = None
+        self.apply_calendar(data)
+
+    def _toggle_group(self, data, name):
+        if name in self.expanded_groups:
+            self.expanded_groups.remove(name)
+        else:
+            self.expanded_groups.add(name)
+        self.signature = None
+        self.apply_calendar(data)
+
+    def _toggle_all_rows(self, data, name):
+        if name in self.expanded_rows:
+            self.expanded_rows.remove(name)
+        else:
+            self.expanded_rows.add(name)
+        self.signature = None
+        self.apply_calendar(data)
+
+    def _calendar_row(self, item):
             value = tk.BooleanVar(value=item['done'])
-            card, body = ui.rounded_frame(self.rows, SURFACE, bg=OVERLAY, radius=16,
-                                          border=ui._lerp_hex(OVERLAY, '#ffffff', .2))
-            card.pack(fill='x', anchor='w', pady=4, padx=2)
-            line = tk.Frame(body, bg=OVERLAY)
-            line.pack(fill='x', padx=10, pady=(7, 1))
+            body = tk.Frame(self.rows, bg=SURFACE)
+            body.pack(fill='x', anchor='w', pady=(2, 0), padx=2)
+            line = tk.Frame(body, bg=SURFACE)
+            line.pack(fill='x', padx=3, pady=(4, 0))
             check = tk.Checkbutton(line, text=item['title'], variable=value,
                       command=lambda i=item, v=value: self.toggle(i, v),
-                      bg=OVERLAY, fg=FG, selectcolor=BG, activebackground=OVERLAY,
+                      bg=SURFACE, fg=FG, selectcolor=BG, activebackground=SURFACE,
                       activeforeground=TEAL, anchor='w', justify='left', wraplength=420,
                       font=self.app.f.label, padx=5, pady=4, relief='flat', bd=0)
             check.pack(side='left', fill='x', expand=True)
             kind = str(item['kind']).upper()
-            badge = ui.RoundedLabel(line, text=kind, font=self.app.f.small,
-                                    bg=SURFACE, fg=GOLD if 'EVENT' in kind else TEAL,
-                                    padx=9, pady=3, takefocus=0)
+            badge = tk.Label(line, text=kind, font=self.app.f.small,
+                             bg=SURFACE, fg=GOLD if 'APPOINTMENT' in kind or 'EVENT' in kind else TEAL)
             badge.pack(side='right', padx=(8, 2))
-            tk.Label(body, text=item['when'], bg=OVERLAY, fg=FG_MUTED,
+            tk.Label(body, text=item['when'] + ('  ·  repeats' if item.get('repeating') else ''), bg=SURFACE, fg=FG_MUTED,
                      font=self.app.f.small, anchor='w', wraplength=460,
-                     justify='left').pack(anchor='w', padx=43, pady=(0, 8))
+                     justify='left').pack(anchor='w', padx=45, pady=(0, 6))
+            tk.Frame(body, bg=BORDER, height=1).pack(fill='x', padx=5)
             check._value = value
             self.checks.append(check)
-        if not data['items']:
-            self.message.configure(text='No events in the next two weeks or to-dos.')
-        self.app.refresh_scroll(self.frame)
 
     def toggle(self, item, value):
         if self.busy:
@@ -2086,8 +2159,10 @@ class SopView(View):
         if not self.alive():
             return
         ok, detail = check_sop_gate()
-        self.gate_label.configure(text="OPERATIONS OPEN" if ok else "OPERATIONS LOCKED",
-                                  fg=TEAL if ok else ROSE)
+        bypass = ok and 'owner bypass active' in str(detail).lower()
+        self.gate_label.configure(text="OWNER BYPASS ACTIVE" if bypass else
+                                  "OPERATIONS OPEN" if ok else "OPERATIONS LOCKED",
+                                  fg=GOLD if bypass else TEAL if ok else ROSE)
         self.detail_label.configure(text=detail or ("This session is cleared." if ok else
                                                      "Read the current plan, then log and acknowledge."))
 
@@ -2399,9 +2474,9 @@ class App:
         root.bind("<Control-f>", lambda _e: (self.search_entry.focus_set(), "break")[1])
         root.bind("<F1>", lambda _e: (self.select("Help"), "break")[1])
 
-        gate_open, _ = check_sop_gate()
-        self.status_gate.configure(text="SOP GATE  ·  OPEN" if gate_open else "SOP GATE  ·  LOCKED",
-                                   fg=PINE if gate_open else ROSE)
+        gate_open, gate_detail = check_sop_gate()
+        gate_text, gate_color = gate_status(gate_open, gate_detail)
+        self.status_gate.configure(text=gate_text, fg=gate_color)
         self.status_phase.configure(text=f"{self.phase_name.upper()}  ·  {time.strftime('%H:%M')}")
         self.select("Status" if gate_open else "SOP")
         self._tick()
@@ -2416,10 +2491,10 @@ class App:
             return SimpleNamespace(
                 big=tkfont.Font(family="DejaVu Sans", size=16, weight="bold"),
                 identity=tkfont.Font(family="DejaVu Sans", size=9),
-                label=tkfont.Font(family="JetBrains Mono", size=11),
-                small=tkfont.Font(family="JetBrains Mono", size=10),
+                label=tkfont.Font(family="DejaVu Sans", size=10, weight="bold"),
+                small=tkfont.Font(family="DejaVu Sans", size=9),
                 mono=tkfont.Font(family="JetBrains Mono", size=10),
-                nav=tkfont.Font(family="JetBrains Mono", size=11))
+                nav=tkfont.Font(family="DejaVu Sans", size=10))
         except Exception:
             d = tkfont.Font(size=10)
             return SimpleNamespace(big=d, identity=d, label=d, small=d, mono=d, nav=d)
@@ -2493,6 +2568,10 @@ class App:
             self.body_pane.add(self.sidebar_frame, before=self.content_wrap, minsize=188, width=216)
             self._sidebar_visible = True
         self._sidebar_auto_hidden = False
+        if hasattr(self, "menu_access"):
+            self.menu_access.configure(text="HIDE MENU" if self._sidebar_visible else "SHOW MENU")
+        if hasattr(self, "nav_toggle"):
+            self.nav_toggle.configure(text="menu" if self._sidebar_visible else "show menu")
         self.root.after_idle(lambda: self.refresh_scroll(self.view.frame) if self.view else None)
 
     def _on_root_configure(self, event):
@@ -2504,10 +2583,12 @@ class App:
             self.body_pane.forget(self.sidebar_frame)
             self._sidebar_visible = False
             self._sidebar_auto_hidden = True
+            self.menu_access.configure(text="SHOW MENU")
         elif event.width > 840 and self._sidebar_auto_hidden and not self._sidebar_visible:
             self.body_pane.add(self.sidebar_frame, before=self.content_wrap, minsize=188, width=216)
             self._sidebar_visible = True
             self._sidebar_auto_hidden = False
+            self.menu_access.configure(text="HIDE MENU")
         self.root.after_idle(self._fit_console_pane)
 
     def _build_panes(self):
@@ -2567,7 +2648,11 @@ class App:
         self.status_gate = tk.Label(self.statusbar, text="", font=self.f.small, bg=BG, fg=FG_MUTED)
         self.status_gate.pack(side="right", padx=(12, 0))
         self.status_phase = tk.Label(self.statusbar, text="", font=self.f.small, bg=BG, fg=self.phase_accent)
-        self.status_phase.pack(side="right")
+        self.status_phase.pack(side="right", padx=(10, 0))
+        self.menu_access = ui.button(self.statusbar, "HIDE MENU", command=self.toggle_nav,
+                                     font=self.f.small, bg=OVERLAY, fg=FG_MUTED,
+                                     hover_bg=BG, padx=9, pady=3)
+        self.menu_access.pack(side="right", padx=(10, 0))
 
     def _bind_splitter_feedback(self, pane, orientation):
         """Light the sash on hover and keep the pointer in its normal shape."""
@@ -2839,8 +2924,11 @@ class App:
         ok, detail = check_sop_gate()
         if panel_command_allowed(cmd, ok):
             if hasattr(self, "status_gate"):
-                self.status_gate.configure(text="SOP GATE  ·  OPEN" if ok else "SOP GATE  ·  RECOVERY",
-                                           fg=PINE if ok else GOLD)
+                if ok:
+                    text, color = gate_status(ok, detail)
+                else:
+                    text, color = "SOP GATE  ·  RECOVERY", GOLD
+                self.status_gate.configure(text=text, fg=color)
             return True
         if hasattr(self, "status_gate"):
             self.status_gate.configure(text="SOP GATE  ·  LOCKED", fg=ROSE)
@@ -2855,6 +2943,10 @@ class App:
     # -- periodic loops ------------------------------------------------------
     def _tick(self):
         self.root.after(1000, self._tick)              # schedule first: one bad tick can't end the clock
+        if (not getattr(self, "_gate_refresh_pending", False)
+                and time.monotonic() - getattr(self, "_gate_checked_at", 0) >= 5):
+            self._gate_refresh_pending = True
+            threading.Thread(target=self._refresh_gate_worker, daemon=True).start()
         try:
             self.clock_lbl.configure(text=time.strftime("%H:%M:%S"))
             name, color = ui.phase_info()
@@ -2889,6 +2981,25 @@ class App:
             self.runner.reap()
         except Exception:
             self.root.report_callback_exception(*sys.exc_info())
+
+    def _refresh_gate_worker(self):
+        ok, detail = check_sop_gate()
+        self.bridge.post(self._apply_gate_status, ok, detail)
+
+    def _apply_gate_status(self, ok, detail):
+        self._gate_refresh_pending = False
+        self._gate_checked_at = time.monotonic()
+        if not self.root.winfo_exists():
+            return
+        text, color = gate_status(ok, detail)
+        self.status_gate.configure(text=text, fg=color)
+        if isinstance(self.view, SopView) and self.view.alive():
+            bypass = ok and 'owner bypass active' in str(detail).lower()
+            self.view.gate_label.configure(text="OWNER BYPASS ACTIVE" if bypass else
+                                           "OPERATIONS OPEN" if ok else "OPERATIONS LOCKED",
+                                           fg=GOLD if bypass else TEAL if ok else ROSE)
+            self.view.detail_label.configure(text=detail or ("This session is cleared." if ok else
+                                                               "Read the current plan, then log and acknowledge."))
 
     def _apply_circadian_ambient(self):
         """Recolor the live workspace from Kataleya's shared time palette.
@@ -3010,7 +3121,8 @@ class App:
         integration_ok = (
             {"UAD-ng: launch (multi-device GUI)"} <= wired["Phone"]
             and {"ADB: connect Waydroid (then manage under Phone)",
-                 "Android: open (starts Waydroid + X11 display if needed)"} <= wired["Waydroid"]
+                 "Android: open (starts Waydroid + X11 display if needed)",
+                 "Android: restart session"} <= wired["Waydroid"]
             and waydroid_manual_lock
             and {"LMMS: launch music studio", "LMMS: open Reborn practice beat",
                  "Guide: Reborn beat baby steps", "Reference: Lorde — Hammer"} <= wired["Studio"]

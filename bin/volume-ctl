@@ -1,5 +1,5 @@
 #!/bin/bash
-# volume-ctl — speaker volume control, bound to Fn F10 (mute) / F11 (down) / F12 (up).
+# volume-ctl — speaker volume control, bound to F10 (mute) / F11 (down) / F12 (up).
 # usage: volume-ctl up|down|mute
 #
 # Built 2026-08-26 alongside kbd-backlight -- same underlying gap: no volume-key
@@ -21,11 +21,20 @@
 
 set -euo pipefail
 
-STEP=5   # percent
+STEP=5
+
+# Keep software volume inside the normal 0–100% range. Relative dB increments
+# can turn repeated key presses into a huge and distorted boost (the live sink
+# was at 373% / +34.3 dB during the integrity sweep).
+CURRENT=$(pactl get-sink-volume @DEFAULT_SINK@ | grep -oP '\d+(?=%)' | head -1)
+[[ "$CURRENT" =~ ^[0-9]+$ ]] || { echo "could not read sink volume" >&2; exit 1; }
+(( CURRENT > 100 )) && CURRENT=100
 
 case "${1:-}" in
-  up)   pactl set-sink-volume @DEFAULT_SINK@ "+${STEP}%" ;;
-  down) pactl set-sink-volume @DEFAULT_SINK@ "-${STEP}%" ;;
+  up)   NEXT=$((CURRENT + STEP)); (( NEXT > 100 )) && NEXT=100
+        pactl set-sink-volume @DEFAULT_SINK@ "${NEXT}%" ;;
+  down) NEXT=$((CURRENT - STEP)); (( NEXT < 0 )) && NEXT=0
+        pactl set-sink-volume @DEFAULT_SINK@ "${NEXT}%" ;;
   mute) pactl set-sink-mute @DEFAULT_SINK@ toggle ;;
   *)    echo "usage: volume-ctl up|down|mute" >&2; exit 1 ;;
 esac

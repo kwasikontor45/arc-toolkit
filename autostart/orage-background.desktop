@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Orage Calendar · background reminders
+Comment=Start the hidden Orage alarm service after the desktop is ready.
+Exec=systemctl --user start orage-alarms.service
+TryExec=systemctl
+Icon=org.xfce.orage
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=6
+NoDisplay=true
+Hidden=false

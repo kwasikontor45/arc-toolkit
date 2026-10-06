@@ -63,7 +63,7 @@ DEFAULT_CONFIG = {
     "audio_volume_percent": 50,
     "speak_enabled": True,
     "app_rules": {"arc-break": {"speak": True}, "orage": {"speak": True}},
-    "bubble_theme": "rose-pine-moon",
+    "bubble_theme": "circadian",
     "bubble_max_visible": 4,
     "bubble_duration_ms": 12000,
     "bubble_width": 340,

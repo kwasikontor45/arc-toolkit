@@ -1,0 +1,10 @@
+# Bare F keys are not intercepted by xfsettingsd on this XFCE session.
+# Keep modifier combinations such as Alt+F11 available to applications.
+"/home/architect-of-chaos/.local/bin/volume-ctl mute"
+  F10
+
+"/home/architect-of-chaos/.local/bin/volume-ctl down"
+  F11
+
+"/home/architect-of-chaos/.local/bin/volume-ctl up"
+  F12

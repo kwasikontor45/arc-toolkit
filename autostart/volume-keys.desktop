@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Arc Volume Keys
+Comment=Global F10/F11/F12 speaker controls
+Exec=/usr/bin/xbindkeys -f /home/architect-of-chaos/.config/arc/volume-keys.conf
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+OnlyShowIn=XFCE;

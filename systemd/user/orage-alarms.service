@@ -5,8 +5,5 @@ Description=Orage calendar — runs hidden in the background so alarms fire into
 Type=simple
 ExecStart=/usr/bin/orage
 Restart=on-failure
-RestartSec=3
+RestartSec=15
 Environment=DISPLAY=:0
-
-[Install]
-WantedBy=default.target

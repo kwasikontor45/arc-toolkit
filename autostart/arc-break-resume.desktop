@@ -5,4 +5,4 @@ Comment=Resumes the taskbar timer only if it was not explicitly stopped
 Exec=/home/architect-of-chaos/.local/bin/arc-break-taskbar --resume-only
 Icon=/home/architect-of-chaos/.local/share/arc-break/icon.png
 X-GNOME-Autostart-Delay=5
-NoDisplay=false
+NoDisplay=true

@@ -5,8 +5,5 @@ Description=arc-pine-bubbles — bubble notification renderer for arc-pine's wat
 Type=simple
 ExecStart=%h/.local/bin/arc-pine-bubbles
 Restart=on-failure
-RestartSec=3
+RestartSec=15
 Environment=DISPLAY=:0
-
-[Install]
-WantedBy=default.target

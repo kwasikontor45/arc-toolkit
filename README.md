@@ -66,7 +66,7 @@ The Status dashboard also shows Waydroid beside the notification-stack tile. It 
 
 ### Studio from Khaos Lab
 
-The **Studio** workspace launches the installed LMMS Flatpak, opens the saved `Reborn_Practice_Beat.mmp` exercise directly, opens its short beginner guide in the default Markdown app (Apostrophe on this workstation), or opens the linked beat-making tutorial and listening references for an original practice beat. The project and guide stay in `~/khaos-lab/4dev-studio18/ref/`; the panel only launches the apps and opens those existing files or links.
+The **Studio** workspace launches the installed LMMS and Audacity Flatpaks plus the lightweight Mixxx desktop app. Use LMMS for original beats, Audacity for recording/editing and preparing a continuous event program, and Mixxx for two-deck live mixing. The beginner guide and reusable event cue sheet live in the versioned `docs/studio/` folder; the original Reborn practice project and its guide remain in `~/khaos-lab/4dev-studio18/ref/`. Mixxx can be practiced with a laptop alone, but audience sound needs speakers; headphone cueing needs a separate headphone output or suitable interface. No app can replace missing PA gear. The panel launches on demand and adds no background service.
 
 The command center adapts its workspace cards and status tiles from one to three columns as the content width changes. Its menu can be tucked away for a narrow window, and action-heavy workspaces have a local filter in addition to global quick-jump. Output remains in a user-resizable lower pane.
 

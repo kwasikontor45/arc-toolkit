@@ -68,6 +68,7 @@ import _arc_ui as ui
 from tkinter import font as tkfont
 
 HOME = Path.home()
+STUDIO_DOC_DIR = Path(__file__).resolve().parent.parent / "docs" / "studio"
 HEADER_ICON_PATH = HOME / ".local/share/khaos-lab/header-icon.png"
 HEADER_BG_PATH   = HOME / ".local/share/khaos-lab/header-bg.png"
 SIDEBAR_BG_PATH  = HOME / ".local/share/khaos-lab/sidebar-bg.png"
@@ -744,8 +745,20 @@ CATEGORIES = {
         Action("LMMS: launch music studio", "flatpak run io.lmms.LMMS", detach=True),
         Action("LMMS: open Reborn practice beat", "flatpak run io.lmms.LMMS "
                "~/khaos-lab/4dev-studio18/ref/Reborn_Practice_Beat.mmp", detach=True),
+        Action("Audacity: launch audio editor", "flatpak run org.audacityteam.Audacity", detach=True),
+        Action("Mixxx: launch DJ decks", "mixxx", detach=True),
         Action("Guide: Reborn beat baby steps", "xdg-open "
                "~/khaos-lab/4dev-studio18/ref/Reborn_LMMS_Baby_Steps.md", detach=True),
+        Action("Guide: studio quick start", "xdg-open "
+               + shlex.quote(str(STUDIO_DOC_DIR / "quick-start.md")), detach=True),
+        Action("Template: event cue sheet", "xdg-open "
+               + shlex.quote(str(STUDIO_DOC_DIR / "event-cue-sheet-template.md")), detach=True),
+        Action("Tutorial: Audacity recording and editing", "xdg-open "
+               "https://manual.audacityteam.org/quick_help.html", detach=True),
+        Action("Guide: Mixxx hardware and headphone cueing", "xdg-open "
+               "https://manual.mixxx.org/2.5/en/chapters/hardware.html", detach=True),
+        Action("iPhone: GarageBand for iOS", "xdg-open "
+               "https://www.apple.com/ios/garageband/", detach=True),
         Action("Reference: Lorde — Hammer", "xdg-open "
                "https://youtu.be/P7xnBdx70GU", detach=True),
         Action("Tutorial: Reborn beat-making video", "xdg-open "
@@ -3253,14 +3266,21 @@ class App:
                  "Android: restart session"} <= wired["Waydroid"]
             and waydroid_manual_lock
             and {"LMMS: launch music studio", "LMMS: open Reborn practice beat",
-                 "Guide: Reborn beat baby steps", "Reference: Lorde — Hammer",
+                 "Audacity: launch audio editor", "Mixxx: launch DJ decks",
+                 "Guide: Reborn beat baby steps", "Guide: studio quick start",
+                 "Template: event cue sheet", "Tutorial: Audacity recording and editing",
+                 "Guide: Mixxx hardware and headphone cueing", "iPhone: GarageBand for iOS",
+                 "Reference: Lorde — Hammer",
                  "Tutorial: Reborn beat-making video"} <= wired["Studio"]
             and all(shutil.which(cmd) for cmd in ("arc", "arc-sop", "arc-waydroid", "adb", "uad-ng", "flatpak"))
             and (HOME / "khaos-lab/4dev-studio18/ref/Reborn_Practice_Beat.mmp").is_file()
             and (HOME / "khaos-lab/4dev-studio18/ref/Reborn_LMMS_Baby_Steps.md").is_file()
+            and (STUDIO_DOC_DIR / "quick-start.md").is_file()
+            and (STUDIO_DOC_DIR / "event-cue-sheet-template.md").is_file()
+            and all(shutil.which(cmd) for cmd in ("mixxx",))
         )
         print(f"  program/project wiring   {'ok' if integration_ok else 'FAILED'} "
-              "(Arc SOP · Waydroid manual-start lock/ADB/UAD · LMMS + practice assets)")
+              "(Arc SOP · Waydroid manual-start lock/ADB/UAD · LMMS/Audacity/Mixxx + studio assets)")
         self.select("Personal")
         self._pump(0.3)
         leaked = self.poller.active()

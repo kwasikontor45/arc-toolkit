@@ -10,7 +10,7 @@ This is a deliberately small, on-demand setup for learning beats, editing sound,
 | Audacity | 3.7.8 Flatpak | Record a voice, trim/edit audio, balance a small set, make fades, and export a finished program file. Keep the editable project as well as the exported copy. |
 | Mixxx | 2.5.6 system package | Practice two-deck mixing, beat matching, transitions, and cue points. Start with a few legally obtained local tracks; no controller is required to learn the basics with mouse and keyboard. |
 
-Open these from **Khaos Lab → Studio**. They launch only when clicked. Keep the first session simple: one app at a time, a few tracks, and no extra plugins.
+Open these from **Khaos Lab → Studio**. The Markdown guides open in ReText 8.1.0 preview (also the default `.md` handler); apps launch only when clicked. Apostrophe was removed, along with its now-unused GNOME 49 runtime. Keep the first session simple: one app at a time, a few tracks, and no extra plugins.
 
 ## First practice session
 

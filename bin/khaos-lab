@@ -747,11 +747,12 @@ CATEGORIES = {
                "~/khaos-lab/4dev-studio18/ref/Reborn_Practice_Beat.mmp", detach=True),
         Action("Audacity: launch audio editor", "flatpak run org.audacityteam.Audacity", detach=True),
         Action("Mixxx: launch DJ decks", "mixxx", detach=True),
-        Action("Guide: Reborn beat baby steps", "xdg-open "
+        Action("Markdown: launch ReText", "retext", detach=True),
+        Action("Guide: Reborn beat baby steps", "retext --preview "
                "~/khaos-lab/4dev-studio18/ref/Reborn_LMMS_Baby_Steps.md", detach=True),
-        Action("Guide: studio quick start", "xdg-open "
+        Action("Guide: studio quick start", "retext --preview "
                + shlex.quote(str(STUDIO_DOC_DIR / "quick-start.md")), detach=True),
-        Action("Template: event cue sheet", "xdg-open "
+        Action("Template: event cue sheet", "retext --preview "
                + shlex.quote(str(STUDIO_DOC_DIR / "event-cue-sheet-template.md")), detach=True),
         Action("Tutorial: Audacity recording and editing", "xdg-open "
                "https://manual.audacityteam.org/quick_help.html", detach=True),
@@ -3267,7 +3268,8 @@ class App:
             and waydroid_manual_lock
             and {"LMMS: launch music studio", "LMMS: open Reborn practice beat",
                  "Audacity: launch audio editor", "Mixxx: launch DJ decks",
-                 "Guide: Reborn beat baby steps", "Guide: studio quick start",
+                 "Markdown: launch ReText", "Guide: Reborn beat baby steps",
+                 "Guide: studio quick start",
                  "Template: event cue sheet", "Tutorial: Audacity recording and editing",
                  "Guide: Mixxx hardware and headphone cueing", "iPhone: GarageBand for iOS",
                  "Reference: Lorde — Hammer",
@@ -3277,10 +3279,10 @@ class App:
             and (HOME / "khaos-lab/4dev-studio18/ref/Reborn_LMMS_Baby_Steps.md").is_file()
             and (STUDIO_DOC_DIR / "quick-start.md").is_file()
             and (STUDIO_DOC_DIR / "event-cue-sheet-template.md").is_file()
-            and all(shutil.which(cmd) for cmd in ("mixxx",))
+            and all(shutil.which(cmd) for cmd in ("mixxx", "retext"))
         )
         print(f"  program/project wiring   {'ok' if integration_ok else 'FAILED'} "
-              "(Arc SOP · Waydroid manual-start lock/ADB/UAD · LMMS/Audacity/Mixxx + studio assets)")
+              "(Arc SOP · Waydroid manual-start lock/ADB/UAD · LMMS/Audacity/Mixxx/ReText + studio assets)")
         self.select("Personal")
         self._pump(0.3)
         leaked = self.poller.active()

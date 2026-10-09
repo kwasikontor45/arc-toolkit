@@ -441,6 +441,48 @@ def lt_status_text(board):
     return f"focus · {focus}\n{len(board.get('pending', []))} pending  ·  {len(board.get('done', []))} done"
 
 
+LT_COMMAND_CATALOG = [
+    ("lt", "Show the focus, task count, and latest note"),
+    ("lt do <task>", "Add a task; becomes focus when focus is empty"),
+    ("lt done", "Complete the focused task and advance"),
+    ("lt focus", "Show the current focus"),
+    ("lt set <task>", "Change focus without adding a task"),
+    ("lt tasks", "List pending and completed tasks"),
+    ("lt drop <partial>", "Remove a matching pending task"),
+    ("lt clear", "Remove completed tasks"),
+    ("lt note <text>", "Save a timestamped note"),
+    ("lt note drop <partial>", "Remove a matching note"),
+    ("lt notes", "Show the latest ten notes"),
+    ("lt help", "Show lt command help"),
+]
+COMMAND_FAMILIES = {"arc", "lt", "arc-dns-hot", "arc-dns-cold"}
+TERMINAL_ONLY_COMMANDS = {("arc", "site", "url"), ("arc", "desktop", "status")}
+
+
+def parse_arc_catalog(output):
+    """Extract the documented arc command index without evaluating its entries."""
+    rows = []
+    for line in strip_ansi(output).splitlines():
+        parts = re.split(r"\s{2,}", line.strip(), maxsplit=1)
+        if len(parts) != 2:
+            continue
+        usage, description = parts[0].strip(), parts[1].strip()
+        if not (usage == "arc" or usage.startswith("arc ") or usage.startswith("arc-")):
+            continue
+        try:
+            tokens = shlex.split(usage)
+        except ValueError:
+            continue
+        command = []
+        for token in tokens:
+            if token.startswith(("<", "[")) or any(mark in token for mark in ("|", "/")):
+                break
+            command.append(token)
+        if command and (command[0] == "arc" or command[0].startswith("arc-")):
+            rows.append((usage, description, shlex.join(command)))
+    return rows
+
+
 def fmt_age(minutes):
     if minutes is None:
         return "never"
@@ -724,6 +766,7 @@ CATEGORIES = {
     "Status": [],     # special view: live host/security dashboard
     "Calendar": [],   # shared live Hub check marks over localhost
     "LT": [],         # special view: the owner's existing personal lt board
+    "Commands": [],   # special view: complete arc + lt command catalog and safe launcher
     "Cockpit": [],    # special view: network / cloud / remote-access overview
     "Inventory": [],  # special view: register vs reality (arc inv), added 2026-09-19
     "Logs": [],       # special view: review / purge curated logs
@@ -1792,6 +1835,212 @@ class LtView(View):
         self.app.run_async(cmd, timeout=10, on_done=added)
 
 
+class CommandsView(View):
+    """Complete, guarded access to commands not represented by dedicated controls."""
+
+    scrollable = True
+
+    def build(self):
+        f = self.app.f
+        self.mode = "arc"
+        self.catalog_rows = []
+        self.filtered_rows = []
+        self.signature = None
+
+        hero_shell, hero = ui.rounded_frame(self.frame, SURFACE, bg=BG, radius=16)
+        hero_shell.pack(fill="x", pady=(0, 10))
+        accent = tk.Frame(hero, bg=self.app.phase_accent, height=2)
+        accent.pack(fill="x")
+        self.app.phase_lines.append(accent)
+        tk.Label(hero, text="COMMAND DECK", font=f.small, bg=BG,
+                 fg=self.app.phase_accent, anchor="w").pack(fill="x", padx=15, pady=(12, 2))
+        tk.Label(hero, text="Every `arc` and `lt` command, in one guarded place.",
+                 font=f.big, bg=BG, fg=FG, anchor="w", wraplength=680,
+                 justify="left").pack(fill="x", padx=15, pady=(0, 12))
+
+        modes = tk.Frame(self.frame, bg=SURFACE)
+        modes.pack(fill="x", pady=(0, 8))
+        self.mode_buttons = {}
+        for name in ("arc", "lt"):
+            self.mode_buttons[name] = ui.button(
+                modes, name.upper(), command=lambda n=name: self.set_mode(n),
+                font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG, padx=14, pady=6)
+            self.mode_buttons[name].pack(side="left", padx=(0, 7))
+
+        tk.Label(self.frame, text="Find a documented command", font=f.small, bg=SURFACE,
+                 fg=FG_MUTED, anchor="w").pack(fill="x", padx=3, pady=(4, 3))
+        self.filter_var = tk.StringVar()
+        self.filter_entry = tk.Entry(self.frame, textvariable=self.filter_var, font=f.small,
+                                      bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat",
+                                      highlightthickness=1, highlightbackground=BORDER,
+                                      highlightcolor=TEAL)
+        self.filter_entry.pack(fill="x", ipady=6, pady=(0, 7))
+        self.filter_var.trace_add("write", lambda *_: self.filter_catalog())
+
+        list_frame = tk.Frame(self.frame, bg=SURFACE)
+        list_frame.pack(fill="both", expand=True, pady=(0, 8))
+        self.catalog = tk.Listbox(list_frame, height=12, exportselection=False,
+                                  bg=OVERLAY, fg=FG, selectbackground=BORDER,
+                                  selectforeground=TEAL, activestyle="none",
+                                  font=f.small, relief="flat", highlightthickness=0)
+        self.catalog.pack(side="left", fill="both", expand=True)
+        scroll = ui.PillScrollbar(list_frame, orient="vertical", command=self.catalog.yview,
+                                  bg=OVERLAY, troughcolor=BG, activebackground=TEAL,
+                                  bd=0, highlightthickness=0, width=13)
+        scroll.pack(side="right", fill="y")
+        self.catalog.configure(yscrollcommand=scroll.set)
+        self.catalog.bind("<<ListboxSelect>>", self.use_selected)
+        self.catalog.bind("<Double-Button-1>", self.use_selected)
+
+        tk.Label(self.frame, text="Command line  ·  shell operators are never evaluated",
+                 font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w").pack(fill="x", padx=3, pady=(2, 3))
+        self.command_var = tk.StringVar()
+        self.command_entry = tk.Entry(self.frame, textvariable=self.command_var, font=f.label,
+                                      bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat",
+                                      highlightthickness=1, highlightbackground=BORDER,
+                                      highlightcolor=TEAL)
+        self.command_entry.pack(fill="x", ipady=8, pady=(0, 8))
+        self.command_entry.bind("<Return>", lambda _e: self.confirm_command())
+
+        actions = tk.Frame(self.frame, bg=SURFACE)
+        actions.pack(fill="x", pady=(0, 6))
+        ui.button(actions, "Run in panel", command=lambda: self.confirm_command("panel"),
+                  font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                  padx=12, pady=7).pack(side="left", padx=(0, 7))
+        ui.button(actions, "Open in terminal", command=lambda: self.confirm_command("terminal"),
+                  font=f.small, bg=OVERLAY, fg=GOLD, hover_bg=BG,
+                  padx=12, pady=7).pack(side="left")
+        ui.button(actions, "Refresh catalog", command=lambda: self.set_mode(self.mode),
+                  font=f.small, bg=OVERLAY, fg=FG_MUTED, hover_bg=BG,
+                  padx=12, pady=7).pack(side="right")
+        tk.Label(self.frame, text="Every command is confirmed and checked against the session SOP gate. Use the terminal for prompts, long jobs, and commands that may restart or shut down the workstation.",
+                 font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left",
+                 wraplength=680).pack(fill="x", padx=3, pady=(3, 10))
+        self.set_mode("arc")
+
+    def set_mode(self, mode="arc"):
+        if mode not in ("arc", "lt"):
+            mode = self.mode
+        self.mode = mode
+        for name, button in self.mode_buttons.items():
+            button.set_look(bg=OVERLAY if name == mode else SURFACE,
+                            fg=self.app.phase_accent if name == mode else FG_MUTED)
+        self.filter_var.set("")
+        self.catalog.delete(0, "end")
+        if mode == "lt":
+            self.catalog_rows = [(usage, desc, self._template(usage))
+                                 for usage, desc in LT_COMMAND_CATALOG]
+            self.filter_catalog()
+            return
+        self.catalog_rows = []
+        self.catalog.insert("end", "Loading arc help index…")
+        self.app.bg(self._load_arc_catalog, self._apply_arc_catalog)
+
+    @staticmethod
+    def _template(usage):
+        try:
+            tokens = shlex.split(usage)
+        except ValueError:
+            return usage
+        clean = []
+        needs_arg = False
+        for token in tokens:
+            if token.startswith(("<", "[")) or any(mark in token for mark in ("|", "/")):
+                needs_arg = True
+                break
+            clean.append(token)
+        template = shlex.join(clean)
+        return template + (" " if needs_arg and template else "")
+
+    def _load_arc_catalog(self):
+        return self.app.runner.run("arc help all", timeout=12)
+
+    def _apply_arc_catalog(self, result):
+        if not self.alive() or self.mode != "arc":
+            return
+        ok, output = result
+        self.catalog_rows = parse_arc_catalog(output) if ok else []
+        if not self.catalog_rows:
+            self.catalog.delete(0, "end")
+            self.catalog.insert("end", "Arc help index unavailable · enter an arc command below")
+            self.app.console.log(output or "arc help all returned no command entries", GOLD)
+            return
+        self.filter_catalog()
+
+    def filter_catalog(self):
+        if not hasattr(self, "catalog"):
+            return
+        query = self.filter_var.get().strip().lower()
+        self.filtered_rows = [row for row in self.catalog_rows
+                              if not query or query in " ".join(row).lower()]
+        self.catalog.delete(0, "end")
+        for usage, description, _command in self.filtered_rows:
+            self.catalog.insert("end", f"{usage}  ·  {description}")
+
+    def use_selected(self, _event=None):
+        selected = self.catalog.curselection()
+        if not selected or selected[0] >= len(self.filtered_rows):
+            return
+        template = self.filtered_rows[selected[0]][2]
+        self.command_var.set(template)
+        self.command_entry.focus_set()
+        self.command_entry.icursor("end")
+
+    def confirm_command(self, destination=None):
+        raw = self.command_var.get().strip()
+        if not raw:
+            self.app.console.log("choose a command or enter an arc/lt command first", GOLD)
+            self.command_entry.focus_set()
+            return
+        if len(raw) > 2048 or any(ord(ch) < 32 or 127 <= ord(ch) <= 159 for ch in raw):
+            self.app.console.log("command must be 2,048 characters or fewer and contain no control characters", ROSE)
+            return
+        try:
+            argv = shlex.split(raw, posix=True)
+        except ValueError as exc:
+            self.app.console.log(f"command quoting error: {exc}", ROSE)
+            return
+        if not argv or argv[0] not in COMMAND_FAMILIES:
+            self.app.console.log("only arc, lt, and the two documented arc-dns profiles can run here", ROSE)
+            return
+        if len(argv) > 64 or not shutil.which(argv[0]):
+            self.app.console.log("command is too long or its arc/lt executable is unavailable", ROSE)
+            return
+        cmd = shlex.join(argv)
+        if not self.app.require_ops_gate(cmd):
+            return
+        terminal_only = tuple(argv[:3]) in TERMINAL_ONLY_COMMANDS
+        if terminal_only and destination == "panel":
+            self.app.console.log("this command may display a private connection URL; run it in Konsole instead", GOLD)
+            return
+        dialog = Dialog(self.app, "confirm command", resizable=True)
+        dialog.label("Run this command? It will use the existing arc/lt behavior.",
+                     fg=FG_MUTED, font=self.app.f.small, wrap=600, pady=(4, 6))
+        dialog.label(cmd, fg=GOLD, font=self.app.f.mono, wrap=620, pady=(0, 14))
+        choices = []
+        if destination in (None, "panel") and not terminal_only:
+            choices.append(("run in panel", TEAL,
+                            lambda: self.app.run_async(cmd, timeout=120)))
+        if destination in (None, "terminal"):
+            choices.append(("open in terminal", GOLD,
+                            lambda args=argv: self.open_terminal(args)))
+        choices.append(("cancel", FG_MUTED, None))
+        dialog.buttons(choices)
+
+    def open_terminal(self, argv):
+        if not self.app.require_ops_gate(shlex.join(argv)):
+            return
+        terminal = shutil.which("konsole")
+        if not terminal:
+            self.app.console.log("Konsole is unavailable; use Run in panel for short non-interactive commands", ROSE)
+            return
+        command = shlex.join([terminal, "--hold", "-e", *argv])
+        self.app.ensure_console_room()
+        self.app.console.log(f"$ {shlex.join(argv)}  (opens in Konsole)", TEAL)
+        ok, message = self.app.runner.detach(command)
+        self.app.console.log(f"[{'ok' if ok else 'failed'}] {message}", PINE if ok else ROSE)
+
+
 class CockpitView(TileView):
     NAME = "cockpit"
     EVERY = 60000
@@ -2548,6 +2797,7 @@ class HelpView(View):
         "Status": "Live workstation health and security snapshot",
         "Calendar": "Check events and to-dos; shared live with local Khaos Hub",
         "LT": "Personal focus and tasks from the existing lt board",
+        "Commands": "Browse and run every arc or lt command safely",
         "Cockpit": "At-a-glance network, cloud, and remote-access controls",
         "Inventory": "Track registered assets and find drift or untracked items",
         "Logs": "Review recent system, security, and self-heal activity",
@@ -2745,7 +2995,8 @@ class ActionsView(View):
 # ── the app ──────────────────────────────────────────────────────────────────
 class App:
     SPECIAL_VIEWS = {"Help": HelpView, "SOP": SopView, "Status": StatusView, "Calendar": CalendarView,
-                     "LT": LtView, "Cockpit": CockpitView, "Inventory": InventoryView,
+                     "LT": LtView, "Commands": CommandsView,
+                     "Cockpit": CockpitView, "Inventory": InventoryView,
                      "Logs": LogsView, "Find": FindView}
 
     def __init__(self):

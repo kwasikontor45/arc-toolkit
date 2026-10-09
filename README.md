@@ -64,6 +64,10 @@ The **Waydroid** workspace in `khaos-lab` provides status, open, stop, installed
 
 The Status dashboard also shows Waydroid beside the notification-stack tile. It polls the read-only operator status every 15 seconds and reports the container, Android session, and Khaos-owned Weston window without starting anything.
 
+### Personal LT board
+
+The **LT** workspace is a live view of the existing `lt · architect-of-chaos` board at `~/.local/share/lt/`; it is separate from the Calendar workspace and Khaos Hub's shared events/to-dos. The panel reads the current focus, pending queue, completed count, and latest note directly from LT's local files, refreshes every five seconds, and keeps no second copy. **Add task** and **Mark focus done** call the existing `lt` command; task changes stay behind the same-session SOP gate, and completion requires an explicit confirmation. The Status dashboard has a compact LT summary and a shortcut into the board. No daemon or network connection is added.
+
 ### Studio from Khaos Lab
 
 The **Studio** workspace launches the installed LMMS and Audacity Flatpaks, Mixxx DJ app, and ReText Markdown reader. Use LMMS for original beats, Audacity for recording/editing and preparing a continuous event program, and Mixxx for two-deck live mixing. ReText 8.1.0 is the default `.md` handler and Studio guides open in its rendered preview. Apostrophe was removed; its unused GNOME 49 Flatpak runtime was also removed. The beginner guide and reusable event cue sheet live in the versioned `docs/studio/` folder; the original Reborn practice project and its guide remain in `~/khaos-lab/4dev-studio18/ref/`. Mixxx can be practiced with a laptop alone, but audience sound needs speakers; headphone cueing needs a separate headphone output or suitable interface. No app can replace missing PA gear. The panel launches on demand and adds no background service.

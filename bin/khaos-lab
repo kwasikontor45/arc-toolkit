@@ -79,6 +79,11 @@ HEAL_LOG_PATH    = HOME / "khaos-lab/arc-heal-log/latest-status.md"
 ORAGE_ICS_PATH   = HOME / ".local/share/orage/orage.ics"
 INVENTORY_JSON   = HOME / "khaos-lab/inventory/inventory.json"
 INVENTORY_REGISTRY = HOME / "dev-notes/intel-ops/inventory/registry.toml"
+LT_DATA_DIR      = HOME / ".local/share/lt"
+LT_TASKS_PATH    = LT_DATA_DIR / "tasks"
+LT_FOCUS_PATH    = LT_DATA_DIR / "focus"
+LT_NOTES_PATH    = LT_DATA_DIR / "notes"
+LT_COMMAND       = shutil.which("lt") or str(HOME / "khaos-lab/arc-toolkit/bin/lt")
 
 # Logs view -- a curated set, not "every log on the machine": what self-heal
 # did, what got noticed/notified, and the security logs `arc logs` already
@@ -387,6 +392,55 @@ def calendar_status_lines(items, now=None, limit=4):
     return [summary, *(row[2] for row in rows[:limit])]
 
 
+def read_lt_board():
+    """Read lt's existing personal files without creating or changing them."""
+    try:
+        with LT_TASKS_PATH.open("rb") as stream:
+            raw_tasks = stream.read(256_001)
+        if len(raw_tasks) > 256_000:
+            raise OSError("task list exceeds the 256 KB read limit")
+        with LT_FOCUS_PATH.open("rb") as stream:
+            focus = stream.read(2048).decode("utf-8", "replace").strip()
+        try:
+            with LT_NOTES_PATH.open("rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                size = stream.tell()
+                stream.seek(max(0, size - 32_000))
+                raw_notes = stream.read(32_000).decode("utf-8", "replace")
+        except FileNotFoundError:
+            raw_notes = ""
+    except FileNotFoundError:
+        return {"available": False, "focus": "", "pending": [], "done": [], "note": ""}
+    except OSError as exc:
+        return {"available": False, "error": str(exc), "focus": "", "pending": [],
+                "done": [], "note": ""}
+
+    def clean(value, limit=240):
+        value = "".join(ch for ch in value
+                        if ch == "\t" or (ord(ch) >= 32 and not 127 <= ord(ch) <= 159))
+        return value.strip()[:limit]
+
+    pending, done = [], []
+    for line in raw_tasks.decode("utf-8", "replace").splitlines():
+        if line.startswith("pending "):
+            pending.append(clean(line[8:]))
+        elif line.startswith("done "):
+            done.append(clean(line[5:]))
+    latest_note = ""
+    note_lines = raw_notes.splitlines()
+    if note_lines:
+        latest_note = clean(note_lines[-1].partition("|")[2], 180)
+    return {"available": True, "focus": clean(focus), "pending": pending,
+            "done": done, "note": latest_note}
+
+
+def lt_status_text(board):
+    if not board.get("available"):
+        return "board unavailable" if board.get("error") else "no local board yet"
+    focus = board.get("focus") or "no focus set"
+    return f"focus · {focus}\n{len(board.get('pending', []))} pending  ·  {len(board.get('done', []))} done"
+
+
 def fmt_age(minutes):
     if minutes is None:
         return "never"
@@ -669,6 +723,7 @@ CATEGORIES = {
     "SOP": [],        # read the rules, review GAMEPLAN, start + acknowledge a session
     "Status": [],     # special view: live host/security dashboard
     "Calendar": [],   # shared live Hub check marks over localhost
+    "LT": [],         # special view: the owner's existing personal lt board
     "Cockpit": [],    # special view: network / cloud / remote-access overview
     "Inventory": [],  # special view: register vs reality (arc inv), added 2026-09-19
     "Logs": [],       # special view: review / purge curated logs
@@ -1220,8 +1275,14 @@ class StatusView(TileView):
     def build(self):
         super().build()
         self.poll('status-calendar-live', 2000, self.calendar_status, self.apply_calendar_status)
+        self.poll('status-lt-live', 5000,
+                  lambda: lt_status_text(read_lt_board()), self.apply_lt_status)
         tile = self.labels['calendar'].master
         ui.button(tile, 'Check events / to-dos', command=lambda: self.app.select('Calendar'),
+                  font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                  padx=12, pady=5).pack(anchor='w', padx=10, pady=(0, 8))
+        lt_tile = self.labels['lt'].master
+        ui.button(lt_tile, 'Open personal LT board', command=lambda: self.app.select('LT'),
                   font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
                   padx=12, pady=5).pack(anchor='w', padx=10, pady=(0, 8))
 
@@ -1236,6 +1297,9 @@ class StatusView(TileView):
     def apply_calendar_status(self, text):
         color = self.color_for('calendar', text)
         self._apply_one('calendar', text, color)
+
+    def apply_lt_status(self, text):
+        self._apply_one('lt', text, self.color_for('lt', text))
     TILES = [
         (0, 0, "dns", "DNS"), (0, 1, "break", "Break timer"),
         (1, 0, "disk", "Disk"), (1, 1, "services", "Failed services"),
@@ -1244,6 +1308,7 @@ class StatusView(TileView):
         (4, 0, "awslab", "AWS lab (gvm / soclab / wazuh)"), (4, 1, "inventory", "Inventory (arc inv)"),
         (5, 0, "notify", "Notify stack (voice · bubbles · site)"),
         (5, 1, "waydroid", "Waydroid · Android sandbox"),
+        (6, 0, "lt", "LT · personal board"),
     ]
 
     def checks(self):
@@ -1325,9 +1390,13 @@ class StatusView(TileView):
                 detail += f" · Weston {weston.group(1)}"
             return f"container {service.group(1)} · {detail}"
 
+        def lt_board():
+            return lt_status_text(read_lt_board())
+
         return {"dns": dns, "break": brk, "disk": disk, "services": services, "uptime": uptime,
                 "selfheal": selfheal, "idsips": idsips,
-                "awslab": awslab, "inventory": inventory, "notify": notify, "waydroid": waydroid}
+                "awslab": awslab, "inventory": inventory, "notify": notify, "waydroid": waydroid,
+                "lt": lt_board}
 
     def color_for(self, key, val):
         if key == "services":
@@ -1356,6 +1425,10 @@ class StatusView(TileView):
             if val.startswith("stopped"):
                 return GOLD
             return ROSE
+        if key == "lt":
+            if "unavailable" in val:
+                return ROSE
+            return TEAL if " pending" in val else FG_MUTED
         return FG
 
 
@@ -1547,6 +1620,176 @@ class CalendarView(View):
 
     def refresh(self):
         self.kick('calendar-live')
+
+
+class LtView(View):
+    """A live window onto the existing local lt board and its own CLI actions."""
+
+    scrollable = True
+    EVERY = 5000
+
+    def build(self):
+        f = self.app.f
+        self.signature = None
+        self.state = {"available": False, "focus": "", "pending": [], "done": [], "note": ""}
+
+        hero, body = ui.rounded_frame(self.frame, SURFACE, bg=BG, radius=16)
+        hero.pack(fill="x", pady=(0, 10))
+        accent = tk.Frame(body, bg=self.app.phase_accent, height=2)
+        accent.pack(fill="x")
+        self.app.phase_lines.append(accent)
+        tk.Label(body, text="lt  ·  architect-of-chaos", font=f.big, bg=BG, fg=FG,
+                 anchor="w").pack(fill="x", padx=16, pady=(13, 2))
+        tk.Label(body, text="PERSONAL BOARD  ·  live from ~/.local/share/lt", font=f.small,
+                 bg=BG, fg=self.app.phase_accent, anchor="w").pack(fill="x", padx=16, pady=(0, 10))
+
+        focus_card, focus = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=14)
+        focus_card.pack(fill="x", pady=(0, 9))
+        tk.Label(focus, text="IN FOCUS", font=f.small, bg=OVERLAY, fg=FG_MUTED,
+                 anchor="w").pack(fill="x", padx=14, pady=(10, 2))
+        self.focus_label = tk.Label(focus, text="loading…", font=f.label, bg=OVERLAY,
+                                    fg=FG, anchor="w", justify="left", wraplength=640)
+        self.focus_label.pack(fill="x", padx=14, pady=(0, 10))
+        focus.bind("<Configure>", lambda e: self.focus_label.configure(
+            wraplength=max(e.width - 32, 120)), add="+")
+
+        self.counts = tk.Label(self.frame, text="", font=f.small, bg=SURFACE, fg=TEAL,
+                               anchor="w")
+        self.counts.pack(fill="x", padx=4, pady=(1, 7))
+        self.queue = tk.Frame(self.frame, bg=SURFACE)
+        self.queue.pack(fill="x", pady=(0, 8))
+
+        actions = tk.Frame(self.frame, bg=SURFACE)
+        actions.pack(fill="x", pady=(3, 8))
+        self.complete_button = ui.button(actions, "Mark focus done", command=self.confirm_done,
+                                         font=f.small, bg=OVERLAY, fg=GOLD, hover_bg=BG,
+                                         padx=12, pady=7)
+        self.complete_button.pack(side="left", padx=(0, 7))
+        ui.button(actions, "Refresh", command=lambda: self.kick("lt-board-live"),
+                  font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                  padx=12, pady=7).pack(side="right")
+
+        add_row = tk.Frame(self.frame, bg=SURFACE)
+        add_row.pack(fill="x", pady=(0, 8))
+        self.add_var = tk.StringVar()
+        self.add_entry = tk.Entry(add_row, textvariable=self.add_var, font=f.label,
+                                  bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat",
+                                  highlightthickness=1, highlightbackground=BORDER,
+                                  highlightcolor=TEAL)
+        self.add_entry.pack(side="left", fill="x", expand=True, ipady=7, padx=(0, 8))
+        self.add_entry.bind("<Return>", lambda _e: self.add_task())
+        self.add_button = ui.button(add_row, "Add task", command=self.add_task,
+                                    font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                                    padx=12, pady=7)
+        self.add_button.pack(side="right")
+
+        self.note_label = tk.Label(self.frame, text="", font=f.small, bg=SURFACE,
+                                   fg=FG_MUTED, anchor="w", justify="left", wraplength=660)
+        self.note_label.pack(fill="x", padx=4, pady=(4, 8))
+        tk.Label(self.frame, text="The panel reads the same local board and delegates changes to `lt`; it keeps no second copy.",
+                 font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left",
+                 wraplength=680).pack(fill="x", padx=4, pady=(4, 10))
+        self.poll("lt-board-live", self.EVERY, read_lt_board, self.apply_board)
+        self.kick("lt-board-live")
+
+    def apply_board(self, board):
+        if not self.alive():
+            return
+        signature = json.dumps(board, ensure_ascii=False, sort_keys=True)
+        if signature == self.signature:
+            return
+        self.signature = signature
+        self.state = board
+        if not board.get("available"):
+            self.focus_label.configure(
+                text=board.get("error") or "No local lt board was found yet. Open `lt` once to initialize it.",
+                fg=ROSE if board.get("error") else FG_MUTED)
+            self.counts.configure(text="LT data is missing or unreadable · no files were created by this view.",
+                                  fg=ROSE if board.get("error") else FG_MUTED)
+            self.complete_button.set_enabled(False)
+            self.add_button.set_enabled(False)
+            self.note_label.configure(text="")
+            for widget in self.queue.winfo_children():
+                widget.destroy()
+            self.app.refresh_scroll(self.frame)
+            return
+
+        focus = board.get("focus", "")
+        pending, done = board.get("pending", []), board.get("done", [])
+        self.focus_label.configure(text=focus or "No focus set", fg=FG if focus else FG_MUTED)
+        self.counts.configure(text=f"{len(pending)} pending  ·  {len(done)} completed", fg=TEAL)
+        self.complete_button.set_enabled(bool(focus and focus in pending))
+        self.add_button.set_enabled(True)
+
+        for widget in self.queue.winfo_children():
+            widget.destroy()
+        if pending:
+            tk.Label(self.queue, text="UP NEXT", font=self.app.f.small, bg=SURFACE,
+                     fg=FG_MUTED, anchor="w").pack(fill="x", pady=(3, 3))
+            for item in pending[:8]:
+                marker = "→" if item == focus else "·"
+                color = self.app.phase_accent if item == focus else FG
+                row = tk.Frame(self.queue, bg=OVERLAY)
+                row.pack(fill="x", pady=2)
+                tk.Label(row, text=marker, font=self.app.f.label, bg=OVERLAY, fg=color,
+                         width=2).pack(side="left", padx=(7, 2), pady=5)
+                tk.Label(row, text=item or "(empty task)", font=self.app.f.label,
+                         bg=OVERLAY, fg=color, anchor="w", justify="left", wraplength=650
+                         ).pack(side="left", fill="x", expand=True, padx=(0, 9), pady=5)
+            if len(pending) > 8:
+                tk.Label(self.queue, text=f"+ {len(pending) - 8} more · run `lt tasks` for the full list",
+                         font=self.app.f.small, bg=SURFACE, fg=FG_MUTED,
+                         anchor="w").pack(fill="x", pady=(3, 1))
+        else:
+            tk.Label(self.queue, text="All clear · no pending tasks", font=self.app.f.small,
+                     bg=SURFACE, fg=FG_MUTED, anchor="w").pack(fill="x", pady=5)
+
+        note = board.get("note", "")
+        self.note_label.configure(text=f"LATEST NOTE  ·  {note}" if note else "")
+        self.app.refresh_scroll(self.frame)
+
+    def confirm_done(self):
+        focus = self.state.get("focus", "")
+        if not focus or focus not in self.state.get("pending", []):
+            self.app.console.log("current focus is not a pending LT task; nothing changed", GOLD)
+            return
+        dialog = Dialog(self.app, "complete LT task")
+        dialog.label(f"Mark this task complete and advance focus?\n\n{focus}",
+                     fg=GOLD, font=self.app.f.small, wrap=520, pady=(4, 14))
+        cmd = shlex.join([LT_COMMAND, "done"])
+        def complete_if_current():
+            latest = read_lt_board()
+            if latest.get("focus") != focus or focus not in latest.get("pending", []):
+                self.apply_board(latest)
+                self.app.console.log("LT changed while the confirmation was open; refreshed without completing anything", GOLD)
+                return
+            self.app.run_async(cmd, timeout=10,
+                               on_done=lambda: self.kick("lt-board-live"))
+
+        dialog.buttons([("complete task", GOLD, complete_if_current),
+                        ("cancel", FG_MUTED, None)])
+
+    def add_task(self):
+        task = self.add_var.get().strip()
+        if not task:
+            self.app.console.log("enter a short task before adding it to LT", GOLD)
+            self.add_entry.focus_set()
+            return
+        if len(task) > 180 or any(ord(ch) < 32 or 127 <= ord(ch) <= 159 for ch in task):
+            self.app.console.log("LT tasks must be 180 characters or fewer and contain no control characters", ROSE)
+            self.add_entry.focus_set()
+            return
+        cmd = shlex.join([LT_COMMAND, "do", task])
+        if not self.app.require_ops_gate(cmd):
+            return
+        self.add_button.set_enabled(False)
+
+        def added():
+            self.add_var.set("")
+            self.add_button.set_enabled(True)
+            self.kick("lt-board-live")
+
+        self.app.run_async(cmd, timeout=10, on_done=added)
 
 
 class CockpitView(TileView):
@@ -2304,6 +2547,7 @@ class HelpView(View):
         "SOP": "Read SOT/GAMEPLAN, satisfy the gate, and review compliance",
         "Status": "Live workstation health and security snapshot",
         "Calendar": "Check events and to-dos; shared live with local Khaos Hub",
+        "LT": "Personal focus and tasks from the existing lt board",
         "Cockpit": "At-a-glance network, cloud, and remote-access controls",
         "Inventory": "Track registered assets and find drift or untracked items",
         "Logs": "Review recent system, security, and self-heal activity",
@@ -2500,7 +2744,8 @@ class ActionsView(View):
 
 # ── the app ──────────────────────────────────────────────────────────────────
 class App:
-    SPECIAL_VIEWS = {"Help": HelpView, "SOP": SopView, "Status": StatusView, "Calendar": CalendarView, "Cockpit": CockpitView, "Inventory": InventoryView,
+    SPECIAL_VIEWS = {"Help": HelpView, "SOP": SopView, "Status": StatusView, "Calendar": CalendarView,
+                     "LT": LtView, "Cockpit": CockpitView, "Inventory": InventoryView,
                      "Logs": LogsView, "Find": FindView}
 
     def __init__(self):

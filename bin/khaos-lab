@@ -903,21 +903,10 @@ CATEGORIES = {
         Action("soc-lab: start", "arc soc-lab start", timeout=120),     # cold Splunk takes a while
         Action("soc-lab: stop", "arc soc-lab stop", timeout=60),
         Action("Open Splunk dashboard (browser)", "arc soc-lab open"),
-        # cloud-open tunnels + launches the browser itself; re-resolves the live IP every click
-        # (no Elastic IP) and kills any stale tunnel first.
-        Action("Open Splunk dashboard (browser, cloud)", "arc soc-lab cloud-open", timeout=30),
         Action("Darkstat: status", "arc darkstat status"),
         Action("Darkstat: start", "arc darkstat start", timeout=15),
         Action("Darkstat: stop", "arc darkstat stop", timeout=15),
         Action("Open darkstat dashboard (browser)", "arc darkstat open"),
-        Action("gvm-cloud: status", "arc gvm cloud-status"),
-        Action("gvm-cloud: start", "arc gvm cloud-start", timeout=180),
-        Action("gvm-cloud: stop", "arc gvm cloud-stop", timeout=90),
-        Action("Open GVM dashboard (browser, cloud)", "arc gvm cloud-open", timeout=30),
-        Action("wazuh-cloud: status", "arc wazuh cloud-status"),
-        Action("wazuh-cloud: start", "arc wazuh cloud-start", timeout=600),  # first boot runs the real install
-        Action("wazuh-cloud: stop", "arc wazuh cloud-stop", timeout=90),
-        Action("Open Wazuh dashboard (browser, cloud)", "arc wazuh cloud-open", timeout=30),
         Action("ZAP: status", "arc zap status"),
         Action("ZAP: open desktop app", "arc zap gui", detach=True),
         # Kismet takes the only WiFi adapter into monitor mode -- drops WiFi/VPN while it runs
@@ -927,15 +916,41 @@ CATEGORIES = {
         Action("Kismet: stop (restores WiFi/VPN)", "arc kismet stop", timeout=30),
         Action("Open Kismet dashboard (browser)", "xdg-open http://127.0.0.1:2501"),
     ],
-    # Cloud -- AWS + Cloudflare accounting. (The py-bite EC2 actions that lived here died with
+    # Cloud -- current AWS lab controls + Cloudflare/Git/SSH management. (The py-bite EC2 actions that lived here died with
     # the old AWS account 2026-08-17; py-bite is on PythonAnywhere now.)
     "Cloud": [
-        Action("AWS snapshot (gvm / soclab / wazuh + budget)", "arc aws-status", timeout=40),
-        Action("Cloud instances per the inventory (read-only)", "arc inv list cloud-instance"),
+        Action("AWS: guardrail audit (read-only)", "arc aws-guardrails", timeout=60),
+        Action("AWS: instance and budget snapshot", "arc aws-status", timeout=40),
+        Action("AWS: inventory records", "arc inv list cloud-instance"),
+        Action("AWS: check inventory drift (read-only)", "arc inv drift", timeout=30),
+        Action("AWS: recent CloudTrail events", "arc sec cloudtrail", timeout=15),
+        # Cloud start/stop controls live here rather than being buried in SOC. All start/stop
+        # actions are SOP-gated and confirmed by the shared action policy.
+        Action("GVM cloud: status", "arc gvm cloud-status"),
+        Action("GVM cloud: start", "arc gvm cloud-start", timeout=180),
+        Action("GVM cloud: backup + stop", "arc gvm cloud-stop", timeout=180),
+        Action("GVM cloud: open dashboard", "arc gvm cloud-open", timeout=30),
+        Action("Splunk cloud: status", "arc soc-lab cloud-status", timeout=30),
+        Action("Splunk cloud: start", "arc soc-lab cloud-start", timeout=600),
+        Action("Splunk cloud: backup + stop", "arc soc-lab cloud-stop", timeout=180),
+        Action("Splunk cloud: open dashboard", "arc soc-lab cloud-open", timeout=30),
+        Action("Wazuh cloud: status", "arc wazuh cloud-status"),
+        Action("Wazuh cloud: start", "arc wazuh cloud-start", timeout=600),  # first boot runs the real install
+        Action("Wazuh cloud: stop", "arc wazuh cloud-stop", timeout=90),
+        Action("Wazuh cloud: open dashboard", "arc wazuh cloud-open", timeout=30),
         Action("Cloudflare Workers usage (free-tier check)", "arc cf-watch", timeout=15),
         Action("Cloudflare Workers usage: recent history", "arc cf-watch log"),
+        Action("Git mirrors: sync status", "arc mirrors"),
+        Action("SSH agent: loaded key fingerprints", "ssh-add -l"),
+        Action("SSH key inventory (public keys only)", "arc keys"),
+        Action("Cloud and release management guide", "xdg-open ~/khaos-lab/refs/cloud-management-operator-guide-2026-10-09.md", detach=True),
     ],
     "Dev": [
+        Action("Git repositories: status/ahead/behind audit", "arc audit", timeout=90),
+        Action("Arc Toolkit: source-of-truth drift status", "arc sot status", timeout=30),
+        Action("Git mirrors: status", "arc mirrors", timeout=20),
+        Action("Cloudflare Pages: deploy Athena (live)", "arc deploy athena", confirm=True, timeout=600),
+        Action("Cloudflare Pages: deploy Kontor Studio + Kataleya (live)", "arc deploy kontor-studio", confirm=True, timeout=600),
         Action("Kali container: status", "arc kali status", timeout=15),
         Action("Kali container: start", "arc kali start", timeout=60),
         Action("Kali container: stop", "arc kali stop", timeout=30),
@@ -2809,8 +2824,8 @@ class HelpView(View):
         "Studio": "Launch LMMS, open the practice project, or read its beginner guide",
         "Security": "SOPs, firewall, account, and security checks",
         "SOC": "Local and cloud security labs, dashboards, and scanners",
-        "Cloud": "On-demand cloud labs and instance controls",
-        "Dev": "Repository, deployment, and development workflows",
+        "Cloud": "AWS guardrails and stop controls · Cloudflare · Git release lanes · SSH references",
+        "Dev": "Git health, Arc Toolkit source-of-truth, mirrors, and development workflows",
         "Remote Access": "Tailscale, private notes site, and backup tunnel",
         "Maintenance": "Backups, cleanup, updates, and system repair",
         "Personal": "Personal utilities and daily workflow actions",

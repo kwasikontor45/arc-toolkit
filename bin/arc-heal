@@ -388,7 +388,8 @@ check_docker_health() {
 # ── AWS on-demand lab: idle backstop, stale-sync check, dual-active check ──
 # Added 2026-08-31 with the aws-infra build (gvm-cloud/soclab-cloud on-demand
 # EC2 instances). Deliberately a *backstop* under the CloudWatch idle-stop
-# alarm and Budget Action killswitch, not the primary defense -- if AWS CLI
+# alarm, not a budget kill switch. The current account's budget sends alerts only.
+# If AWS CLI
 # isn't configured at all (this check running on some other machine, or
 # before aws-infra exists), fails soft and says nothing, matching the rest
 # of this file's "never break, only check/fix/flag" philosophy.
@@ -410,7 +411,7 @@ check_aws_lab_idle() {
     [[ -z "$info" ]] && continue
     local state launch
     state=$(echo "$info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('State',''))" 2>/dev/null)
-    # 2026-09-19: KeepRunning means "leave this RUNNING till further notice". On a STOPPED
+    # 2026-09-19: KeepRunning means "skip Arc's 6h backstop while RUNNING". On a STOPPED
     # instance the notice is over -- but the tag survives stop/start, silently disabling this very
     # backstop for the next time it's started and forgotten (all three lab boxes were found stopped
     # with the tag still set). Clear it; set it again on purpose with: arc aws-keep <box> on
@@ -428,16 +429,14 @@ check_aws_lab_idle() {
     fi
     [[ "$state" != "running" ]] && continue
     # Explicit human override, added 2026-08-31: a KeepRunning=true tag
-    # means the user deliberately left this instance running on purpose
-    # ("leave it running till further notice") -- this backstop exists to
-    # catch *forgotten* idle instances, not to override a real, current
-    # instruction. Tag check is a live read each run, not cached, so
+    # skips this Arc backstop, but does not override the independent
+    # CloudWatch idle-stop alarm. Tag check is a live read each run, not cached, so
     # removing the tag re-arms this check immediately on the next cron pass.
     local keep_running
     keep_running=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$iid" "Name=key,Values=KeepRunning" \
       --region "$AWS_LAB_REGION" --query 'Tags[0].Value' --output text 2>/dev/null)
     if [[ "$keep_running" == "true" ]]; then
-      note "OK::aws-lab-idle::${label}-cloud running, KeepRunning tag set -- not auto-stopping"
+      note "OK::aws-lab-idle::${label}-cloud running, KeepRunning tag skips the 6h arc-heal backstop; CloudWatch idle-stop alarm still applies"
       continue
     fi
     launch=$(echo "$info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Launch',''))" 2>/dev/null)
@@ -445,12 +444,12 @@ check_aws_lab_idle() {
     launch_epoch=$(date -d "$launch" +%s 2>/dev/null) || continue
     now_epoch=$(date +%s)
     hours_up=$(( (now_epoch - launch_epoch) / 3600 ))
-    # 6h backstop -- generous on purpose (the real defenses are the
-    # CloudWatch idle-stop alarm and the 85% Budget Action), this only
+    # 6h backstop -- generous on purpose (the primary automatic stop is the
+    # CloudWatch idle-stop alarm; budget thresholds only send alerts), this only
     # exists to catch both of those having somehow failed.
     if (( hours_up >= 6 )); then
       if "$HOME/.local/bin/arc" "$arc_sub" cloud-stop >/dev/null 2>&1; then
-        note "HEALED::aws-lab-idle::${label}-cloud was running ${hours_up}h with no idle-alarm/budget-action catching it — stopped + synced via arc ${arc_sub} cloud-stop"
+        note "HEALED::aws-lab-idle::${label}-cloud was running ${hours_up}h past the CloudWatch idle window — stopped + synced via arc ${arc_sub} cloud-stop"
         any_flagged=1
       else
         note "FLAG::aws-lab-idle::${label}-cloud running ${hours_up}h, auto-stop attempt failed — check manually: arc ${arc_sub} cloud-status"
@@ -508,11 +507,9 @@ check_aws_lab_ip_drift() {
   # they never need one) is pinned to this machine's home public IP via
   # ssh_allowed_cidr in variables.tf. If the ISP ever reassigns that IP,
   # SSH to both boxes breaks until the rule is updated -- there is no other
-  # ingress path by design. This fixes it, not just flags it, matching this
-  # file's own philosophy -- but goes through the tracked Terraform source
-  # of truth (edits variables.tf's default, then applies) rather than a
-  # raw `aws ec2 authorize/revoke-security-group-ingress` call, same "don't
-  # drift outside IaC" lesson already learned twice with the KeepRunning tag.
+  # ingress path by design. If the tracked Terraform source is present, this
+  # can update its default and apply it; if the source is absent, report that
+  # the drift check was skipped. Never mutate the live SG through raw EC2 calls.
   _aws_lab_conf_quiet || return 0
   command -v aws >/dev/null 2>&1 || return 0
   command -v terraform >/dev/null 2>&1 || { note "FLAG::aws-lab-ip::terraform not installed -- can't auto-update the SSH allowlist if the home IP has drifted"; return; }
@@ -531,7 +528,10 @@ check_aws_lab_ip_drift() {
   fi
 
   local tf_dir="$HOME/khaos-lab/aws-infra"
-  [[ -f "$tf_dir/variables.tf" ]] || return 0
+  if [[ ! -f "$tf_dir/variables.tf" ]]; then
+    note "OK::aws-lab-ip::Terraform source is absent; automatic SSH allowlist drift check is skipped (verify the live allowlist in the Cloud workspace)"
+    return
+  fi
 
   local current_ip
   current_ip=$(curl -s --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]')

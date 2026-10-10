@@ -4444,15 +4444,10 @@ cmd_help_full() {
   echo -e "  ${D}arc ${C}wire${N}                  ${M}wire dual-push for current repo (primary + k6)${N}"
   echo -e "  ${D}arc ${C}mirror${N}                ${M}push current repo → k6 contingency account${N}"
   echo -e "  ${D}arc ${C}mirrors${N}               ${M}status/run/log of the automated sync-mirrors job (all repos, k45→k6)${N}"
-  echo -e "  ${D}arc ${C}deploy${N} ${W}[athena|kontor-studio|phoenix]${N}      ${M}build + push to Cloudflare Pages — token fixed 2026-09-14, kontor-studio needs Pages permission added to it first${N}"
+  echo -e "  ${D}arc ${C}deploy${N} ${W}[athena|kontor-studio]${N}      ${M}build + deploy to Cloudflare Pages from clean main matching origin/main; Phoenix is retired${N}"
   echo -e "  ${D}arc ${C}audit${N}                 ${M}full git audit: fetch, status, ahead/behind${N}"
   echo -e "  ${D}arc ${C}rename${N}                ${M}bulk rename: kebab/camel/snake/numbers-to-words${N}"
-  echo -e "  ${D}arc ${C}aws${N}                   ${M}SSH into py-bite EC2 — config: ~/.config/arc/aws.conf${N}"
-  echo -e "  ${D}arc ${C}aws status${N}            ${M}remote snapshot: uptime · disk · ram · services · auth${N}"
-  echo -e "  ${D}arc ${C}aws logs${N}              ${M}live tail of auth.log from local terminal${N}"
-  echo -e "  ${D}arc ${C}aws htop${N}              ${M}live resource monitor (remote htop)${N}"
-  echo -e "  ${D}arc ${C}aws push${N}              ${M}deploy server-arc to EC2${N}"
-  echo -e "  ${D}arc ${C}aws motd${N}              ${M}install custom MOTD on EC2${N}"
+  echo -e "  ${D}arc ${C}aws${N}                   ${M}legacy py-bite EC2 route retired; use the aws-status/guardrails and lab controls below${N}"
   echo -e "  ${D}arc ${C}kali${N}                  ${M}shell into the kali-workbench container (starts it if stopped)${N}"
   echo -e "  ${D}arc ${C}kali start/stop/status/logs${N}  ${M}manage the container directly${N}"
   echo -e "  ${D}arc ${C}sagan${N}                 ${M}status of the Sagan correlation-engine container${N}"
@@ -4464,7 +4459,8 @@ cmd_help_full() {
   echo -e "  ${D}arc ${C}soc-lab${N}               ${M}status of the local Splunk lab container${N}"
   echo -e "  ${D}arc ${C}soc-lab start/stop/restart/logs${N}  ${M}manage the Splunk lab container (docker compose under the hood)${N}"
   echo -e "  ${D}arc ${C}aws-status${N}             ${M}quick combined snapshot -- all three cloud instances (gvm/soclab/wazuh) + budget spend${N}"
-  echo -e "  ${D}arc ${C}aws-keep ${W}<gvm|soclab|wazuh> <on|off>${N}  ${M}deliberately exempt a running lab box from the idle auto-stop (auto-clears when stopped)${N}"
+  echo -e "  ${D}arc ${C}aws-guardrails${N}         ${M}read-only audit: identity, instance metadata, ingress, EBS encryption/snapshots, spend, alarms${N}"
+  echo -e "  ${D}arc ${C}aws-keep ${W}<gvm|soclab|wazuh> <on|off>${N}  ${M}on bypasses arc-heal's 6h backstop only; CloudWatch can still stop it (tag clears when stopped)${N}"
   echo -e "  ${D}arc ${C}wazuh cloud-start|stop|status|open${N}  ${M}wazuh-cloud (Wazuh SIEM, on-demand EC2)${N}"
   echo -e "  ${D}arc ${C}wazuh otx-sync${N}          ${M}pull AlienVault OTX pulses into wazuh-cloud's threat-intel lists${N}"
   echo -e "  ${D}arc ${C}gvm${N}                   ${M}GVM/OpenVAS -- local removed 2026-08-31, moving to on-demand AWS${N}"
@@ -4850,155 +4846,9 @@ cmd_rename() {
 
 # ── AWS SSH ─────────────────────────────────────────────────────────────────────
 cmd_aws() {
-  local sub="${1:-}"
-  local conf="$HOME/.config/arc/aws.conf"
-  # No real default host/user/key here (2026-09-22 fix) -- arc-toolkit is public and this used
-  # to hardcode the actual live EC2 IP as a fallback, meaning it worked with zero local config,
-  # but also meant anyone cloning the public repo saw a real, reachable instance address. aws.conf
-  # is gitignored (see .gitignore) and was already the documented override point for this exact
-  # purpose; it just wasn't actually required before. Same fail-loud pattern AWS_KEY already used
-  # right below, extended to cover AWS_HOST/AWS_USER too instead of only the key path.
-  local AWS_HOST="" AWS_USER="" AWS_KEY="$HOME/.ssh/py-bite.pem"
-  [[ -f "$conf" ]] && source "$conf"
-  AWS_KEY="${AWS_KEY/#\~/$HOME}"
-  if [[ -z "$AWS_HOST" || -z "$AWS_USER" ]]; then
-    echo -e "  ${R}✗${N}  AWS_HOST/AWS_USER not set"
-    echo -e "  ${D}set them in: ~/.config/arc/aws.conf${N}"
-    return 1
-  fi
-  if [[ ! -f "$AWS_KEY" ]]; then
-    echo -e "  ${R}✗${N}  key not found: $AWS_KEY"
-    echo -e "  ${D}update: ~/.config/arc/aws.conf${N}"
-    return 1
-  fi
-
-  case "$sub" in
-    motd)
-      local src="$HOME/khaos-lab/tools/aws-motd"
-      echo -e "$HR"
-      echo -e "  ${C}${B}arc aws motd${N}  —  install custom MOTD"
-      echo -e "$HR\n"
-      if [[ ! -f "$src" ]]; then
-        echo -e "  ${R}✗${N}  not found: $src"; echo -e "\n$HR"; return 1
-      fi
-      echo -e "  ${C}installing...${N}"
-      base64 "$src" | ssh -i "$AWS_KEY" "${AWS_USER}@${AWS_HOST}" \
-        'base64 -d > /tmp/aws-motd \
-         && sudo mv /tmp/aws-motd /etc/update-motd.d/01-greeting \
-         && sudo chmod +x /etc/update-motd.d/01-greeting \
-         && for f in 00-header 10-help-text 50-landscape-sysinfo 50-motd-news \
-              90-updates-available 91-contract-ua-esm-status; do
-              sudo chmod -x /etc/update-motd.d/$f 2>/dev/null || true; done \
-         && for f in 85-fwupd 91-release-upgrade 92-unattended-upgrades \
-              95-hwe-eol 97-overlayroot 98-fsck-at-reboot 98-reboot-required; do
-              sudo chmod -x /etc/update-motd.d/$f 2>/dev/null || true; done \
-         && echo done' \
-        && echo -e "  ${G}✓${N}  MOTD installed — reconnect with ${C}arc aws${N} to see it" \
-        || echo -e "  ${R}✗${N}  install failed"
-      echo -e "\n$HR"
-      ;;
-    push)
-      local src="$HOME/khaos-lab/tools/server-arc"
-      local dst="/home/${AWS_USER}/.local/bin/server-arc"
-      echo -e "$HR"
-      echo -e "  ${C}${B}arc aws push${N}  —  deploy server-arc"
-      echo -e "$HR\n"
-      if [[ ! -f "$src" ]]; then
-        echo -e "  ${R}✗${N}  not found: $src"; echo -e "\n$HR"; return 1
-      fi
-      echo -e "  ${C}copying...${N}"
-      ssh -i "$AWS_KEY" "${AWS_USER}@${AWS_HOST}" "mkdir -p ~/.local/bin" \
-        && scp -i "$AWS_KEY" "$src" "${AWS_USER}@${AWS_HOST}:${dst}" \
-        && ssh -i "$AWS_KEY" "${AWS_USER}@${AWS_HOST}" "chmod +x ${dst}" \
-        && echo -e "  ${G}✓${N}  server-arc deployed to ${AWS_USER}@${AWS_HOST}" \
-        || echo -e "  ${R}✗${N}  deploy failed"
-      echo -e "\n$HR"
-      ;;
-    status)
-      echo -e "$HR"
-      echo -e "  ${C}${B}arc aws status${N}  —  ${M}${AWS_USER}@${AWS_HOST}${N}"
-      echo -e "$HR"
-      ssh -i "$AWS_KEY" "${AWS_USER}@${AWS_HOST}" bash <<'REMOTE'
-echo ""
-# Uptime
-uptime_str=$(uptime -p 2>/dev/null || uptime)
-printf "  \033[0;36muptime\033[0m  \033[38;5;250m%s\033[0m\n" "$uptime_str"
-
-# Disk
-du_=$(df -h / | awk 'NR==2 {print $3}')
-df_=$(df -h / | awk 'NR==2 {print $4}')
-dp_=$(df /   | awk 'NR==2 {print $5}')
-printf "  \033[0;36mdisk\033[0m    \033[38;5;250m%s used  ·  %s free  (%s)\033[0m\n" "$du_" "$df_" "$dp_"
-
-# RAM
-rm_used=$(free -h | awk '/Mem:/ {print $3}')
-rm_free=$(free -h | awk '/Mem:/ {print $7}')
-rm_pct=$(free    | awk '/Mem:/ {printf "%.0f%%", $3/$2*100}')
-printf "  \033[0;36mram\033[0m     \033[38;5;250m%s used  ·  %s free  (%s)\033[0m\n" "$rm_used" "$rm_free" "$rm_pct"
-
-# Load
-read -r l1 l5 l15 _ < /proc/loadavg
-printf "  \033[0;36mload\033[0m    \033[38;5;250m%s · %s · %s\033[0m\n" "$l1" "$l5" "$l15"
-
-echo ""
-
-# Services (py-bite has run as a Docker container since the 2026-07-07
-# containerization migration — checked via the container's own health status,
-# not the old systemd unit, which is deliberately disabled and always reads
-# "inactive" now regardless of whether the real app is actually up)
-for svc in nginx fail2ban ufw; do
-  if systemctl is-active --quiet "$svc" 2>/dev/null; then
-    printf "  \033[0;32m·\033[0m  \033[38;5;250m%s\033[0m\n" "$svc"
-  else
-    printf "  \033[0;31m·\033[0m  \033[38;5;250m%s\033[0m  \033[0;90m(inactive)\033[0m\n" "$svc"
-  fi
-done
-pb_health=$(docker inspect --format '{{.State.Health.Status}}' py-bite 2>/dev/null)
-if [[ "$pb_health" == "healthy" ]]; then
-  printf "  \033[0;32m·\033[0m  \033[38;5;250mpy-bite\033[0m  \033[0;90m(docker, healthy)\033[0m\n"
-elif [[ -n "$pb_health" ]]; then
-  printf "  \033[0;31m·\033[0m  \033[38;5;250mpy-bite\033[0m  \033[0;90m(docker, %s)\033[0m\n" "$pb_health"
-else
-  printf "  \033[0;31m·\033[0m  \033[38;5;250mpy-bite\033[0m  \033[0;90m(container not found)\033[0m\n"
-fi
-
-echo ""
-
-# Active SSH sessions
-sessions=$(who 2>/dev/null | wc -l | tr -d ' ')
-printf "  \033[0;36mssh sessions\033[0m  \033[38;5;250m%s active\033[0m\n" "$sessions"
-
-# Auth failures in last hour
-fails=$(awk -v d="$(date --date='1 hour ago' '+%b %e %H')" \
-  '$0 ~ d && /Failed password|Invalid user/' \
-  /var/log/auth.log 2>/dev/null | wc -l | tr -d ' ')
-if (( fails > 0 )); then
-  printf "  \033[0;31m·\033[0m  \033[38;5;250m%s failed auth attempt(s) in last hour\033[0m\n" "$fails"
-else
-  printf "  \033[0;32m·\033[0m  \033[38;5;250m0 failed auth attempts in last hour\033[0m\n"
-fi
-echo ""
-REMOTE
-      echo -e "$HR"
-      ;;
-    logs)
-      echo -e "$HR"
-      echo -e "  ${C}${B}arc aws logs${N}  —  live auth tail  ${D}(ctrl-c to exit)${N}"
-      echo -e "$HR\n"
-      ssh -i "$AWS_KEY" "${AWS_USER}@${AWS_HOST}" "sudo tail -f /var/log/auth.log"
-      ;;
-    htop)
-      ssh -i "$AWS_KEY" -t "${AWS_USER}@${AWS_HOST}" "htop"
-      ;;
-    '')
-      echo -e "  ${C}connecting${N}  ${M}${AWS_USER}@${AWS_HOST}${N}  ${D}(${AWS_KEY})${N}"
-      ssh -i "$AWS_KEY" "${AWS_USER}@${AWS_HOST}"
-      ;;
-    *)
-      echo -e "${R}unknown:${N} arc aws $sub"
-      echo -e "${D}options: status · logs · htop · push · motd${N}"
-      ;;
-  esac
+  echo -e "  ${Y}retired${N}  the legacy py-bite EC2 route was removed after migration to PythonAnywhere"
+  echo -e "  ${D}For the current on-demand lab use: arc aws-status · arc aws-guardrails · arc gvm|soc-lab|wazuh ...${N}"
+  return 2
 }
 
 # ── Local Docker containers ─────────────────────────────────────────────────
@@ -5898,7 +5748,7 @@ cmd_aws_status() {
       --region "$AWS_LAB_REGION" --query 'Tags[0].Value' --output text 2>/dev/null)
     if [[ "$state" == "running" ]]; then
       local suffix=""
-      [[ "$keep" == "true" ]] && suffix="  ${Y}(KeepRunning -- won't auto-stop)${N}"
+      [[ "$keep" == "true" ]] && suffix="  ${Y}(Arc 6h backstop bypassed; CloudWatch idle stop still applies)${N}"
       echo -e "  ${G}·${N}  ${label}  running${suffix}"
     else
       echo -e "  ${D}·${N}  ${label}  ${state:-unknown}"
@@ -5914,10 +5764,135 @@ cmd_aws_status() {
   echo -e "\n$HR"
 }
 
+cmd_aws_guardrails() {
+  # Read-only operator audit for the on-demand AWS lab. Keep this narrow to
+  # the three configured lab instances; never applies Terraform or changes AWS.
+  _aws_lab_conf || { echo -e "$HR"; return 1; }
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc aws-guardrails${N}  —  read-only lab safety audit"
+  echo -e "$HR\n"
+
+  local caller acct
+  caller=$(aws sts get-caller-identity --query Arn --output text 2>/dev/null) || caller=""
+  acct=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) || acct=""
+  if [[ -z "$caller" || -z "$acct" ]]; then
+    echo -e "  ${R}UNVERIFIED${N}  AWS identity unavailable; check credentials and network"
+  else
+    local principal=${caller##*/}
+    [[ "$caller" == *":assumed-role/"* ]] && principal="assumed role"
+    if [[ "$acct" == "$AWS_LAB_ACCOUNT_ID" ]]; then
+      echo -e "  ${G}OK${N}  AWS identity: ${principal}; configured account matches"
+    else
+      echo -e "  ${R}MISMATCH${N}  configured AWS account does not match active credentials"
+      echo -e "$HR"
+      return 2
+    fi
+  fi
+
+  local pair label iid state keep metadata public_ip groups
+  local running=0
+  for pair in "gvm-cloud:$GVM_INSTANCE_ID" "soclab-cloud:$SOCLAB_INSTANCE_ID" "wazuh-cloud:${WAZUH_INSTANCE_ID:-}"; do
+    label=${pair%%:*}; iid=${pair#*:}; [[ -z "$iid" ]] && continue
+    state=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
+      --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null) || state="unknown"
+    keep=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$iid" "Name=key,Values=KeepRunning" \
+      --region "$AWS_LAB_REGION" --query 'Tags[0].Value' --output text 2>/dev/null) || keep="unknown"
+    metadata=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
+      --query 'Reservations[0].Instances[0].MetadataOptions.HttpTokens' --output text 2>/dev/null) || metadata="unknown"
+    public_ip=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
+      --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>/dev/null) || public_ip="unknown"
+    if [[ -z "$public_ip" || "$public_ip" == "None" ]]; then public_ip="no"; else public_ip="yes"; fi
+    [[ "$state" == "running" ]] && ((running += 1))
+    echo -e "  ${C}${label}${N}  ${state}  ·  KeepRunning=${keep:-unknown}  ·  IMDSv2=${metadata:-unknown}  ·  public IPv4=${public_ip:-unknown}"
+    if [[ "$metadata" == "required" ]]; then
+      echo -e "    ${G}OK${N}  instance metadata requires IMDSv2"
+    else
+      echo -e "    ${Y}REVIEW${N}  IMDSv2 is not confirmed required"
+    fi
+
+    groups=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
+      --query 'Reservations[0].Instances[0].SecurityGroups[].GroupId' --output text 2>/dev/null) || groups=""
+    if [[ -z "$groups" || "$groups" == "None" ]]; then
+      echo -e "    ${Y}UNVERIFIED${N}  security groups unavailable"
+    else
+      local sg sg_rules sg_v6
+      for sg in $groups; do
+        sg_rules=$(aws ec2 describe-security-groups --group-ids "$sg" --region "$AWS_LAB_REGION" \
+          --query 'SecurityGroups[0].IpPermissions[].IpRanges[].CidrIp' --output text 2>/dev/null) || sg_rules="ERROR"
+        sg_v6=$(aws ec2 describe-security-groups --group-ids "$sg" --region "$AWS_LAB_REGION" \
+          --query 'SecurityGroups[0].IpPermissions[].Ipv6Ranges[].CidrIpv6' --output text 2>/dev/null) || sg_v6="ERROR"
+        if [[ "$sg_rules" == "ERROR" || "$sg_v6" == "ERROR" ]]; then
+          echo -e "    ${Y}UNVERIFIED${N}  ingress rules for ${sg} could not be read"
+        elif [[ " $sg_rules " == *" 0.0.0.0/0 "* || " $sg_v6 " == *" ::/0 "* ]]; then
+          echo -e "    ${R}REVIEW${N}  ${sg} has world-open IPv4 or IPv6 ingress"
+        else
+          echo -e "    ${G}OK${N}  ${sg} has no world-open ingress"
+        fi
+      done
+    fi
+
+    local volumes volume detail snapshots
+    volumes=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
+      --query 'Reservations[0].Instances[0].BlockDeviceMappings[].Ebs.VolumeId' --output text 2>/dev/null) || volumes=""
+    if [[ -z "$volumes" || "$volumes" == "None" ]]; then
+      echo -e "    ${Y}UNVERIFIED${N}  attached EBS volumes unavailable"
+    else
+      for volume in $volumes; do
+        detail=$(aws ec2 describe-volumes --volume-ids "$volume" --region "$AWS_LAB_REGION" \
+          --query 'Volumes[0].[State,Encrypted]' --output text 2>/dev/null) || detail="ERROR"
+        case "$detail" in
+          *$'\t'True|*' True') echo -e "    ${G}OK${N}  attached volume ${volume}: encrypted" ;;
+          *$'\t'False|*' False') echo -e "    ${R}REVIEW${N}  attached volume ${volume}: unencrypted" ;;
+          *) echo -e "    ${Y}UNVERIFIED${N}  attached volume ${volume}: ${detail:-unknown}" ;;
+        esac
+        snapshots=$(aws ec2 describe-snapshots --owner-ids self --region "$AWS_LAB_REGION" \
+          --filters "Name=volume-id,Values=$volume" "Name=status,Values=completed" \
+          --query 'length(Snapshots[])' --output text 2>/dev/null) || snapshots="unknown"
+        if [[ "$snapshots" =~ ^[0-9]+$ ]]; then
+          (( snapshots > 0 )) && echo -e "    ${G}OK${N}  completed owned snapshots: ${snapshots}" \
+            || echo -e "    ${Y}REVIEW${N}  no completed owned snapshots for ${volume}"
+        else
+          echo -e "    ${Y}UNVERIFIED${N}  snapshots for ${volume} could not be read"
+        fi
+      done
+    fi
+  done
+
+  local spend
+  spend=$(aws budgets describe-budget --account-id "$AWS_LAB_ACCOUNT_ID" --budget-name aws-credits-100 \
+    --region us-east-1 --query 'Budget.CalculatedSpend.ActualSpend.Amount' --output text 2>/dev/null) || spend=""
+  [[ -n "$spend" && "$spend" != "None" ]] \
+    && echo -e "\n  ${C}Budget${N}  \$${spend}/100 USD (alerts are not an automatic stop switch)" \
+    || echo -e "\n  ${Y}UNVERIFIED${N}  budget spend unavailable"
+
+  local alarms
+  alarms=$(aws cloudwatch describe-alarms --alarm-names gvm-cloud-idle-stop soclab-cloud-idle-stop wazuh-cloud-idle-stop \
+    --region "$AWS_LAB_REGION" --query 'MetricAlarms[].[AlarmName,StateValue,ActionsEnabled,AlarmActions]' \
+    --output json 2>/dev/null) || alarms="ERROR"
+  echo -e "\n  ${C}CloudWatch alarms${N}"
+  if [[ "$alarms" == "ERROR" || -z "$alarms" ]]; then
+    echo -e "    ${Y}UNVERIFIED${N}  alarm state unavailable"
+  else
+    python3 -c 'import json,sys
+try: rows=json.load(sys.stdin)
+except Exception: print("    UNVERIFIED  alarm response could not be parsed"); raise SystemExit(0)
+found={r[0]:r for r in rows}
+for name in ("gvm-cloud-idle-stop","soclab-cloud-idle-stop","wazuh-cloud-idle-stop"):
+ r=found.get(name)
+ if not r: print(f"    UNVERIFIED  {name}: missing"); continue
+ _,state,enabled,actions=r
+ stop=any(str(a).endswith(":ec2:stop") for a in (actions or []))
+ if enabled and stop: print(f"    OK  {name}: {state}, EC2 stop action enabled")
+ else: print(f"    REVIEW  {name}: {state}, actions_enabled={enabled}, EC2 stop action={stop}")' <<< "$alarms"
+  fi
+  echo -e "\n  ${D}This command is read-only. IAM, GuardDuty, Security Hub, and AWS Config account-wide posture require separate console/API permissions.${N}"
+  echo -e "  ${D}Running instances: ${running}. Idle-stop alarms are about 3h; arc-heal has a 6h backstop unless KeepRunning=true.${N}"
+  echo -e "\n$HR"
+}
+
 cmd_aws_keep() {
-  # Deliberate "don't auto-stop this one" override for a lab box. arc-heal's idle backstop skips a
-  # RUNNING instance tagged KeepRunning=true; arc-heal clears the tag once the instance is stopped,
-  # so the override always ends with the session it was meant for.
+  # Deliberate override of arc-heal's 6h backstop only. CloudWatch idle-stop alarms remain active.
+  # arc-heal clears the tag once the instance is stopped, so the override ends with this session.
   _aws_lab_conf || { echo -e "$HR"; return 1; }
   local box="${1:-}" mode="${2:-}" iid=""
   case "$box" in
@@ -5926,16 +5901,16 @@ cmd_aws_keep() {
     wazuh) iid="${WAZUH_INSTANCE_ID:-}" ;;
   esac
   if [[ -z "$iid" || ! "$mode" =~ ^(on|off)$ ]]; then
-    echo -e "  usage: ${C}arc aws-keep <gvm|soclab|wazuh> <on|off>${N}  ${D}(on = arc-heal won't auto-stop it while running)${N}"
+    echo -e "  usage: ${C}arc aws-keep <gvm|soclab|wazuh> <on|off>${N}  ${D}(on bypasses arc-heal's 6h backstop only; CloudWatch idle-stop alarms still apply)${N}"
     return 1
   fi
   if [[ "$mode" == "on" ]]; then
     aws ec2 create-tags --resources "$iid" --tags Key=KeepRunning,Value=true --region "$AWS_LAB_REGION" >/dev/null 2>&1 \
-      && echo -e "  ${Y}!${N}  ${box}-cloud will NOT be auto-stopped while running (cleared automatically once it's stopped). Remember it bills hourly." \
+      && echo -e "  ${Y}!${N}  ${box}-cloud is exempt from arc-heal's 6h backstop until stopped; CloudWatch idle-stop alarms can still stop it. Tag clears on stop; hourly billing continues." \
       || echo -e "  ${R}✗${N}  could not set the tag"
   else
     aws ec2 delete-tags --resources "$iid" --tags Key=KeepRunning --region "$AWS_LAB_REGION" >/dev/null 2>&1 \
-      && echo -e "  ${G}✓${N}  ${box}-cloud is back under the idle-stop backstop" || echo -e "  ${R}✗${N}  could not clear the tag"
+      && echo -e "  ${G}✓${N}  ${box}-cloud is back under arc-heal's 6h backstop; CloudWatch remains active" || echo -e "  ${R}✗${N}  could not clear the tag"
   fi
 }
 
@@ -6431,12 +6406,56 @@ cmd_mirrors() {
 cmd_deploy() {
   local target="${1:-athena}"
   local CF_TOKEN
+  local repo
+  case "$target" in
+    athena) repo="$HOME/khaos-lab/athena" ;;
+    kontor-studio) repo="$HOME/khaos-lab/kontor-studio" ;;
+    phoenix)
+      echo -e "  ${R}✗${N}  Phoenix is retired; deployment is blocked to prevent accidental resurrection"
+      return 2
+      ;;
+    *) echo -e "  ${R}unknown target:${N} $target"; return 2 ;;
+  esac
+  if [[ ! -d "$repo/.git" ]]; then
+    echo -e "  ${R}✗${N}  source checkout missing: $repo"
+    return 1
+  fi
+  local dirty
+  dirty=$(git -C "$repo" status --porcelain --untracked-files=normal)
+  if [[ -n "$dirty" ]]; then
+    echo -e "  ${R}✗${N}  refusing live deploy: $target has uncommitted or untracked files"
+    echo -e "  ${D}review and commit the intended files, then rerun arc deploy $target${N}"
+    printf '%s\n' "$dirty"
+    return 1
+  fi
+  local branch
+  branch=$(git -C "$repo" branch --show-current)
+  if [[ "$branch" != "main" ]]; then
+    echo -e "  ${R}✗${N}  refusing live deploy from branch '${branch:-detached}'; deploy from main after merge/push"
+    return 1
+  fi
+  if ! git -C "$repo" fetch --quiet origin main; then
+    echo -e "  ${R}✗${N}  cannot verify origin/main; network or Git authentication failed, so deployment is blocked"
+    return 1
+  fi
+  local head remote_head
+  head=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
+  remote_head=$(git -C "$repo" rev-parse origin/main 2>/dev/null)
+  if [[ -z "$head" || "$head" != "$remote_head" ]]; then
+    echo -e "  ${R}✗${N}  refusing live deploy: local main does not exactly match freshly fetched origin/main"
+    echo -e "  ${D}reconcile Git, push the intended commit, then retry${N}"
+    return 1
+  fi
   # Real bug found+fixed 2026-09-14: this looked up a token named "arc-deploy",
   # which was deleted from the Cloudflare account back on 2026-07-30 (confirmed
   # dead in SOT.md's own token audit) -- the account's real, live token has
   # been sitting right there under "arc-deploy-workers" the whole time, this
   # script just never got updated to look for the current name.
-  CF_TOKEN=$(grep '^arc-deploy-workers=' ~/dev-notes/surgery-tools/.cftk | cut -d= -f2)
+  CF_TOKEN=$(grep '^arc-deploy-workers=' ~/dev-notes/surgery-tools/.cftk 2>/dev/null | cut -d= -f2)
+  if [[ -z "$CF_TOKEN" ]]; then
+    echo -e "  ${R}✗${N}  Cloudflare deploy credential is unavailable; check the local surgery-tools vault without printing its contents"
+    return 1
+  fi
   export NVM_DIR="$HOME/.nvm"
   [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
 
@@ -6447,7 +6466,7 @@ cmd_deploy() {
       node node_modules/vite/bin/vite.js build 2>&1 | tail -5 || { echo -e "  ${R}✗${N}  build failed"; return 1; }
       echo -e "  ${C}deploying to CF Pages${N} …"
       CLOUDFLARE_API_TOKEN="$CF_TOKEN" npx wrangler pages deploy dist \
-        --project-name athena --branch main --commit-dirty=true \
+        --project-name athena --branch main \
         && echo -e "  ${G}✓${N}  athena deployed" \
         || echo -e "  ${R}✗${N}  deploy failed"
       ;;
@@ -6460,26 +6479,12 @@ cmd_deploy() {
       cd ~/khaos-lab/kontor-studio || { echo -e "  ${R}✗${N}  kontor-studio not cloned — git clone git@github.com:kwasikontor45/kontor-studio.git ~/khaos-lab/kontor-studio"; return 1; }
       echo -e "  ${C}deploying to CF Pages${N} …"
       CLOUDFLARE_API_TOKEN="$CF_TOKEN" npx wrangler pages deploy . \
-        --project-name kontor-studio --branch main --commit-dirty=true \
+        --project-name kontor-studio --branch main \
         && echo -e "  ${G}✓${N}  kontor-studio deployed → kontor.studio" \
         || echo -e "  ${R}✗${N}  deploy failed"
       ;;
-    phoenix)
-      # Personal routine app (static SPA, state stays in the visitor's own browser). Bundle is public once
-      # deployed: no personal data may live in src/ (appointments are kept out on purpose), noindex + CSP set
-      # via public/_headers. First run creates the Pages project; later runs just redeploy.
-      cd ~/khaos-lab/phoenix || { echo -e "  ${R}✗${N}  phoenix repo not found at ~/khaos-lab/phoenix"; return 1; }
-      echo -e "  ${C}building phoenix${N} …"
-      npm run build 2>&1 | tail -3 || { echo -e "  ${R}✗${N}  build failed"; return 1; }
-      CLOUDFLARE_API_TOKEN="$CF_TOKEN" npx wrangler pages project create phoenix --production-branch main >/dev/null 2>&1 || true
-      echo -e "  ${C}deploying to CF Pages${N} …"
-      CLOUDFLARE_API_TOKEN="$CF_TOKEN" npx wrangler pages deploy dist \
-        --project-name phoenix --branch main --commit-dirty=true \
-        && echo -e "  ${G}✓${N}  phoenix deployed → phoenix.pages.dev (custom domain: add phoenix.kontor.studio in the Pages dashboard)" \
-        || echo -e "  ${R}✗${N}  deploy failed"
-      ;;
     *)
-      echo -e "  ${R}unknown target:${N} $target  —  try ${C}arc deploy athena${N}, ${C}kontor-studio${N} or ${C}phoenix${N}"
+      echo -e "  ${R}unknown target:${N} $target  —  try ${C}arc deploy athena${N} or ${C}kontor-studio${N}"
       ;;
   esac
 }
@@ -6533,6 +6538,7 @@ case "${1:-}" in
   evebox)         cmd_evebox "${@:2}" ;;
   soc-lab)        cmd_soclab "${@:2}" ;;
   aws-status)     cmd_aws_status ;;
+  aws-guardrails) cmd_aws_guardrails ;;
   aws-keep)       cmd_aws_keep "${@:2}" ;;
   verify-not-scaffold) ~/.local/bin/arc-verify-not-scaffold "${@:2}" ;;
   gvm)            cmd_gvm "${@:2}" ;;

@@ -90,6 +90,14 @@ The scheduled YARA scanner uses its installed ruleset snapshot at `~/.local/shar
 
 `apps/arc-break-taskbar/` is a portable GTK timer with its own installer, desktop launcher, settings, and state. It does not call the `arc` command, the legacy `arc-break` daemon, Genmon, or systemd. On Debian/Ubuntu, install GTK 3 Python bindings, then run `apps/arc-break-taskbar/install.sh`; its own README covers removal and the separate state directory. It minimizes into the normal taskbar and keeps the countdown in the window title, so no tray extension or Genmon panel setup is needed. The legacy `arc break start|stop|status` commands remain available for existing workflows. Run one timer at a time.
 
+### Cloud and release management
+
+Khaos Lab → **Cloud** now groups the read-only AWS guardrail audit (`arc aws-guardrails`), inventory drift, CloudTrail, and start/stop/status/dashboard controls for GVM, Splunk, and Wazuh. Every cloud start/stop remains behind the same-session SOP gate and explicit confirmation; GVM and Splunk stop actions back up before stopping. Cloudflare Workers usage, Git mirror status, SSH-agent fingerprints, and public-key inventory are alongside them. The optional `arc aws-keep <box> <on|off>` tag is available through the confirmed Commands workspace; it bypasses only Arc's six-hour backstop, while CloudWatch idle-stop alarms remain active. **Dev** has Git/source-of-truth audits plus confirmed Cloudflare Pages deploy actions for Athena and Kontor Studio/Kataleya.
+
+`arc deploy` now refuses a dirty checkout, a branch other than `main`, a failed fresh `origin/main` fetch, or a local commit that does not exactly match that remote. It never deploys uncommitted files. Phoenix deployment is blocked to preserve its completed retirement. See [`cloud-management-operator-guide-2026-10-09.md`](../refs/cloud-management-operator-guide-2026-10-09.md) for current guardrail evidence and the map for credentials, SSH keys, and operator references. Credentials remain outside this repository.
+
+The old `arc aws` SSH/status/push route for py-bite's terminated EC2 instance now fails closed; it no longer reads its leftover local config or attempts SSH.
+
 ## Offline / no-internet
 
 The source machine never depends on the network for day-to-day use — every script is a local

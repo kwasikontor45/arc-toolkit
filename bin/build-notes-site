@@ -398,6 +398,7 @@ def inventory_blueprint_body():
     links = []
     for label, path in (("airplane-mode-connections.md", HOME / "khaos-lab" / "refs" / "airplane-mode-connections.md"),
                         ("resources-in-place.md", HOME / "khaos-lab" / "refs" / "resources-in-place.md"),
+                        ("cloud management, release, and SSH guide", HOME / "khaos-lab" / "refs" / "cloud-management-operator-guide-2026-10-09.md"),
                         ("inventory procedures (README)", HOME / "dev-notes" / "intel-ops" / "inventory" / "README.md")):
         if path.exists():
             links.append(f'<p><a href="notes/{slug_for(path)}">{label}</a></p>')

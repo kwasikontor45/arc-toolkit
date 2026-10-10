@@ -13,7 +13,7 @@ source of truth for the palette, and provides:
     keyboard activation.
   - circadian(): a real time-of-day color engine, modeled directly on
     Kataleya's own circadian phase system (choice/still-pine/desire/nyx)
-    -- the user's own words, "my signature-design or style." Four dark
+    -- the user's own words, "my signature-design or style." Four lifted
     mineral anchor palettes, continuously interpolated against
     the real clock rather than hard-cut at phase boundaries -- matching
     Kataleya's own most recent design direction (its GAMEPLAN explicitly
@@ -33,16 +33,16 @@ from tkinter import font as tkfont
 
 # ── Palette -- Phosphor Noir. Mineral graphite and verdigris, with warm
 # circadian accents; Rose Pine remains a color influence, not the whole UI. ──
-BG       = "#0c1211"
-SURFACE  = "#121d1a"
-OVERLAY  = "#192723"
-FG       = "#e5eee8"
-FG_MUTED = "#9caaa2"
-GOLD     = "#dbb77d"
-ROSE     = "#d9877f"
-PINE     = "#8fc4aa"
-TEAL     = "#88bfb2"
-IRIS     = "#ada2c9"
+BG       = "#f2e8d5"
+SURFACE  = "#fbf6eb"
+OVERLAY  = "#e6d8bd"
+FG       = "#302719"
+FG_MUTED = "#66563e"
+GOLD     = "#895600"
+ROSE     = "#a72d48"
+PINE     = "#266b50"
+TEAL     = "#176d6e"
+IRIS     = "#614a91"
 
 # Semantic aliases -- read at the call site instead of the palette. Same
 # colors, names that describe *why*, not just which Rose Pine Moon hue.
@@ -60,10 +60,10 @@ COLOR_ERROR = ROSE
 # to a real hour of day. Only the five "ambient" roles drift (bg/surface/
 # overlay/fg/fg_muted) -- functional colors above stay fixed for legibility.
 PHASES = {
-    "choice":     {"hour": 6,  "bg": "#111918", "surface": "#192321", "overlay": "#24322e", "fg": "#e3eee8", "fg_muted": "#9aada4"},  # cool green dawn
-    "desire":     {"hour": 13, "bg": "#0c1717", "surface": "#142322", "overlay": "#1d302e", "fg": "#dcece8", "fg_muted": "#93aaa5"},  # deep mineral day
-    "still-pine": {"hour": 18, "bg": "#191712", "surface": "#242018", "overlay": "#342d20", "fg": "#f0e8d9", "fg_muted": "#b6a487"},  # low amber dusk
-    "nyx":        {"hour": 24, "bg": BG,        "surface": SURFACE,  "overlay": OVERLAY,   "fg": FG,        "fg_muted": FG_MUTED},   # night, deepest mineral palette
+    "choice":     {"hour": 6,  "bg": "#e3eff1", "surface": "#f5fafb", "overlay": "#d5e5e8", "fg": "#1a2b30", "fg_muted": "#4b6268"},  # cool green dawn
+    "desire":     {"hour": 13, "bg": "#f2e8d5", "surface": "#fbf6eb", "overlay": "#e6d8bd", "fg": "#302719", "fg_muted": "#66563e"},  # warm mineral day
+    "still-pine": {"hour": 18, "bg": "#ece6f1", "surface": "#f8f5fb", "overlay": "#ddd4e8", "fg": "#2b2534", "fg_muted": "#60566c"},  # low amber dusk
+    "nyx":        {"hour": 24, "bg": "#e9e0e7", "surface": "#f8f3f7", "overlay": "#ded3df", "fg": "#2d222d", "fg_muted": "#655665"},   # night, deepest mineral palette
 }
 _PHASE_ORDER = ["choice", "desire", "still-pine", "nyx"]
 
@@ -212,19 +212,19 @@ def fonts():
     live command output and technical values."""
     try:
         return {
-            "title": tkfont.Font(family=FONT_FAMILY, size=14, weight="bold"),
+            "title": tkfont.Font(family=FONT_FAMILY, size=16, weight="bold"),
             "big":   tkfont.Font(family=FONT_FAMILY, size=22, weight="bold"),
-            "body":  tkfont.Font(family=FONT_FAMILY, size=10),
-            "small": tkfont.Font(family=FONT_FAMILY, size=9),
-            "label": tkfont.Font(family=FONT_FAMILY, size=9, weight="bold"),
+            "body":  tkfont.Font(family=FONT_FAMILY, size=12),
+            "small": tkfont.Font(family=FONT_FAMILY, size=11),
+            "label": tkfont.Font(family=FONT_FAMILY, size=12, weight="bold"),
         }
     except Exception:
         return {
             "title": tkfont.Font(size=14, weight="bold"),
             "big":   tkfont.Font(size=22, weight="bold"),
-            "body":  tkfont.Font(size=10),
-            "small": tkfont.Font(size=9),
-            "label": tkfont.Font(size=9, weight="bold"),
+            "body":  tkfont.Font(size=12),
+            "small": tkfont.Font(size=11),
+            "label": tkfont.Font(size=12, weight="bold"),
         }
 
 

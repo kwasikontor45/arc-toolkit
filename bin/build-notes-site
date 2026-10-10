@@ -8,8 +8,8 @@ khaos-lab + vault/archive, with an inline (not fetched) search index so it
 works from a plain file:// open in any browser, no server, no internet.
 
 Visual language matches kontor.studio / kontor.studio/bootlog: JetBrains Mono
-(installed locally, no webfont fetch needed), phosphor/cyan on near-black,
-scanline+vignette overlay, system-bar with circadian phase color shift.
+(installed locally, no webfont fetch needed), raised mineral surfaces, readable
+copy, a softened scanline/vignette, and circadian phase accents.
 
 Output lives on local disk (~/khaos-lab/notes-site) as of 2026-09-19 -- it no
 longer depends on the USB vault being mounted (vault/archive below is just an
@@ -53,34 +53,38 @@ if FAVICON_SOURCE.exists():
 
 CSS = """
 :root {
-  --bg: #080809;
-  --panel-bg: #0e0e11;
-  --panel-bg-alt: #111318;
+  color-scheme: light;
+  --bg: #f2e8d5;
+  --panel-bg: #fbf6eb;
+  --panel-bg-alt: #e6d8bd;
   --phosphor: #c8f563;
   --cyan: #5ec8ed;
-  --text: #e2e0dc;
-  --text-dim: #6e7480;
-  --text-mid: #9da2ad;
-  --border: #1a1c22;
+  --text: #302719;
+  --text-dim: #66563e;
+  --text-mid: #4a3a24;
+  --border: #c5b392;
   --border-hot: rgba(200,245,99,0.2);
 }
+:root[data-phase="nyx"] { --bg:#e9e0e7; --panel-bg:#f8f3f7; --panel-bg-alt:#ded3df; --text:#2d222d; --text-dim:#655665; --text-mid:#493b49; --border:#b9aab8; }
+:root[data-phase="choice"] { --bg:#e3eff1; --panel-bg:#f5fafb; --panel-bg-alt:#d5e5e8; --text:#1a2b30; --text-dim:#4b6268; --text-mid:#2f454b; --border:#a7bdc2; }
+:root[data-phase="desire"] { --bg:#f2e8d5; --panel-bg:#fbf6eb; --panel-bg-alt:#e6d8bd; --text:#302719; --text-dim:#66563e; --text-mid:#4a3a24; --border:#c5b392; }
+:root[data-phase="still-pine"] { --bg:#ece6f1; --panel-bg:#f8f5fb; --panel-bg-alt:#ddd4e8; --text:#2b2534; --text-dim:#60566c; --text-mid:#443a51; --border:#b6a9c5; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body {
   background: var(--bg); color: var(--text);
   font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
-  font-size: 13px; line-height: 1.6; min-height: 100vh; overflow-x: hidden;
-  text-shadow: 0 0 1px rgba(255,255,255,0.10);
+  font-size: 16px; line-height: 1.65; min-height: 100vh; overflow-x: hidden;
 }
 body::before {
   content: ''; position: fixed; inset: 0;
   background: repeating-linear-gradient(0deg, transparent, transparent 3px,
-    rgba(0,0,0,0.06) 3px, rgba(0,0,0,0.06) 4px);
+    rgba(0,0,0,0.025) 3px, rgba(0,0,0,0.025) 4px);
   pointer-events: none; z-index: 100;
 }
 body::after {
   content: ''; position: fixed; inset: 0;
-  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%);
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.22) 100%);
   pointer-events: none; z-index: 99;
 }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
@@ -257,6 +261,20 @@ nav.uplinks { display: flex; gap: 6px; flex-wrap: wrap; }
   .kat-field, .kat-node { transition: none; }
   .kat-node:hover { transform: none; }
 }
+
+/* Keep reading and control text legible at phone, tablet, and desktop sizes. */
+html { -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+body :is(p,li,dd,dt,blockquote,td,th,.panel p,.panel li,.lab-desc,
+  .hero-sub,.kat-map-intro,.kat-detail p) {
+  font-size:max(16px,1em) !important; line-height:1.65 !important;
+}
+body :is(small,.system-bar,.uplink-btn,.tag,.stats,.tree-tag,.close-bar,
+  .pill,.kat-map-label,.kat-phase-rail span) {
+  font-size:max(12px,.8rem) !important; line-height:1.45 !important;
+}
+body :is(input,button,select,textarea,summary) { font-size:max(14px,.9em) !important; }
+body :is(.panel,.kat-detail,.kat-field,.kat-node) { border-color:var(--border); }
+@media (max-width:640px) { body { font-size:16px; } }
 """
 
 PHASE_SCRIPT = """

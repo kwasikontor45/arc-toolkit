@@ -130,18 +130,18 @@ LOG_SOURCES = [
 # fix (WM_CLASS was generic "Tk").
 
 # ── Palette -- "low-life-high-tech", khaos-lab's own fixed identity ───────────
-# Fixed workshop-dark ground; the selected route and command chrome use the
-# current circadian phase accent. Status semantics stay stable and legible.
-BG       = "#080d12"
-SURFACE  = "#10171e"
-OVERLAY  = "#18232c"
-BORDER   = "#2c3a45"
-FG       = "#dce5eb"
-FG_MUTED = "#8495a2"
-GOLD     = "#ff9d2e"
-ROSE     = "#ff3864"
-PINE     = "#0f9b9b"
-TEAL     = "#00e5c7"
+# Lifted mineral ground; the surface follows the continuous circadian palette.
+# Status semantics stay stable while text and dividers remain easy to scan.
+BG       = "#f2e8d5"
+SURFACE  = "#fbf6eb"
+OVERLAY  = "#e6d8bd"
+BORDER   = "#c5b392"
+FG       = "#302719"
+FG_MUTED = "#66563e"
+GOLD     = "#895600"
+ROSE     = "#a72d48"
+PINE     = "#266b50"
+TEAL     = "#176d6e"
 
 # Palette anchors. The ambience moves with the same continuous circadian engine as
 # Kataleya; signal colors (success/warning/error) remain fixed for reliable reading.
@@ -1282,6 +1282,8 @@ CATEGORIES = {
                "~/khaos-lab/4dev-studio18/ref/Reborn_LMMS_Baby_Steps.md", detach=True),
         Action("Guide: studio quick start", "retext --preview "
                + shlex.quote(str(STUDIO_DOC_DIR / "quick-start.md")), detach=True),
+        Action("Guide: YouTube listening exercises", "retext --preview "
+               + shlex.quote(str(STUDIO_DOC_DIR / "youtube-listening-exercises.md")), detach=True),
         Action("Template: event cue sheet", "retext --preview "
                + shlex.quote(str(STUDIO_DOC_DIR / "event-cue-sheet-template.md")), detach=True),
         Action("Tutorial: Audacity recording and editing", "xdg-open "
@@ -1294,6 +1296,10 @@ CATEGORIES = {
                "https://youtu.be/P7xnBdx70GU", detach=True),
         Action("Tutorial: Reborn beat-making video", "xdg-open "
                "https://youtu.be/g654n_qniHs", detach=True),
+        Action("Reference: Libianca — People", "xdg-open "
+               "https://youtu.be/hqXDTkFzCfQ", detach=True),
+        Action("Reference: Becky G + Peso Pluma — CHANEL", "xdg-open "
+               "https://youtu.be/b2wQtu9YnWk", detach=True),
     ],
     "Security": [
         Action("SOP status", "arc sop status"),
@@ -4092,14 +4098,14 @@ class App:
             # DejaVu Sans for the title: JetBrains Mono has no glyph for the skull and Tk does no
             # per-character font fallback (it rendered blank space).
             return SimpleNamespace(
-                big=tkfont.Font(family="DejaVu Sans", size=16, weight="bold"),
-                identity=tkfont.Font(family="DejaVu Sans", size=9),
-                label=tkfont.Font(family="DejaVu Sans", size=10, weight="bold"),
-                small=tkfont.Font(family="DejaVu Sans", size=9),
-                mono=tkfont.Font(family="JetBrains Mono", size=10),
-                nav=tkfont.Font(family="DejaVu Sans", size=10))
+                big=tkfont.Font(family="DejaVu Sans", size=18, weight="bold"),
+                identity=tkfont.Font(family="DejaVu Sans", size=11),
+                label=tkfont.Font(family="DejaVu Sans", size=13, weight="bold"),
+                small=tkfont.Font(family="DejaVu Sans", size=12),
+                mono=tkfont.Font(family="JetBrains Mono", size=12),
+                nav=tkfont.Font(family="DejaVu Sans", size=12))
         except Exception:
-            d = tkfont.Font(size=10)
+            d = tkfont.Font(size=12)
             return SimpleNamespace(big=d, identity=d, label=d, small=d, mono=d, nav=d)
 
     def _build_header(self):
@@ -4813,14 +4819,18 @@ class App:
                  "Audacity: launch audio editor", "Mixxx: launch DJ decks",
                  "Markdown: launch ReText", "Guide: Reborn beat baby steps",
                  "Guide: studio quick start",
+                 "Guide: YouTube listening exercises",
                  "Template: event cue sheet", "Tutorial: Audacity recording and editing",
                  "Guide: Mixxx hardware and headphone cueing", "iPhone: GarageBand for iOS",
                  "Reference: Lorde — Hammer",
-                 "Tutorial: Reborn beat-making video"} <= wired["Studio"]
+                 "Tutorial: Reborn beat-making video",
+                 "Reference: Libianca — People",
+                 "Reference: Becky G + Peso Pluma — CHANEL"} <= wired["Studio"]
             and all(shutil.which(cmd) for cmd in ("arc", "arc-sop", "arc-waydroid", "adb", "uad-ng", "flatpak"))
             and (HOME / "khaos-lab/4dev-studio18/ref/Reborn_Practice_Beat.mmp").is_file()
             and (HOME / "khaos-lab/4dev-studio18/ref/Reborn_LMMS_Baby_Steps.md").is_file()
             and (STUDIO_DOC_DIR / "quick-start.md").is_file()
+            and (STUDIO_DOC_DIR / "youtube-listening-exercises.md").is_file()
             and (STUDIO_DOC_DIR / "event-cue-sheet-template.md").is_file()
             and all(shutil.which(cmd) for cmd in ("mixxx", "retext"))
         )

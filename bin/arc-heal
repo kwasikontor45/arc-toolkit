@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# arc-heal — self-healing watchdog for the real architecture (Cloudflare,
-# local machine). Standalone: no dependency on the arc script or any other
-# object — safe to delete alone, safe to run alone.
+# arc-heal — self-healing watchdog for local services and configured projects.
+# Standalone: no dependency on the arc script or any other custom object.
 #
-# AWS wiring fully removed 2026-08-17 -- py-bite (the only AWS workload) was
-# migrated off to PythonAnywhere and the EC2 instance terminated. No more
-# --profile arc-killswitch calls, no EC2 lookups, no py-bite SSH key anywhere
-# in this file.
+# AWS SSH allowlist drift is a separate, guarded check: it runs only over the
+# pinned home Wi-Fi with VPN/tunnels/proxies and custom DNS inactive, and
+# changes only the tracked Terraform source. `--ip-only` runs that check alone;
+# it never invokes unrelated workstation, VPN, or DNS healing.
 #
 # Philosophy (deliberately NOT Chaos Monkey): this never breaks anything on
 # its own. It checks real state, fixes what's safe and mechanical to fix

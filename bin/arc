@@ -4460,6 +4460,7 @@ cmd_help_full() {
   echo -e "  ${D}arc ${C}soc-lab start/stop/restart/logs${N}  ${M}manage the Splunk lab container (docker compose under the hood)${N}"
   echo -e "  ${D}arc ${C}aws-status${N}             ${M}quick combined snapshot -- all three cloud instances (gvm/soclab/wazuh) + budget spend${N}"
   echo -e "  ${D}arc ${C}aws-guardrails${N}         ${M}read-only audit: identity, instance metadata, ingress, EBS encryption/snapshots, spend, alarms${N}"
+  echo -e "  ${D}arc ${C}aws-ip-check${N}          ${M}read-only compare of current public egress with SSH allowlists on the lab security groups${N}"
   echo -e "  ${D}arc ${C}aws-keep ${W}<gvm|soclab|wazuh> <on|off>${N}  ${M}on bypasses arc-heal's 6h backstop only; CloudWatch can still stop it (tag clears when stopped)${N}"
   echo -e "  ${D}arc ${C}wazuh cloud-start|stop|status|open${N}  ${M}wazuh-cloud (Wazuh SIEM, on-demand EC2)${N}"
   echo -e "  ${D}arc ${C}wazuh otx-sync${N}          ${M}pull AlienVault OTX pulses into wazuh-cloud's threat-intel lists${N}"
@@ -5764,6 +5765,122 @@ cmd_aws_status() {
   echo -e "\n$HR"
 }
 
+cmd_aws_ip_check() {
+  # Read-only drift monitor. It deliberately does not repair AWS ingress or
+  # invoke Terraform. A mismatch means current egress is not in the lab SSH
+  # allowlist; it does not prove this is the home ISP address.
+  _aws_lab_conf || { echo -e "$HR"; return 1; }
+  echo -e "$HR"
+  echo -e "  ${C}${B}arc aws-ip-check${N}  —  current egress vs AWS lab SSH rules (read-only)"
+  echo -e "$HR\n"
+
+  local route_line route_dev tunnel_route ip_a ip_b current_ip
+  route_line=$(ip -4 route get 1.1.1.1 2>/dev/null | head -1)
+  route_dev=$(sed -n 's/.* dev \([^ ]*\).*/\1/p' <<< "$route_line")
+  tunnel_route="no"
+  [[ "$route_dev" =~ ^(proton|wg|tun|tailscale|zt) ]] && tunnel_route="yes"
+  [[ -n "$(ip -o link show type wireguard 2>/dev/null)" ]] && tunnel_route="yes"
+  [[ -n "${https_proxy:-}${HTTPS_PROXY:-}${all_proxy:-}${ALL_PROXY:-}" ]] && tunnel_route="yes"
+
+  ip_a=$(curl -4fsS --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]')
+  ip_b=$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null | tr -d '[:space:]')
+  if [[ -z "$ip_a" || "$ip_a" != "$ip_b" ]] \
+      || ! python3 -c 'import ipaddress,sys; a=ipaddress.ip_address(sys.argv[1]); raise SystemExit(a.version != 4)' "$ip_a" 2>/dev/null; then
+    echo -e "  ${Y}UNKNOWN${N}  public IPv4 checks failed or disagreed; no AWS rules were read or changed"
+    echo -e "\n  ${D}Read-only: this command never changes AWS, VPN, DNS, or Terraform state.${N}\n$HR"
+    return 1
+  fi
+  current_ip="$ip_a"
+  echo -e "  ${C}current public egress${N}  ${current_ip}"
+  if [[ -n "$route_dev" ]]; then
+    if [[ "$tunnel_route" == "yes" ]]; then
+      echo -e "  ${Y}route${N}  ${route_dev} (tunnel detected; this may not be your home ISP address)"
+    else
+      echo -e "  ${G}route${N}  ${route_dev} (direct-route candidate; home identity is not independently attested)"
+    fi
+  else
+    echo -e "  ${Y}route${N}  unknown; cannot classify this egress as home"
+    tunnel_route="yes"
+  fi
+
+  local pair label iid groups sg permissions result matches open
+  local checked=0 failed=0 matched=0 world_open=0
+  local -A seen=()
+  for pair in "gvm-cloud:$GVM_INSTANCE_ID" "soclab-cloud:$SOCLAB_INSTANCE_ID" "wazuh-cloud:${WAZUH_INSTANCE_ID:-}"; do
+    label=${pair%%:*}; iid=${pair#*:}; [[ -z "$iid" ]] && continue
+    groups=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
+      --query 'Reservations[0].Instances[0].SecurityGroups[].GroupId' --output text 2>/dev/null) || groups="ERROR"
+    if [[ -z "$groups" || "$groups" == "None" || "$groups" == "ERROR" ]]; then
+      echo -e "  ${Y}UNKNOWN${N}  ${label}: attached security groups unavailable"
+      ((failed += 1))
+      continue
+    fi
+    for sg in $groups; do
+      [[ -n "${seen[$sg]:-}" ]] && continue
+      seen[$sg]=1
+      permissions=$(aws ec2 describe-security-groups --group-ids "$sg" --region "$AWS_LAB_REGION" \
+        --query 'SecurityGroups[0].IpPermissions' --output json 2>/dev/null) || permissions="ERROR"
+      if [[ "$permissions" == "ERROR" || -z "$permissions" ]]; then
+        echo -e "  ${Y}UNKNOWN${N}  ${sg}: ingress rules unavailable"
+        ((failed += 1))
+        continue
+      fi
+      result=$(python3 -c 'import ipaddress,json,sys
+try: rules=json.load(sys.stdin)
+except Exception: raise SystemExit(2)
+ip=ipaddress.ip_address(sys.argv[1]); hits=[]; opened=False
+for rule in rules or []:
+ proto=rule.get("IpProtocol"); lo=rule.get("FromPort"); hi=rule.get("ToPort")
+ try: ssh=(proto == "-1" or (proto in ("tcp","6") and lo is not None and hi is not None and int(lo) <= 22 <= int(hi)))
+ except (TypeError,ValueError): ssh=False
+ if not ssh: continue
+ for item in rule.get("IpRanges",[]):
+  try:
+   net=ipaddress.ip_network(item.get("CidrIp",""),strict=False)
+   if net.version == 4 and ip in net:
+    hits.append(str(net)); opened |= net.prefixlen == 0
+  except ValueError: pass
+print((",".join(sorted(set(hits))) or "-") + "\t" + ("yes" if opened else "no"))' "$current_ip" <<< "$permissions" 2>/dev/null) || result="ERROR"
+      if [[ "$result" == "ERROR" ]]; then
+        echo -e "  ${Y}UNKNOWN${N}  ${sg}: could not interpret ingress rules"
+        ((failed += 1))
+        continue
+      fi
+      IFS=$'\t' read -r matches open <<< "$result"
+      ((checked += 1))
+      if [[ "$matches" != "-" && -n "$matches" ]]; then
+        if [[ "$open" == "yes" ]]; then
+          echo -e "  ${R}REVIEW${N}  ${sg} includes current egress through SSH ingress: ${matches}"
+        else
+          ((matched += 1))
+          echo -e "  ${G}MATCH${N}  ${sg} allows current egress on SSH (22/tcp): ${matches}"
+        fi
+      else
+        echo -e "  ${R}DRIFT${N}  ${sg} has no SSH (22/tcp) range containing current egress"
+      fi
+      if [[ "$open" == "yes" ]]; then
+        ((world_open += 1))
+        echo -e "    ${R}REVIEW${N}  SSH includes 0.0.0.0/0; a match here is not a safe home-IP allowlist"
+      fi
+    done
+  done
+
+  if (( checked == 0 || failed > 0 )); then
+    echo -e "\n  ${Y}INCOMPLETE${N}  checked ${checked} security group(s); ${failed} lookup(s) unavailable"
+  elif [[ "$tunnel_route" == "yes" ]]; then
+    echo -e "\n  ${Y}INCONCLUSIVE${N}  SSH comparison used tunnel/unknown routing; do not treat egress as the home ISP IP"
+  elif (( matched > 0 && world_open == 0 )); then
+    echo -e "\n  ${G}MATCH${N}  current direct-route candidate is covered by a restricted lab SSH rule"
+  elif (( world_open > 0 )); then
+    echo -e "\n  ${R}REVIEW${N}  current egress matches a world-open SSH rule; tighten ingress before treating this as healthy"
+  else
+    echo -e "\n  ${R}DRIFT${N}  current direct-route candidate is not covered by the inspected lab SSH rules"
+  fi
+  echo -e "  ${D}No AWS or Terraform mutation was attempted. This is an egress comparison, not proof of home-network identity.${N}"
+  echo -e "\n$HR"
+  (( checked > 0 && failed == 0 ))
+}
+
 cmd_aws_guardrails() {
   # Read-only operator audit for the on-demand AWS lab. Keep this narrow to
   # the three configured lab instances; never applies Terraform or changes AWS.
@@ -6539,6 +6656,7 @@ case "${1:-}" in
   soc-lab)        cmd_soclab "${@:2}" ;;
   aws-status)     cmd_aws_status ;;
   aws-guardrails) cmd_aws_guardrails ;;
+  aws-ip-check)   cmd_aws_ip_check ;;
   aws-keep)       cmd_aws_keep "${@:2}" ;;
   verify-not-scaffold) ~/.local/bin/arc-verify-not-scaffold "${@:2}" ;;
   gvm)            cmd_gvm "${@:2}" ;;

@@ -920,6 +920,7 @@ CATEGORIES = {
     # the old AWS account 2026-08-17; py-bite is on PythonAnywhere now.)
     "Cloud": [
         Action("AWS: guardrail audit (read-only)", "arc aws-guardrails", timeout=60),
+        Action("AWS: current IP / SSH allowlist check (read-only)", "arc aws-ip-check", timeout=45),
         Action("AWS: instance and budget snapshot", "arc aws-status", timeout=40),
         Action("AWS: inventory records", "arc inv list cloud-instance"),
         Action("AWS: check inventory drift (read-only)", "arc inv drift", timeout=30),

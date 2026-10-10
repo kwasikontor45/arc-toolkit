@@ -336,7 +336,8 @@ cmd_install_autostart() {
       echo -e '\nsource "$HOME/.config/arc/shell-init.sh"' >> "$rc"
   done
   mkdir -p "$HOME/.config/arc"
-  cp "$REPO"/config/greeting.sh "$REPO"/config/shell-init.sh "$REPO"/config/motd "$HOME/.config/arc/"
+  cp "$REPO"/config/greeting.sh "$REPO"/config/shell-init.sh "$REPO"/config/motd \
+    "$REPO"/config/word-of-day.json "$HOME/.config/arc/"
   echo "  ${G}✓${N}  shell greeting wired into .bashrc/.zshrc"
 }
 

@@ -301,16 +301,16 @@ def print_rule(name: str, passed: bool, message: str):
 def _circadian_phase():
     hour = datetime.now().hour
     if 6 <= hour < 11:
-        return "choice", "#80b9c9"
+        return "choice", "#5ec8ed"
     if 11 <= hour < 17:
-        return "desire", "#d8b375"
+        return "desire", "#f6c177"
     if 17 <= hour < 21:
-        return "still-pine", "#a2c6a5"
-    return "nyx", "#b391a0"
+        return "still-pine", "#c4a7e7"
+    return "nyx", "#ea9a97"
 
 
 def print_gate_banner(opened: bool, compact: bool = False, stream=None):
-    """Render a small, phase-aware access signal without changing gate policy."""
+    """Render a compact, phase-aware terminal welcome without changing policy."""
     stream = sys.stdout if stream is None else stream
     now_local = datetime.now()
     phase, accent = _circadian_phase()
@@ -321,25 +321,29 @@ def print_gate_banner(opened: bool, compact: bool = False, stream=None):
 
     rgb = tuple(int(accent[i:i + 2], 16) for i in (1, 3, 5))
     phase_color = f"38;2;{rgb[0]};{rgb[1]};{rgb[2]}"
-    state_color = "1;32" if opened else "1;31"
-    state = "OPEN" if opened else "LOCKED"
-    mark = paint(")(  )(", phase_color)
-    status = paint(f"SOP ACCESS · {state}", state_color)
-    print(f"{mark}  {status}  {paint('· ' + phase, phase_color)}", file=stream)
+    state_color = "1;32" if opened else "1;33"
+    state = "READY" if opened else "LOCKED"
+    phase_label = phase.upper()
+    mark = paint(")(  )(  ARC", phase_color)
+    print(f"{mark}  {paint('· ' + phase_label, phase_color)}", file=stream)
+    print(paint(f"+-- {now_local:%a %d %b %Y} · {now_local:%H:%M} --+", "2"), file=stream)
+    print(paint(f"| SOP GATE: {state}", state_color), file=stream)
+    if not opened:
+        print(paint("| Next: read > accept > begin", phase_color), file=stream)
+    print(paint("+------------------------------+", "2"), file=stream)
     if compact:
         return
 
     print(paint("Recognize · construct · visualize · analyze · interpret", "2"), file=stream)
-    print(paint(f"lt · {_current_username()} · arc", phase_color)
-          + paint(f"  ·  {now_local:%a %d %b %Y}  ·  {now_local:%H:%M}  ·  {phase}", "2"), file=stream)
+    print(paint(f"lt · {_current_username()} · arc", phase_color), file=stream)
     if opened:
         print(paint("I WWSJD · II Right & tight · III Swiss cheese", phase_color), file=stream)
         print(paint("IV Trust but verify · V Operate in the light · VI Leave it cleaner · VII Inevitable", phase_color), file=stream)
         print(paint(f"Full principles: {MO_FILE}", "2"), file=stream)
     else:
-        print("Read the full GAMEPLAN context, SOT, and all MOs before starting a task.", file=stream)
-        print(f"Sources: {INTEL_OPS / 'GAMEPLAN.md'} · {SOT_FILE} · {MO_FILE}", file=stream)
-        print('Then: arc-sop start "<task>"', file=stream)
+        print("Read the complete context and all seven principles before work.", file=stream)
+        print_reading_guide(stream=stream, reader_hint=False)
+        print('Then: arc-sop start "<short task>"', file=stream)
 
 
 # ---------------------------------------------------------------------------
@@ -402,18 +406,21 @@ def cmd_ack():
     return 2
 
 
-def print_reading_guide():
-    """Give a compact, readable path to the complete policy sources."""
-    print("Read the full context and policy before accepting:")
-    print(f"  {INTEL_OPS / 'GAMEPLAN.md'}")
-    print(f"  {SOT_FILE}")
-    print(f"  {MO_FILE}")
+def print_reading_guide(stream=None, reader_hint=True):
+    """Point directly to the authoritative files, with an optional reader hint."""
+    stream = sys.stdout if stream is None else stream
+    print("Read these full files:", file=stream)
+    print(f"  {INTEL_OPS / 'GAMEPLAN.md'}", file=stream)
+    print(f"  {SOT_FILE}", file=stream)
+    print(f"  {MO_FILE}", file=stream)
+    if not reader_hint:
+        return
     if shutil.which("batcat"):
-        print("Reader: batcat --theme='Catppuccin Mocha' --paging=always ~/dev-notes/intel-ops/{GAMEPLAN.md,SOT.md,MO.md}")
+        print("Read with: batcat <full-path>  (or less <full-path>)", file=stream)
     elif shutil.which("bat"):
-        print("Reader: bat --paging=always ~/dev-notes/intel-ops/{GAMEPLAN.md,SOT.md,MO.md}")
+        print("Read with: bat <full-path>  (or less <full-path>)", file=stream)
     else:
-        print(f"Reader: less {INTEL_OPS / 'GAMEPLAN.md'}")
+        print("Read with: less <full-path>  (or cat <full-path>)", file=stream)
 
 
 def cmd_ack_auto(script_name: str):
@@ -618,8 +625,10 @@ def cmd_gate_status():
 def cmd_gate_hint():
     """Compact read-only locked-state display for the interactive shell guard."""
     print_gate_banner(False, compact=True, stream=sys.stderr)
-    print("Read GAMEPLAN context, full SOT, and every MO; then: arc-sop start \"<task>\".", file=sys.stderr)
-    print(f"Sources: {INTEL_OPS / 'GAMEPLAN.md'} · {SOT_FILE} · {MO_FILE}", file=sys.stderr)
+    print(f"Read: {INTEL_OPS / 'GAMEPLAN.md'}", file=sys.stderr)
+    print(f"      {SOT_FILE}", file=sys.stderr)
+    print(f"      {MO_FILE}", file=sys.stderr)
+    print('Then: arc-sop start "<short task>"', file=sys.stderr)
     return 0
 
 
@@ -647,12 +656,12 @@ def cmd_gate_check() -> bool:
 
     missing = []
     if not gp_ok:
-        missing.append("GAMEPLAN.md missing this session's [STARTING] entry")
+        missing.append("today's task entry")
     if not ack_ok:
-        missing.append(f"no current SOT+all-MO acceptance for '{aid}' session '{sid}'")
+        missing.append("current policy acceptance")
     print_gate_banner(False, compact=True)
-    print(f"{R}gate NOT satisfied: {'; '.join(missing)}{N}")
-    print_reading_guide()
+    print(f"Needs: {' + '.join(missing)}")
+    print_reading_guide(reader_hint=False)
     print('After reading, run: arc-sop start "<short task description>"')
     return False
 

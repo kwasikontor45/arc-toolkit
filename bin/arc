@@ -4409,6 +4409,77 @@ cmd_users() {
   esac
 }
 
+# ── Word of the day ───────────────────────────────────────────────────────────
+# Local, fixed-format data only. No network requests, shell evaluation, or user
+# state. The panel consumes the same bounded JSON interface as the terminal.
+cmd_word() {
+  local mode="compact"
+  while (( $# )); do
+    case "$1" in
+      --compact) mode="compact" ;;
+      --json) mode="json" ;;
+      *) echo "usage: arc word [--compact|--json]" >&2; return 2 ;;
+    esac
+    shift
+  done
+  ARC_WORD_DATA_FILE="${ARC_WORD_DATA_FILE:-$HOME/.config/arc/word-of-day.json}" \
+    python3 - "$mode" <<'PY'
+import datetime
+import json
+import os
+import re
+import stat
+import sys
+
+path = os.environ.get("ARC_WORD_DATA_FILE", "")
+try:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_size > 32768:
+        os.close(fd)
+        raise ValueError("invalid word data file")
+    with os.fdopen(fd, "r", encoding="utf-8") as source:
+        data = json.load(source)
+    if (not isinstance(data, dict) or set(data) != {"schema_version", "anchor_date", "entries"}
+            or data["schema_version"] != 1 or not isinstance(data["entries"], list)
+            or not 1 <= len(data["entries"]) <= 64
+            or not isinstance(data["anchor_date"], str)
+            or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", data["anchor_date"])):
+        raise ValueError("invalid word data schema")
+    anchor = datetime.date.fromisoformat(data["anchor_date"])
+    today_text = os.environ.get("ARC_WORD_DATE", "")
+    today = datetime.date.fromisoformat(today_text) if today_text else datetime.date.today()
+    safe_entries = []
+    word_re = re.compile(r"[a-z][a-z'-]{0,31}\Z")
+    pron_re = re.compile(r"[a-z][a-z '-]{0,59}\Z")
+    def_re = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ,;:'-]{0,138}[.!?]?\Z")
+    parts = {"noun", "verb", "adjective", "adverb"}
+    for item in data["entries"]:
+        if not isinstance(item, dict) or set(item) != {
+                "word", "pronunciation", "part_of_speech", "definition"}:
+            raise ValueError("invalid word entry")
+        word, pron, part, definition = (item.get(k) for k in
+                                        ("word", "pronunciation", "part_of_speech", "definition"))
+        if (not all(isinstance(v, str) for v in (word, pron, part, definition))
+                or not word_re.fullmatch(word) or not pron_re.fullmatch(pron)
+                or part not in parts or len(definition) > 140
+                or not def_re.fullmatch(definition)):
+            raise ValueError("unsafe word entry")
+        safe_entries.append({"word": word, "pronunciation": pron,
+                             "part_of_speech": part, "definition": definition})
+    index = (today - anchor).days % len(safe_entries)
+    result = {"date": today.isoformat(), **safe_entries[index]}
+    if sys.argv[1] == "json":
+        print(json.dumps(result, ensure_ascii=True, separators=(",", ":")))
+    else:
+        print(f"{result['word']} / {result['pronunciation']} · "
+              f"{result['part_of_speech']} · {result['definition']}")
+except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+    # Quietly fail closed: the shell greeting and dashboard remain usable.
+    pass
+PY
+}
+
 # ── Help ───────────────────────────────────────────────────────────────────────
 cmd_help_full() {
   echo -e "$HR"
@@ -4427,6 +4498,7 @@ cmd_help_full() {
   echo -e "  ${D}arc ${C}stop${N}                  ${M}end-of-day: kill servers, backup, unmount USB${N}"
   echo -e "  ${D}arc ${C}notify${N}                ${M}open notification history (or: status, tts-on, tts-off)${N}"
   echo -e "  ${D}arc ${C}break${N}                 ${M}break timer — start · stop · status · snooze [N] · skip · config · gui${N}"
+  echo -e "  ${D}arc ${C}word${N}                  ${M}offline word of the day  ·  --json for panel integration${N}"
   echo -e "  ${D}arc ${C}sop ack${N}               ${M}acknowledge SOPs for this session${N}"
   echo -e "  ${D}arc ${C}sop baseline${N}          ${M}record current SOP file hashes into local DB${N}"
   echo -e "  ${D}arc ${C}sop verify${N}            ${M}compare current SOP files against baseline${N}"
@@ -6654,6 +6726,7 @@ case "${1:-}" in
   ref)            cmd_ref "${2:-}" ;;
   find)           cmd_find "${2:-}" ;;
   book)           cmd_book "${2:-}" ;;
+  word)           cmd_word "${@:2}" ;;
   site)           cmd_site "${@:2}" ;;
   inv|inventory)  "$HOME/.local/bin/arc-inv" "${@:2}" ;;
   emoji)          cmd_emoji "${2:-}" "${@:3}" ;;

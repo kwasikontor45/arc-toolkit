@@ -1720,8 +1720,12 @@ class TileView(View):
             return
         width = getattr(event, "width", self.frame.winfo_width())
         cols = 1 if width < 560 else 2 if width < 980 else 3
+        banner = getattr(self, "_tile_banner", None)
+        row_offset = 1 if banner is not None else 0
+        if banner is not None:
+            banner.grid(row=0, column=0, columnspan=cols, padx=8, pady=(4, 2), sticky="ew")
         for i, tile in enumerate(self._tile_frames):
-            tile.grid(row=i // cols, column=i % cols, padx=8, pady=8, sticky="nsew")
+            tile.grid(row=i // cols + row_offset, column=i % cols, padx=8, pady=8, sticky="nsew")
         for col in range(max(cols, getattr(self, "_tile_cols", 0))):
             self.frame.grid_columnconfigure(col, weight=1 if col < cols else 0,
                                             uniform="tiles" if col < cols else "")
@@ -2183,6 +2187,10 @@ class StatusView(TileView):
 
     def build(self):
         super().build()
+        self._build_word_banner()
+        self._layout_tiles(SimpleNamespace(width=max(self.frame.winfo_width(), 600)))
+        self.poll('status-word-of-day', 60000, self.read_word_of_day, self.apply_word_of_day)
+        self.kick('status-word-of-day')
         self.poll('status-calendar-live', 2000, self.calendar_status, self.apply_calendar_status)
         self.poll('status-lt-live', 5000,
                   lambda: lt_status_text(read_lt_board()), self.apply_lt_status)
@@ -2198,6 +2206,62 @@ class StatusView(TileView):
         ui.button(audio_tile, 'Open audio controls', command=lambda: self.app.select('Audio'),
                   font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
                   padx=12, pady=5).pack(anchor='w', padx=10, pady=(0, 8))
+
+    def _build_word_banner(self):
+        self._tile_banner, inner = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16)
+        accent = tk.Frame(inner, bg=self.app.phase_accent, height=1)
+        accent.pack(fill="x")
+        self.app.phase_lines.append(accent)
+        self.word_label = tk.Label(inner, text="word of the day · loading", font=self.app.f.small,
+                                   bg=OVERLAY, fg=FG_MUTED, anchor="w", justify="left")
+        self.word_label.pack(fill="x", padx=11, pady=7)
+        inner.bind("<Configure>", lambda event: self.word_label.configure(
+            wraplength=max(event.width - 30, 120)), add="+")
+
+    def read_word_of_day(self):
+        ok, output = self.app.runner.run("arc word --json", timeout=3)
+        return self.parse_word_payload(output) if ok else None
+
+    @staticmethod
+    def parse_word_payload(output):
+        if not isinstance(output, str) or len(output) > 512:
+            return None
+        try:
+            entry = json.loads(output)
+            expected = {"date", "word", "pronunciation", "part_of_speech", "definition"}
+            if not isinstance(entry, dict) or set(entry) != expected:
+                return None
+            limits = {"date": 10, "word": 32, "pronunciation": 60,
+                      "part_of_speech": 10, "definition": 140}
+            for key, limit in limits.items():
+                value = entry[key]
+                if (not isinstance(value, str) or not value or len(value) > limit
+                        or not value.isascii() or not value.isprintable()):
+                    return None
+            if (not re.fullmatch(r"\d{4}-\d{2}-\d{2}", entry["date"])
+                    or not re.fullmatch(r"[a-z][a-z'-]{0,31}", entry["word"])
+                    or not re.fullmatch(r"[a-z][a-z '\-]{0,59}", entry["pronunciation"])
+                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ,;:'-]{0,138}[.!?]?",
+                                        entry["definition"])
+                    or entry["part_of_speech"] not in {"noun", "verb", "adjective", "adverb"}):
+                return None
+            datetime.strptime(entry["date"], "%Y-%m-%d")
+            return entry
+        except (ValueError, TypeError, KeyError):
+            return None
+
+    def apply_word_of_day(self, entry):
+        if not self.alive():
+            return
+        if not entry:
+            self.word_label.configure(text="word of the day · unavailable", fg=FG_MUTED)
+            return
+        day = datetime.strptime(entry["date"], "%Y-%m-%d").strftime("%b %d")
+        part = {"adjective": "adj.", "adverb": "adv."}.get(
+            entry["part_of_speech"], entry["part_of_speech"])
+        self.word_label.configure(
+            text=f"{day}  ·  {entry['word']} / {entry['pronunciation']}  ·  {part}  ·  {entry['definition']}",
+            fg=self.app.phase_accent)
 
     def calendar_status(self):
         try:
@@ -4691,16 +4755,25 @@ class App:
             filter_ok = False
         self.select("Status")
         layouts = []
+        word_ui_ok = False
         if isinstance(self.view, TileView):
+            word_entry = self.view.read_word_of_day()
+            self.view.apply_word_of_day(word_entry)
+            word_ui_ok = bool(word_entry and word_entry["word"] in
+                              self.view.word_label.cget("text"))
+            banner_spans = []
             for width, expected in ((400, 1), (760, 2), (1100, 3)):
                 self.view._layout_tiles(SimpleNamespace(width=width))
                 cols = max((w.grid_info().get("column", 0) for w in self.view._tile_frames), default=0) + 1
                 layouts.append(cols == expected)
+                banner_spans.append(self.view._tile_banner.grid_info().get("columnspan") == expected)
+            word_ui_ok = word_ui_ok and all(banner_spans)
         self._on_root_configure(SimpleNamespace(widget=self.root, width=650))
         nav_narrow = not self._sidebar_visible and self._sidebar_auto_hidden
         self._on_root_configure(SimpleNamespace(widget=self.root, width=900))
         nav_wide = self._sidebar_visible and not self._sidebar_auto_hidden
         print(f"  responsive tile layouts  {'ok' if all(layouts) else 'FAILED'} ({layouts})")
+        print(f"  offline daily word       {'ok' if word_ui_ok else 'FAILED'} (provider + responsive banner)")
         print(f"  workspace filter         {'ok' if filter_ok else 'FAILED'}")
         print(f"  adaptive navigation      {'ok' if nav_narrow and nav_wide else 'FAILED'}")
         self.select("Status")
@@ -4802,7 +4875,7 @@ class App:
                    and recovery_action_available and len(blocked_events) == 2)
         print(f"  SOP operation gate        {'ok' if gate_ok else 'FAILED'} (locked ops denied; setup retained)")
         bad = (self.errors or leaked or not gate_ok or not filter_ok or not all(layouts)
-               or not route_picker_ok or not fullscreen_ok
+               or not word_ui_ok or not route_picker_ok or not fullscreen_ok
                or not (nav_narrow and nav_wide) or not integration_ok)
         print("  " + ("FAILED" if bad else "all views built with no callback errors"))
         for e in self.errors:

@@ -55,6 +55,13 @@ _arc_greeting() {
   echo -e "  ${C}${B}lt${N}  ${D}·${N}  ${M}$(whoami)${N}  ${D}·${N}  ${ART}arc${N}"
   echo -e "      ${M}$(date '+%a %d %b %Y')${N}  ${D}·${N}  ${C}$(date '+%H:%M')${N}  ${D}·${N}  ${ART}${_phase}${N}"
 
+  # Daily word comes from a small local Arc dataset. Suppress a missing/bad
+  # source so it can never disrupt shell startup; no network or user data.
+  local word_line
+  word_line=$(command arc word --compact 2>/dev/null)
+  [[ -n "$word_line" ]] && printf '  %b[✧]%b %bword%b····················%b%s%b\n' \
+    "$D" "$N" "$C" "$N" "$D" "$word_line" "$N"
+
   # ── Motd ─────────────────────────────────────────────────────────────────────
   local MOTD_FILE="$HOME/.config/arc/motd"
   if [[ -f "$MOTD_FILE" ]]; then

@@ -81,6 +81,16 @@ The **Studio** workspace launches the installed LMMS and Audacity Flatpaks, Mixx
 
 The command center adapts its workspace cards and status tiles from one to three columns as the content width changes. Its menu can be tucked away for a narrow window, and action-heavy workspaces have a local filter in addition to global quick-jump. Output remains in a user-resizable lower pane.
 
+### Offline word of the day
+
+`arc word` displays one locally bundled, short-form word entry; `arc word --json` is the
+read-only data interface used by Khaos Lab. The terminal greeting and Status workspace share
+that interface. Entries are locally authored plain text, selected deterministically by local
+calendar date, with `algid` anchored to 2026-10-10. There is no runtime network access, telemetry,
+notification, or system/user-data access. The command validates the small JSON catalog and emits
+nothing if it is absent or malformed. `arc sot install-autostart` installs/refreshes the catalog
+alongside the terminal greeting.
+
 `sudoers/arc-waydroid` grants only the exact Waydroid unit start/stop/mask/unmask commands and fixed device-mode restoration commands used by Stop. Waydroid is a shared-kernel container, not a VM; while it runs, its standard startup widens access to host device nodes. The vanilla image has no Google apps, and no shared host folders are configured.
 
 GVM database exports from `arc gvm cloud-stop` are stored on the encrypted USB vault at `/mnt/storage/Persistent/khaos-lab/gvm-lab/backups/`. The command refuses to stop the cloud lab when that backup destination is unavailable, so large cloud dumps do not accumulate on the workstation disk.

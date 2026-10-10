@@ -324,11 +324,14 @@ def play_sound(sound_file, volume_percent=50):
 
 
 def _wake_sink():
-    """Play ~0.5s of silence so the output device is open and powered before
-    real audio arrives. A SUSPENDED sink (right after boot, or once idled)
-    swallowed the first notification's speech entirely -- it only spoke if
-    something else had played audio just before. Called in parallel with
-    piper's synthesis (seconds long), so it costs no added latency."""
+    """Open the Arc Pine output stream before the first chime or speech.
+
+    PipeWire can leave the hardware sink SUSPENDED after boot or idle. A
+    generic, fire-and-forget paplay did not reliably wake it, so use Arc
+    Pine's own client identity and wait for the short silent stream to finish.
+    The bounded wait happens on the audio worker, never the notification
+    monitor's D-Bus loop.
+    """
     path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -338,21 +341,33 @@ def _wake_sink():
             w.setsampwidth(2)
             w.setframerate(22050)
             w.writeframes(b"\x00\x00" * 11025)
-        subprocess.run(["paplay", path], capture_output=True, timeout=5)
-    except Exception:
-        pass
+        stream_name = f"Arc Pine silent wake {os.getpid()}-{threading.get_ident()}"
+        result = subprocess.run(
+            ["paplay", f"--client-name={PAPLAY_CLIENT}", f"--stream-name={stream_name}",
+             f"--property=application.name={PAPLAY_CLIENT}", path],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode:
+            raise RuntimeError("silent output wake failed")
+        return True
+    except Exception as error:
+        logging.warning('Arc Pine output wake failed: %s', type(error).__name__)
+        return False
     finally:
         if path:
             Path(path).unlink(missing_ok=True)
 
 
-def speak(text, volume_percent=50):
+def speak(text, volume_percent=50, *, sink_ready=False):
     if not PIPER_BIN.exists() or not PIPER_VOICE.exists():
         logging.warning('Arc Pine speech unavailable: Piper binary or voice missing')
         return
     if not text.strip():
         return
-    threading.Thread(target=_wake_sink, daemon=True).start()
+    wake_thread = None
+    if not sink_ready:
+        wake_thread = threading.Thread(target=_wake_sink, daemon=True)
+        wake_thread.start()
     wav_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -363,6 +378,10 @@ def speak(text, volume_percent=50):
         )
         if Path(wav_path).stat().st_size <= 44:
             raise RuntimeError('Speech synthesis produced no audio')
+        if wake_thread is not None:
+            # Keep Piper synthesis parallel with the wake, but never race the
+            # actual speech against a sink that has not finished waking.
+            wake_thread.join()
         stream_name = f"Arc Pine speech {os.getpid()}-{threading.get_ident()}"
         _paplay_force_unmuted(wav_path, _volume_arg(volume_percent), stream_name)
     except Exception as error:
@@ -385,6 +404,9 @@ def emit_audio(sound_file, speak_text, audio_volume_percent=50):
     with _AUDIO_LOCK, (DATA_DIR / 'audio.lock').open('a') as guard:
         fcntl.flock(guard, fcntl.LOCK_EX)
         try:
+            has_sound = bool(sound_file and Path(sound_file).exists())
+            if has_sound or speak_text:
+                _wake_sink()
             if sound_file:
                 try:
                     play_sound(sound_file, audio_volume_percent)
@@ -393,7 +415,7 @@ def emit_audio(sound_file, speak_text, audio_volume_percent=50):
             if speak_text:
                 muted = _duck_other_streams()
                 try:
-                    speak(speak_text, audio_volume_percent)
+                    speak(speak_text, audio_volume_percent, sink_ready=True)
                 finally:
                     _restore_ducked(muted)
         finally:

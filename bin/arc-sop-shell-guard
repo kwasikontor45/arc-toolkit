@@ -84,6 +84,9 @@ if __name__ == "__main__":
                 )
         except Exception:
             pass
-    print("SOP gate: command blocked. Read GAMEPLAN.md, SOT.md, and every MO in MO.md under ~/dev-notes/intel-ops. Use `less <full-path>`, `batcat <full-path>` (if installed), or `cat <full-path>`, then run `arc-sop start \"<short task>\"`.",
+    color = sys.stderr.isatty() and "NO_COLOR" not in os.environ
+    lock = "\033[1;35mSOP LOCKED\033[0m" if color else "SOP LOCKED"
+    step = "\033[1;36mRead\033[0m" if color else "Read"
+    print(f"{lock} · {step} GAMEPLAN.md, SOT.md, all MOs; then run arc-sop start \"<task>\".",
           file=sys.stderr)
     raise SystemExit(1)

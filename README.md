@@ -17,6 +17,11 @@ the readiness checks without waiting for keyboard input. Start each work session
 command `arc-sop start "<task>"`; it records the daily GAMEPLAN start when needed and acknowledges
 the current agent or terminal session. Interactive Bash/zsh terminals use the shared shell guard;
 Codex uses its PreToolUse hook, and the Khaos Lab panel checks the same session-scoped gate.
+In Konsole, tabs in one running app instance share the same human acceptance; closing and
+reopening Konsole or restarting the workstation starts a fresh session. A locked shell prints a
+short prompt. `arc-sop start "<task>"` shows the policy file paths and a dark, paged `batcat`
+reader command; the complete GAMEPLAN, SOT, and all current MOs still need to be read before
+accepting. The gate no longer dumps policy text into terminal scrollback.
 The Khaos Lab panel checks that same session-scoped gate before running action buttons, opening the
 inventory editor, or clearing logs. Read-only dashboards and document views stay available while
 locked. The SOP workspace can read the latest GAMEPLAN/SOT, run compliance checks, and use

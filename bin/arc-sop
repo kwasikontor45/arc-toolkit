@@ -228,6 +228,19 @@ def session_id() -> str:
     )
     if sid:
         return sid[:64]
+    # Konsole gives every tab a different tty and DBus session path, even
+    # though tabs in one running Konsole app share the same DBus service.
+    # Scope a human's lease to that service instance so tabs in the app do not
+    # relock independently. The service name changes when Konsole exits; the
+    # boot id prevents accidental reuse after a workstation restart.
+    konsole_service = os.environ.get("KONSOLE_DBUS_SERVICE", "").strip()
+    if konsole_service:
+        try:
+            boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()[:8]
+        except OSError:
+            boot_id = "unknown"
+        desktop_session = os.environ.get("XDG_SESSION_ID", "unknown")[:16]
+        return f"konsole:{konsole_service}:{desktop_session}:{boot_id}"[:64]
     try:
         tty = os.ttyname(0)
     except OSError:
@@ -297,18 +310,17 @@ def cmd_ack():
 
 
 def print_reading_guide():
-    """Show exact policy paths and available, simple terminal readers."""
-    print("Read these complete sources before accepting:")
-    print(f"  GAMEPLAN context: {INTEL_OPS / 'GAMEPLAN.md'}")
-    print(f"  Source of truth:  {SOT_FILE}")
-    print(f"  Every current MO: {MO_FILE}")
-    readers = [name for name in ("batcat", "bat", "cat")
-               if shutil.which(name)]
-    print("Reader examples (use one command per file):")
-    for reader in readers or ["cat"]:
-        print(f"  {reader} {INTEL_OPS / 'GAMEPLAN.md'}")
-        print(f"  {reader} {SOT_FILE}")
-        print(f"  {reader} {MO_FILE}")
+    """Give a compact, readable path to the complete policy sources."""
+    print("Read the full context and policy before accepting:")
+    print(f"  {INTEL_OPS / 'GAMEPLAN.md'}")
+    print(f"  {SOT_FILE}")
+    print(f"  {MO_FILE}")
+    if shutil.which("batcat"):
+        print("Reader: batcat --theme='Catppuccin Mocha' --paging=always ~/dev-notes/intel-ops/{GAMEPLAN.md,SOT.md,MO.md}")
+    elif shutil.which("bat"):
+        print("Reader: bat --paging=always ~/dev-notes/intel-ops/{GAMEPLAN.md,SOT.md,MO.md}")
+    else:
+        print(f"Reader: less {INTEL_OPS / 'GAMEPLAN.md'}")
 
 
 def cmd_ack_auto(script_name: str):
@@ -384,35 +396,36 @@ def cmd_start(description: str, accepted_digest: str = ""):
         print_reading_guide()
         return 2
 
-    # Present current gameplan context before policy acceptance.
+    # Keep the command compact. The gate requires the operator to read the
+    # sources themselves; dumping hundreds of lines here obscures the action.
     if not gp.exists():
         print(f"{R}✗{N}  GAMEPLAN.md not found at {gp} -- cannot satisfy the gate")
         return 1
-    print(f"{C}── GAMEPLAN.md — current context ──{N}")
-    all_lines = gp.read_text().splitlines()
-    header_lines = [i for i, l in enumerate(all_lines) if l.startswith("## ")]
-    print("\n".join(all_lines[max(0, len(all_lines) - 80):]))
-    print(f"{D}({len(header_lines)} dated entries; read relevant prior entries in full at {gp}){N}")
-    print(f"{C}──────────────────────────{N}\n")
 
     try:
         current_digest = _policy_digest()
     except OSError as e:
         print(f"{R}✗{N} could not fingerprint current policy: {e}")
         return 1
-    if accepted_digest != current_digest:
-        # Print complete policy source text; summaries cannot stand in for the
-        # current seven (or any future number of) MOs.
-        for label, path in (("SOT.md — read the complete source of truth", SOT_FILE),
-                            ("MO.md — read and accept every current MO", MO_FILE)):
+    sid = session_id()
+    aid = agent_id()
+    today = datetime.now().strftime("%Y-%m-%d")
+    prior_ack = db_query(
+        "SELECT ack_type FROM acks WHERE timestamp LIKE ? AND agent_id = ? AND session_id = ? ORDER BY timestamp DESC LIMIT 1",
+        (f"{today}%", aid, sid),
+    )
+    already_accepted = bool(
+        prior_ack and prior_ack[0].get("ack_type") == f"sop-policy-sha256:{current_digest}"
+    )
+    # One explicit policy acceptance covers task starts in the same live
+    # session. A changed policy digest or a fresh session still requires a new
+    # explicit acceptance; an explicitly supplied stale digest always fails.
+    if accepted_digest != current_digest and not (not accepted_digest and already_accepted):
+        for path in (SOT_FILE, MO_FILE):
             if not path.is_file():
                 print(f"{R}✗{N} required policy file missing: {path}")
                 return 1
-            print(f"{C}── {label} ──{N}")
-            print(path.read_text())
-            print(f"{C}──────────────────────────{N}\n")
         print(f"{Y}Policy not yet acknowledged.{N}")
-        print("Read the full GAMEPLAN context, entire SOT.md, and every current MO in MO.md.")
         print_reading_guide()
         print("Then explicitly accept them for this session with this exact command:")
         print(f"  arc-sop start {shlex.quote(description)} --accept-policy {current_digest}")
@@ -422,8 +435,6 @@ def cmd_start(description: str, accepted_digest: str = ""):
 
     # 2. Log every accepted task before it can operate. Exact duplicate retries
     # in the same session are idempotent; a second task gets its own entry.
-    sid = session_id()
-    aid = agent_id()
     ts_date = datetime.now().strftime("%Y-%m-%d")
 
     entry = f"\n## {ts_date} · {aid} · [sid:{sid}] · [STARTING] {description}\n"
@@ -442,19 +453,23 @@ def cmd_start(description: str, accepted_digest: str = ""):
         return 1
 
     print(f"{G}✓{N}  GAMEPLAN.md: logged today's [STARTING] entry")
-    return _finish_start(sid, aid, current_digest)
+    return _finish_start(sid, aid, current_digest, already_accepted=already_accepted)
 
 
-def _finish_start(sid: str, aid: str, policy_digest: str) -> int:
+def _finish_start(sid: str, aid: str, policy_digest: str,
+                  already_accepted: bool = False) -> int:
     """Shared tail of cmd_start: ack + unlock, used whether or not a fresh
     GAMEPLAN entry was written this call."""
-    ts = now()
-    db_insert("acks", timestamp=ts, agent_id=aid, session_id=sid,
-              ack_type=f"sop-policy-sha256:{policy_digest}")
-    who_label = "Agent" if is_agent_id(aid) else "User"
-    print(f"{G}✓{N}  {who_label} {Y}{aid}{N} explicitly accepted current SOT + all MOs")
-    print(f"{D}   policy sha256: {policy_digest}{N}")
-    _notify("SOP acknowledged", f"{who_label} {aid} acknowledged all SOPs -- session unlocked", urgency="normal")
+    if already_accepted:
+        print(f"{G}✓{N}  current policy acceptance reused for this live session")
+    else:
+        ts = now()
+        db_insert("acks", timestamp=ts, agent_id=aid, session_id=sid,
+                  ack_type=f"sop-policy-sha256:{policy_digest}")
+        who_label = "Agent" if is_agent_id(aid) else "User"
+        print(f"{G}✓{N}  {who_label} {Y}{aid}{N} explicitly accepted current SOT + all MOs")
+        print(f"{D}   policy sha256: {policy_digest}{N}")
+        _notify("SOP acknowledged", f"{who_label} {aid} acknowledged all SOPs -- session unlocked", urgency="normal")
 
     print(f"\n{G}✓ unlocked{N}")
     return 0

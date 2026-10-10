@@ -12,6 +12,7 @@ import _arc_pine_common as pine
 class NotificationAudio(unittest.TestCase):
     def test_restore_runs_even_when_speech_fails(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(pine, 'DATA_DIR', Path(directory)), \
+             patch.object(pine, '_wake_sink', return_value=True), \
              patch.object(pine, '_duck_other_streams', return_value=[10, 11]), \
              patch.object(pine, 'speak', side_effect=RuntimeError('test failure')), \
              patch.object(pine, '_restore_ducked') as restore:
@@ -26,6 +27,7 @@ class NotificationAudio(unittest.TestCase):
             {'index': 2, 'mute': True, 'properties': {'application.name': 'Muted app'}},
             {'index': 3, 'mute': False, 'properties': {'application.id': 'com.github.wwmm.easyeffects'}},
             {'index': 4, 'mute': False, 'properties': {'application.name': 'ArcPine'}},
+            {'index': 5, 'mute': False, 'properties': {'node.name': 'effect_output.speaker_studio_eq'}},
         ]
         from types import SimpleNamespace
         with patch.object(pine.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(streams), returncode=0)) as run:

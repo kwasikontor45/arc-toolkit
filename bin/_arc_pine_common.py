@@ -238,9 +238,11 @@ def _duck_other_streams():
     muted = []
     for s in streams:
         props = s.get("properties", {})
+        node_name = props.get("node.name", "").lower()
         # Never mute an effects processor's output: it carries our speech too.
         if (props.get("application.id") == "com.github.wwmm.easyeffects"
-                or props.get("application.name", "").lower() in ("easyeffects", "easy effects", "arcpine")):
+                or props.get("application.name", "").lower() in ("easyeffects", "easy effects", "arcpine")
+                or node_name.startswith("effect_output.")):
             continue
         idx = s.get("index")
         if idx is None or s.get("mute"):

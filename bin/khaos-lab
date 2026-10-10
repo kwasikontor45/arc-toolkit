@@ -44,6 +44,7 @@ import calendar
 import concurrent.futures as cf
 import hashlib
 import json
+import math
 import os
 import queue
 import re
@@ -51,6 +52,7 @@ import sqlite3
 import shlex
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -80,6 +82,8 @@ CONTENT_BG_PATH  = HOME / ".local/share/khaos-lab/content-bg.png"
 TASKBAR_ICON_PATH = HOME / ".local/share/khaos-lab/taskbar-icon.png"
 HEAL_LOG_PATH    = HOME / "khaos-lab/arc-heal-log/latest-status.md"
 ORAGE_ICS_PATH   = HOME / ".local/share/orage/orage.ics"
+AUDIO_EQ_CONFIG  = HOME / ".config/pipewire/pipewire.conf.d/60-speaker-studio-eq.conf"
+AUDIO_EQ_BASELINE = HOME / ".local/state/khaos-lab/eq/speaker-studio-eq-original.conf"
 INVENTORY_JSON   = HOME / "khaos-lab/inventory/inventory.json"
 INVENTORY_REGISTRY = HOME / "dev-notes/intel-ops/inventory/registry.toml"
 LT_DATA_DIR      = HOME / ".local/share/lt"
@@ -497,6 +501,405 @@ def fmt_age(minutes):
     return f"{minutes // 60}h ago"
 
 
+def read_audio_snapshot(runner):
+    """Read the default output through PipeWire's PulseAudio compatibility layer.
+
+    Keep the three fixed pactl queries in one bounded Runner call. The panel never
+    guesses a sink ID, changes an audio service, or touches the microphone here.
+    """
+    eq = read_speaker_eq_snapshot()
+    ok, output = runner.run(
+        "pactl get-sink-volume @DEFAULT_SINK@ && "
+        "pactl get-sink-mute @DEFAULT_SINK@ && "
+        "pactl get-default-sink",
+        timeout=8,
+    )
+    if not ok:
+        return {"available": False, "error": output or "audio control unavailable",
+                "eq": eq}
+
+    lines = output.splitlines()
+    volume_match = re.search(r"(\d+)%", lines[0]) if lines else None
+    mute_match = re.search(r"\bMute:\s*(yes|no)\b", lines[1], re.I) if len(lines) > 1 else None
+    if not volume_match or not mute_match or len(lines) < 3:
+        return {"available": False, "error": "unexpected audio status response", "eq": eq}
+
+    sink = "".join(ch for ch in lines[2].strip()
+                   if ch == "\t" or (ord(ch) >= 32 and not 127 <= ord(ch) <= 159))[:160]
+    return {
+        "available": True,
+        "sink": sink or "default output",
+        "volume": int(volume_match.group(1)),
+        "muted": mute_match.group(1).lower() == "yes",
+        "eq_configured": eq.get("available", False),
+        "eq": eq,
+    }
+
+
+EQ_BANDS = (
+    ("bass", "Bass", 115.0, 0.7, "bq_lowshelf"),
+    ("body", "Body", 210.0, 0.8, "bq_peaking"),
+    ("clarity", "Clarity", 420.0, 0.9, "bq_peaking"),
+    ("presence", "Presence", 2900.0, 0.8, "bq_peaking"),
+    ("air", "Air", 7800.0, 0.7, "bq_highshelf"),
+)
+EQ_NODE_NAMES = ("headroom", *(band[0] for band in EQ_BANDS))
+_EQ_NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+
+
+def _safe_owned_read(path, limit=65536):
+    """Read one owned, regular, bounded file without following its final symlink."""
+    path = Path(path)
+    for parent in reversed([path.parent, *path.parent.parents]):
+        parent_stat = parent.lstat()
+        if stat.S_ISLNK(parent_stat.st_mode) or not stat.S_ISDIR(parent_stat.st_mode):
+            raise OSError(f"refusing unsafe parent directory: {parent}")
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid():
+        raise OSError(f"refusing non-regular or non-user-owned file: {path}")
+    if before.st_size > limit:
+        raise OSError(f"file exceeds the {limit}-byte safety limit: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise OSError(f"file changed while opening: {path}")
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise OSError(f"file exceeds the {limit}-byte safety limit: {path}")
+    return data, before
+
+
+def _parse_eq_config(text):
+    """Parse only the known six-node speaker profile; reject altered layouts."""
+    nodes_match = re.search(
+        r"(?s)filter\.graph\s*=\s*\{.*?nodes\s*=\s*\[(.*?)\]\s*links\s*=",
+        text,
+    )
+    if not nodes_match:
+        raise ValueError("speaker profile does not contain the supported filter graph")
+    nodes_text = nodes_match.group(1)
+    names = re.findall(r"(?m)^\s*name\s*=\s*([A-Za-z0-9_]+)\s*$", nodes_text)
+    if tuple(names) != EQ_NODE_NAMES:
+        raise ValueError("speaker filter nodes changed; refusing to edit an unknown profile")
+
+    def node_body(name):
+        matches = list(re.finditer(
+            rf"(?m)^\s*name\s*=\s*{re.escape(name)}\s*$", nodes_text))
+        if len(matches) != 1:
+            raise ValueError(f"speaker profile must contain exactly one {name} node")
+        start = nodes_text.rfind("{", 0, matches[0].start())
+        if start < 0:
+            raise ValueError(f"could not locate the {name} node")
+        depth, quoted, escaped = 0, False, False
+        for pos in range(start, len(nodes_text)):
+            char = nodes_text[pos]
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+                continue
+            if char == '"':
+                quoted = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return nodes_text[start:pos + 1]
+        raise ValueError(f"unterminated {name} node")
+
+    def controls(body, name, expected):
+        if len(re.findall(r"(?m)^\s*type\s*=\s*builtin\s*$", body)) != 1:
+            raise ValueError(f"unsupported implementation in {name} node")
+        controls_match = re.search(r"(?s)control\s*=\s*\{([^{}]*)\}", body)
+        if not controls_match:
+            raise ValueError(f"missing controls in {name} node")
+        pairs = re.findall(rf'"([A-Za-z]+)"\s*=\s*({_EQ_NUMBER})', controls_match.group(1))
+        if len(pairs) != len(expected) or {key for key, _ in pairs} != set(expected):
+            raise ValueError(f"unsupported controls in {name} node")
+        values = {key: float(value) for key, value in pairs}
+        if not all(math.isfinite(value) for value in values.values()):
+            raise ValueError(f"non-finite control in {name} node")
+        return values
+
+    headroom = controls(node_body("headroom"), "headroom", ("Mult", "Add"))
+    if len(re.findall(r"(?m)^\s*label\s*=\s*linear\s*$", node_body("headroom"))) != 1:
+        raise ValueError("unsupported headroom filter type")
+    if not 0 < headroom["Mult"] <= 1 or not math.isclose(headroom["Add"], 0.0, abs_tol=1e-9):
+        raise ValueError("unsupported headroom controls")
+    gains = {}
+    for name, _label, freq, q, label in EQ_BANDS:
+        body = node_body(name)
+        if len(re.findall(rf"(?m)^\s*label\s*=\s*{re.escape(label)}\s*$", body)) != 1:
+            raise ValueError(f"unsupported filter type in {name} node")
+        values = controls(body, name, ("Freq", "Q", "Gain"))
+        if not math.isclose(values["Freq"], freq, abs_tol=0.01) or not math.isclose(values["Q"], q, abs_tol=0.001):
+            raise ValueError(f"frequency or Q changed in {name} node")
+        if not -3.0 <= values["Gain"] <= 3.0:
+            raise ValueError(f"{name} gain is outside the supported ±3 dB range")
+        gains[name] = values["Gain"]
+    links_match = re.search(r"(?s)links\s*=\s*\[(.*?)\]", text)
+    if not links_match:
+        raise ValueError("speaker profile links are missing")
+    links = re.findall(
+        r'output\s*=\s*"([A-Za-z0-9_]+:Out)"\s+input\s*=\s*"([A-Za-z0-9_]+:In)"',
+        links_match.group(1),
+    )
+    expected_links = [(f"{left}:Out", f"{right}:In") for left, right in zip(
+        EQ_NODE_NAMES, EQ_NODE_NAMES[1:])]
+    if links != expected_links:
+        raise ValueError("speaker profile signal path changed; refusing to edit it")
+    return {"gains": gains, "mult": headroom["Mult"]}
+
+
+def read_speaker_eq_snapshot():
+    """Read and validate the current EQ without touching audio services."""
+    try:
+        raw, st = _safe_owned_read(AUDIO_EQ_CONFIG)
+        text = raw.decode("utf-8")
+        parsed = _parse_eq_config(text)
+        return {"available": True, "gains": parsed["gains"], "mult": parsed["mult"],
+                "sha256": hashlib.sha256(raw).hexdigest(), "mode": stat.S_IMODE(st.st_mode),
+                "error": ""}
+    except FileNotFoundError:
+        return {"available": False, "error": "speaker EQ profile not found"}
+    except (OSError, UnicodeError, ValueError) as exc:
+        return {"available": False, "error": f"speaker EQ locked: {exc}"}
+
+
+def _validate_private_state_dir(path):
+    """Create the app's small state directory without accepting symlinked paths."""
+    path = Path(path)
+    chain = [path, *path.parents]
+    for item in reversed(chain):
+        try:
+            st = item.lstat()
+        except FileNotFoundError:
+            item.mkdir(mode=0o700)
+            st = item.lstat()
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise OSError(f"unsafe state directory: {item}")
+        if item == path and (st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) & 0o077):
+            raise OSError(f"state directory must be private and user-owned: {item}")
+
+
+def _atomic_owned_write(path, data, mode, expected=None, create=False):
+    """Atomically replace a user's regular file, optionally checking its inode."""
+    path = Path(path)
+    for parent in reversed([path.parent, *path.parent.parents]):
+        parent_stat = parent.lstat()
+        if stat.S_ISLNK(parent_stat.st_mode) or not stat.S_ISDIR(parent_stat.st_mode):
+            raise OSError(f"unsafe target directory: {parent}")
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        current = None
+    if current is None:
+        if not create or expected is not None:
+            raise OSError(f"target file disappeared before the write: {path}")
+    else:
+        if not stat.S_ISREG(current.st_mode) or current.st_uid != os.getuid():
+            raise OSError(f"refusing non-regular or non-user-owned target: {path}")
+        if create:
+            raise OSError(f"refusing to replace an existing baseline: {path}")
+        if expected is not None and (current.st_dev, current.st_ino, current.st_size,
+                                     current.st_mtime_ns) != expected:
+            raise OSError("speaker profile changed before the write; reload and retry")
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if create:
+            os.link(temp_name, path, follow_symlinks=False)
+            os.unlink(temp_name)
+        else:
+            os.replace(temp_name, path)
+        dir_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _replace_eq_values(text, gains, mult):
+    """Change only the five Gain numbers and headroom Mult in the validated file."""
+    replacements = [("headroom", "Mult", mult)] + [(name, "Gain", gains[name])
+                                                     for name, *_ in EQ_BANDS]
+    nodes_match = re.search(
+        r"(?s)filter\.graph\s*=\s*\{.*?nodes\s*=\s*\[(.*?)\]\s*links\s*=",
+        text,
+    )
+    if not nodes_match:
+        raise ValueError("speaker profile graph disappeared")
+    nodes_text = nodes_match.group(1)
+    edits = []
+    for name, key, value in replacements:
+        node_match = re.search(rf"(?m)^\s*name\s*=\s*{re.escape(name)}\s*$", nodes_text)
+        if not node_match:
+            raise ValueError(f"missing {name} node")
+        open_at = nodes_text.rfind("{", 0, node_match.start())
+        depth, quoted, escaped, close_at = 0, False, False, None
+        for pos in range(open_at, len(nodes_text)):
+            char = nodes_text[pos]
+            if quoted:
+                if escaped: escaped = False
+                elif char == "\\": escaped = True
+                elif char == '"': quoted = False
+                continue
+            if char == '"': quoted = True
+            elif char == "{": depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    close_at = pos + 1
+                    break
+        if close_at is None:
+            raise ValueError(f"unterminated {name} node")
+        body = nodes_text[open_at:close_at]
+        match = re.search(rf'("{key}"\s*=\s*)({_EQ_NUMBER})', body)
+        if not match:
+            raise ValueError(f"missing {key} in {name} node")
+        absolute = nodes_match.start(1) + open_at + match.start(2)
+        edits.append((absolute, absolute + len(match.group(2)), f"{value:.6g}"))
+    result = text
+    for start, end, value in sorted(edits, reverse=True):
+        result = result[:start] + value + result[end:]
+    _parse_eq_config(result)
+    return result
+
+
+def apply_speaker_eq(gains, expected_sha256, reset=False):
+    """Apply the validated speaker curve after an explicit UI confirmation.
+
+    PipeWire is restarted only when its user service is already active. An
+    inactive service is left stopped and picks up the saved profile next start.
+    """
+    raw, st = _safe_owned_read(AUDIO_EQ_CONFIG)
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise OSError("speaker profile changed outside this panel; reload before applying")
+    old_text = raw.decode("utf-8")
+    current = _parse_eq_config(old_text)
+    _validate_private_state_dir(AUDIO_EQ_BASELINE.parent)
+    baseline_exists = AUDIO_EQ_BASELINE.exists() or AUDIO_EQ_BASELINE.is_symlink()
+    if baseline_exists:
+        baseline_raw, baseline_st = _safe_owned_read(AUDIO_EQ_BASELINE)
+        baseline = _parse_eq_config(baseline_raw.decode("utf-8"))
+    else:
+        baseline_raw, baseline_st = raw, st
+        baseline = current
+
+    service = subprocess.run(["systemctl", "--user", "is-active", "pipewire.service"],
+                             capture_output=True, text=True, timeout=6, check=False)
+    service_state = (service.stdout or service.stderr).strip().splitlines()
+    service_state = service_state[-1] if service_state else ""
+    if service_state not in {"active", "inactive", "failed"}:
+        raise OSError("could not safely determine PipeWire state; profile was not changed")
+    if service_state == "active" and service.returncode != 0:
+        raise OSError("PipeWire status response was inconsistent; profile was not changed")
+    was_active = service_state == "active"
+
+    if reset:
+        target_raw = baseline_raw
+        target_values = _parse_eq_config(target_raw.decode("utf-8"))
+    else:
+        if set(gains) != {band[0] for band in EQ_BANDS}:
+            raise ValueError("the EQ selection is incomplete")
+        clean_gains = {name: float(gains[name]) for name, *_ in EQ_BANDS}
+        if not all(math.isfinite(value) and -3.0 <= value <= 3.0
+                   for value in clean_gains.values()):
+            raise ValueError("EQ values must stay within ±3.0 dB")
+        expected_mult = baseline["mult"] * 10 ** (
+            -sum(max(0.0, clean_gains[name] - baseline["gains"][name])
+                 for name, *_ in EQ_BANDS) / 20.0)
+        if baseline_exists:
+            expected_current = baseline["mult"] * 10 ** (
+                -sum(max(0.0, current["gains"][name] - baseline["gains"][name])
+                     for name, *_ in EQ_BANDS) / 20.0)
+            if not math.isclose(current["mult"], expected_current, rel_tol=0.0, abs_tol=0.0005):
+                raise OSError("headroom changed outside this panel; reset/review the profile first")
+        target_text = _replace_eq_values(old_text, clean_gains, expected_mult)
+        target_raw = target_text.encode("utf-8")
+        target_values = _parse_eq_config(target_text)
+
+    if not baseline_exists:
+        _atomic_owned_write(AUDIO_EQ_BASELINE, baseline_raw, 0o600, create=True)
+    before = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    _atomic_owned_write(AUDIO_EQ_CONFIG, target_raw, stat.S_IMODE(st.st_mode), expected=before)
+    if not was_active:
+        return {"message": "EQ saved. PipeWire was already stopped and was left stopped; the profile takes effect the next time it starts.",
+                "sha256": hashlib.sha256(target_raw).hexdigest(), "values": target_values,
+                "active": False}
+
+    applied_stat = AUDIO_EQ_CONFIG.lstat()
+    applied_identity = (applied_stat.st_dev, applied_stat.st_ino, applied_stat.st_size,
+                        applied_stat.st_mtime_ns)
+    restart = active = None
+    restart_error = ""
+    try:
+        restart = subprocess.run(["systemctl", "--user", "restart", "pipewire.service"],
+                                 capture_output=True, text=True, timeout=20, check=False)
+        active = subprocess.run(["systemctl", "--user", "is-active", "pipewire.service"],
+                                capture_output=True, text=True, timeout=6, check=False)
+        if restart.returncode != 0 or (active.stdout or active.stderr).strip() != "active":
+            restart_error = ((restart.stderr or restart.stdout).strip()
+                             or "PipeWire did not return to active")
+    except (OSError, subprocess.SubprocessError) as exc:
+        restart_error = str(exc)
+    if restart_error:
+        _atomic_owned_write(AUDIO_EQ_CONFIG, raw, stat.S_IMODE(st.st_mode),
+                            expected=applied_identity)
+        try:
+            subprocess.run(["systemctl", "--user", "restart", "pipewire.service"],
+                           capture_output=True, text=True, timeout=20, check=False)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        raise RuntimeError(f"PipeWire restart failed; the previous profile was restored. {restart_error}")
+
+    try:
+        graph = subprocess.run(["pw-cli", "ls", "Node"], capture_output=True, text=True,
+                               timeout=8, check=False)
+    except (OSError, subprocess.SubprocessError):
+        graph = None
+    if graph is not None and graph.returncode == 0:
+        expected_nodes = ("effect_input.speaker_studio_eq", "effect_output.speaker_studio_eq")
+        if not all(name in graph.stdout for name in expected_nodes):
+            _atomic_owned_write(AUDIO_EQ_CONFIG, raw, stat.S_IMODE(st.st_mode),
+                                expected=applied_identity)
+            try:
+                subprocess.run(["systemctl", "--user", "restart", "pipewire.service"],
+                               capture_output=True, text=True, timeout=20, check=False)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            raise RuntimeError("EQ nodes did not appear; the previous profile was restored")
+        verification = " PipeWire restarted and both EQ nodes were found."
+    else:
+        verification = " PipeWire restarted; node listing was unavailable, so graph verification is pending."
+    return {"message": "Speaker EQ applied." + verification,
+            "sha256": hashlib.sha256(target_raw).hexdigest(), "values": target_values,
+            "active": True}
+
+
+def audio_status_line(snapshot):
+    if not snapshot.get("available"):
+        return "audio status unavailable"
+    state = "muted" if snapshot["muted"] else "live"
+    return f"{snapshot['sink']}  ·  {snapshot['volume']}%  ·  {state}"
+
+
 def sop_setup_command(cmd):
     """Allow only the small SOP workflow that can inspect or unlock operations.
 
@@ -780,6 +1183,10 @@ CATEGORIES = {
     "Help": [],       # command-center guide and category jump-off
     "SOP": [],        # read the rules, review GAMEPLAN, start + acknowledge a session
     "Status": [],     # special view: live host/security dashboard
+    "Audio": [        # default output controls; the system mixers remain the advanced path
+        Action("Open full audio mixer (pavucontrol)", "pavucontrol", detach=True),
+        Action("Open hardware mixer (alsamixer)", "konsole --hold -e alsamixer", detach=True),
+    ],
     "Calendar": [],   # shared live Hub check marks over localhost
     "LT": [],         # special view: the owner's existing personal lt board
     "Commands": [],   # special view: complete arc + lt command catalog and safe launcher
@@ -1343,6 +1750,424 @@ class TileView(View):
         self.app.refresh_scroll(self.frame)
 
 
+class AudioView(View):
+    """A small, explicit control surface for the current default output."""
+
+    NAME = "audio-default-output"
+    EVERY = 8000
+
+    def build(self):
+        self.snapshot = None
+        self._loading_scale = False
+        self._level_dirty = False
+        self._eq_dirty = False
+        self._eq_stale = False
+        self._eq_busy = False
+        self._eq_loaded_hash = None
+        self._eq_info = read_speaker_eq_snapshot()
+
+        heading = tk.Frame(self.frame, bg=SURFACE)
+        heading.pack(fill="x", pady=(0, 10))
+        tk.Label(heading, text="AUDIO  /  OUTPUT", font=self.app.f.small, bg=SURFACE,
+                 fg=self.app.phase_accent, anchor="w").pack(fill="x")
+        tk.Label(heading, text="One clear place for the speaker output.", font=self.app.f.big,
+                 bg=SURFACE, fg=FG, anchor="w").pack(fill="x", pady=(3, 2))
+        tk.Label(heading, text="Changes apply only when you press a control. Nothing starts in the background.",
+                 font=self.app.f.small, bg=SURFACE, fg=FG_MUTED, anchor="w",
+                 wraplength=640, justify="left").pack(fill="x")
+        heading.bind("<Configure>", lambda event: [
+            child.configure(wraplength=max(event.width - 4, 140))
+            for child in heading.winfo_children()
+            if isinstance(child, tk.Label) and child.cget("justify") == "left"
+        ], add="+")
+
+        output_shell, output = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16)
+        output_shell.pack(fill="x", pady=6)
+        tk.Label(output, text="DEFAULT OUTPUT", font=self.app.f.small, bg=OVERLAY,
+                 fg=FG_MUTED, anchor="w").pack(fill="x", padx=12, pady=(10, 3))
+        self.output_name = tk.Label(output, text="checking output…", font=self.app.f.label,
+                                    bg=OVERLAY, fg=FG, anchor="w", justify="left")
+        self.output_name.pack(fill="x", padx=12, pady=(0, 3))
+        self.output_state = tk.Label(output, text="", font=self.app.f.small, bg=OVERLAY,
+                                     fg=FG_MUTED, anchor="w", justify="left")
+        self.output_state.pack(fill="x", padx=12, pady=(0, 10))
+        output.bind("<Configure>", lambda event: self.output_name.configure(
+            wraplength=max(event.width - 32, 140)), add="+")
+
+        control_shell, controls = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16)
+        control_shell.pack(fill="x", pady=6)
+        tk.Label(controls, text="LEVEL  ·  panel limit 100%", font=self.app.f.small,
+                 bg=OVERLAY, fg=FG_MUTED, anchor="w").pack(fill="x", padx=12, pady=(10, 0))
+        self.level_var = tk.IntVar(master=self.frame, value=50)
+        self.level_scale = tk.Scale(
+            controls, from_=0, to=100, resolution=1, orient="horizontal", showvalue=False,
+            variable=self.level_var, command=self._preview_level, bg=OVERLAY, fg=FG,
+            troughcolor=BORDER, activebackground=self.app.phase_accent,
+            highlightthickness=0, bd=0, sliderlength=18, width=10,
+        )
+        self.level_scale.pack(fill="x", padx=10, pady=(0, 0))
+        button_row = tk.Frame(controls, bg=OVERLAY)
+        button_row.pack(fill="x", padx=12, pady=(0, 7))
+        self.level_hint = tk.Label(button_row, text="", font=self.app.f.small, bg=OVERLAY,
+                                   fg=FG_MUTED, anchor="w")
+        self.level_hint.pack(side="left", fill="x", expand=True)
+        self.apply_button = ui.button(
+            button_row, "Apply level", command=self.apply_level, font=self.app.f.small,
+            bg=BG, fg=TEAL, hover_bg=BORDER, padx=12, pady=6,
+        )
+        self.apply_button.pack(side="right", padx=(8, 0))
+
+        self.mute_button = ui.button(
+            controls, "Mute output", command=self.set_mute, font=self.app.f.small,
+            bg=BG, fg=GOLD, hover_bg=BORDER, padx=12, pady=6,
+        )
+        self.mute_button.pack(anchor="w", padx=12, pady=(0, 10))
+        self.apply_button.set_enabled(False)
+        self.mute_button.set_enabled(False)
+
+        profile_shell, profile = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16)
+        profile_shell.pack(fill="x", pady=6)
+        tk.Label(profile, text="SPEAKER CLARITY PROFILE", font=self.app.f.small,
+                 bg=OVERLAY, fg=FG_MUTED, anchor="w").pack(fill="x", padx=12, pady=(10, 3))
+        configured = bool(self._eq_info.get("available"))
+        profile_text = ("PipeWire profile configured locally" if configured
+                        else self._eq_info.get("error", "No local speaker EQ profile found"))
+        self.profile_status = tk.Label(profile, text=profile_text, font=self.app.f.label,
+                                       bg=OVERLAY, fg=TEAL if configured else GOLD, anchor="w")
+        self.profile_status.pack(fill="x", padx=12)
+        tk.Label(
+            profile,
+            text=("The panel reports the profile file; PipeWire manages playback processing. "
+                  "Notifications routed to this output follow its volume and mute state."),
+            font=self.app.f.small, bg=OVERLAY, fg=FG_MUTED, anchor="w", justify="left",
+            wraplength=640,
+        ).pack(fill="x", padx=12, pady=(3, 10))
+        profile.bind("<Configure>", lambda event, p=profile: [
+            child.configure(wraplength=max(event.width - 32, 140))
+            for child in p.winfo_children() if isinstance(child, tk.Label)
+        ], add="+")
+
+        eq_shell, eq_frame = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16)
+        eq_shell.pack(fill="x", pady=6)
+        tk.Label(eq_frame, text="TONE  ·  SPEAKER EQ", font=self.app.f.small,
+                 bg=OVERLAY, fg=FG_MUTED, anchor="w").pack(fill="x", padx=12, pady=(10, 3))
+        tk.Label(eq_frame, text="Five bands · preview first · ±3 dB", font=self.app.f.label,
+                 bg=OVERLAY, fg=FG, anchor="w").pack(fill="x", padx=12)
+        tk.Label(eq_frame,
+                 text="Sliders only preview. Apply may briefly pause all output, including notifications. "
+                      "Extra positive gain lowers automatic headroom to reduce clipping.",
+                 font=self.app.f.small, bg=OVERLAY, fg=FG_MUTED, anchor="w", justify="left",
+                 wraplength=640).pack(fill="x", padx=12, pady=(3, 7))
+        eq_frame.bind("<Configure>", lambda event, p=eq_frame: [
+            child.configure(wraplength=max(event.width - 32, 140))
+            for child in p.winfo_children() if isinstance(child, tk.Label)
+        ], add="+")
+
+        self.eq_value_labels = {}
+        self.eq_scale_widgets = {}
+        for name, label, freq, _q, _filter in EQ_BANDS:
+            row = tk.Frame(eq_frame, bg=OVERLAY)
+            row.pack(fill="x", padx=10, pady=1)
+            freq_label = f"{freq / 1000:g} kHz" if freq >= 1000 else f"{freq:g} Hz"
+            tk.Label(row, text=f"{label}  ·  {freq_label}", font=self.app.f.small,
+                     bg=OVERLAY, fg=FG, anchor="w", width=19).pack(side="left")
+            scale = tk.Scale(
+                row, from_=-3.0, to=3.0, resolution=0.1, orient="horizontal",
+                showvalue=False,
+                command=lambda raw, key=name: self._preview_eq(key, raw),
+                bg=OVERLAY, fg=FG, troughcolor=BORDER,
+                activebackground=self.app.phase_accent, highlightthickness=0,
+                bd=0, sliderlength=16, width=8,
+            )
+            scale.pack(side="left", fill="x", expand=True, padx=(4, 8))
+            self.eq_scale_widgets[name] = scale
+            value_label = tk.Label(row, text="0.0 dB", font=self.app.f.small,
+                                   bg=OVERLAY, fg=TEAL, anchor="e", width=7)
+            value_label.pack(side="right")
+            self.eq_value_labels[name] = value_label
+
+        self.eq_status = tk.Label(eq_frame, text="Reading speaker profile…",
+                                  font=self.app.f.small, bg=OVERLAY, fg=FG_MUTED,
+                                  anchor="w", justify="left", wraplength=640)
+        self.eq_status.pack(fill="x", padx=12, pady=(4, 5))
+        eq_buttons = tk.Frame(eq_frame, bg=OVERLAY)
+        eq_buttons.pack(fill="x", padx=12, pady=(0, 10))
+        self.eq_apply_button = ui.button(
+            eq_buttons, "Apply EQ", command=self.apply_eq,
+            font=self.app.f.small, bg=BG, fg=TEAL, hover_bg=BORDER, padx=12, pady=6,
+        )
+        self.eq_apply_button.pack(side="left")
+        self.eq_reload_button = ui.button(
+            eq_buttons, "Reload profile", command=self.reload_eq,
+            font=self.app.f.small, bg=BG, fg=FG, hover_bg=BORDER, padx=12, pady=6,
+        )
+        self.eq_reload_button.pack(side="left", padx=(7, 0))
+        self.eq_reset_button = ui.button(
+            eq_buttons, "Reset to original", command=self.reset_eq,
+            font=self.app.f.small, bg=BG, fg=GOLD, hover_bg=BORDER, padx=12, pady=6,
+        )
+        self.eq_reset_button.pack(side="right")
+        self._set_eq_info(self._eq_info, force=True)
+
+        tools_shell, tools_frame = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16)
+        tools_shell.pack(fill="x", pady=6)
+        tk.Label(tools_frame, text="MORE CONTROLS", font=self.app.f.small, bg=OVERLAY,
+                 fg=FG_MUTED, anchor="w").pack(fill="x", padx=12, pady=(10, 4))
+        action_row = tk.Frame(tools_frame, bg=OVERLAY)
+        action_row.pack(fill="x", padx=8, pady=(0, 7))
+        self._audio_action_buttons = []
+        for action in CATEGORIES["Audio"]:
+            button = ui.button(action_row, action.label,
+                               command=lambda a=action: self.app.run_action(a),
+                               font=self.app.f.small, bg=BG, fg=TEAL, hover_bg=BORDER,
+                               padx=10, pady=6)
+            self._audio_action_buttons.append(button)
+        action_row.bind("<Configure>", self._layout_audio_tools, add="+")
+        self._layout_audio_tools(SimpleNamespace(width=max(action_row.winfo_width(), 520)))
+        self.poll(self.NAME, self.EVERY,
+                  lambda: read_audio_snapshot(self.app.runner), self.apply_snapshot)
+
+    def _layout_audio_tools(self, event):
+        buttons = getattr(self, "_audio_action_buttons", [])
+        if not buttons:
+            return
+        columns = 1 if getattr(event, "width", 520) < 560 else 2
+        for index, button in enumerate(buttons):
+            button.grid(row=index // columns, column=index % columns,
+                        sticky="ew", padx=4, pady=3)
+        for column in range(2):
+            self._audio_action_buttons[0].master.grid_columnconfigure(
+                column, weight=1 if column < columns else 0)
+
+    def _preview_level(self, raw_value):
+        if self._loading_scale:
+            return
+        try:
+            value = max(0, min(100, int(float(raw_value))))
+        except (TypeError, ValueError):
+            return
+        self._level_dirty = True
+        self.level_hint.configure(text=f"Selected {value}%")
+        self.apply_button.configure(text=f"Set {value}%")
+
+    def apply_level(self):
+        if not self.snapshot or not self.snapshot.get("available"):
+            return
+        value = max(0, min(100, int(self.level_var.get())))
+        self._level_dirty = False
+        self.app.run_async(
+            f"pactl set-sink-volume @DEFAULT_SINK@ {value}%",
+            timeout=8,
+            on_done=lambda: self.kick(self.NAME) if self.alive() else None,
+        )
+
+    def set_mute(self):
+        if not self.snapshot or not self.snapshot.get("available"):
+            return
+        currently_muted = self.snapshot["muted"]
+        volume = self.snapshot["volume"]
+        if currently_muted and volume > 100:
+            self.app.console.log(
+                "Lower the output to 100% or less before unmuting it from this panel.", GOLD)
+            return
+        target = "0" if currently_muted else "1"
+        self.app.run_async(
+            f"pactl set-sink-mute @DEFAULT_SINK@ {target}",
+            timeout=8,
+            on_done=lambda: self.kick(self.NAME) if self.alive() else None,
+        )
+
+    def apply_snapshot(self, snapshot):
+        self.snapshot = snapshot
+        eq_info = snapshot.get("eq")
+        if eq_info:
+            self._set_eq_info(eq_info)
+        configured = bool(eq_info and eq_info.get("available"))
+        self.profile_status.configure(
+            text=("PipeWire profile configured locally" if configured
+                  else (eq_info or {}).get("error", "No local speaker EQ profile found")),
+            fg=TEAL if configured else GOLD,
+        )
+        if not snapshot.get("available"):
+            detail = snapshot.get("error") or "audio service unavailable"
+            self.output_name.configure(text="Default output unavailable", fg=GOLD)
+            self.output_state.configure(text=detail, fg=FG_MUTED)
+            self.level_hint.configure(text="Waiting for an available audio output")
+            self.apply_button.set_enabled(False)
+            self.mute_button.configure(text="Mute output")
+            self.mute_button.set_enabled(False)
+            return
+
+        volume = snapshot["volume"]
+        muted = snapshot["muted"]
+        self.output_name.configure(text=snapshot["sink"], fg=FG)
+        state = "MUTED" if muted else "LIVE"
+        over_cap = volume > 100
+        detail = f"{state}  ·  {volume}%"
+        if over_cap:
+            detail += "  ·  above the panel's 100% limit"
+        self.output_state.configure(text=detail, fg=GOLD if muted or over_cap else TEAL)
+        if not self._level_dirty:
+            self._loading_scale = True
+            self.level_var.set(min(volume, 100))
+            self._loading_scale = False
+            self.level_hint.configure(text=f"Current {volume}%")
+            self.apply_button.configure(text="Apply level")
+        self.apply_button.set_enabled(True)
+        self.mute_button.configure(text="Unmute output" if muted else "Mute output")
+        self.mute_button.set_enabled(not (muted and over_cap))
+        if muted and over_cap:
+            self.mute_button.configure(text="Lower to 100% before unmuting")
+
+    def _set_eq_info(self, info, force=False):
+        if not isinstance(info, dict) or not info.get("available"):
+            self._eq_info = info if isinstance(info, dict) else {"available": False}
+            if self._eq_dirty and not force:
+                self._eq_stale = True
+                self.eq_status.configure(
+                    text="Profile is unavailable or changed outside the panel. Reload before applying.",
+                    fg=GOLD)
+                self._update_eq_buttons()
+            else:
+                self._eq_loaded_hash = None
+                self._eq_stale = False
+                self.eq_status.configure(text=self._eq_info.get("error", "Speaker EQ unavailable"),
+                                          fg=GOLD)
+                for scale in self.eq_scale_widgets.values():
+                    scale.configure(state="disabled")
+                self._update_eq_buttons()
+            return
+        if not force and self._eq_dirty:
+            if self._eq_loaded_hash and info.get("sha256") != self._eq_loaded_hash:
+                self._eq_stale = True
+                self.eq_status.configure(
+                    text="Profile changed outside this panel. Reload before applying.", fg=GOLD)
+                self._update_eq_buttons()
+            else:
+                self._eq_info = info
+                self._eq_stale = False
+                self.eq_status.configure(
+                    text="Preview only · current profile is unchanged until Apply EQ.", fg=TEAL)
+                self._update_eq_buttons()
+            return
+        self._eq_info = info
+        self._eq_loaded_hash = info.get("sha256")
+        self._eq_stale = False
+        self._loading_eq = True
+        for name, *_ in EQ_BANDS:
+            value = float(info["gains"][name])
+            self.eq_scale_widgets[name].set(value)
+            self.eq_value_labels[name].configure(text=f"{value:+.1f} dB")
+            self.eq_scale_widgets[name].configure(state="normal")
+        self._loading_eq = False
+        if force:
+            self._eq_dirty = False
+        self.eq_status.configure(text="Current curve loaded · slider changes are preview only.",
+                                  fg=FG_MUTED)
+        self._update_eq_buttons()
+
+    def _preview_eq(self, name, raw_value):
+        if getattr(self, "_loading_eq", False):
+            return
+        try:
+            value = max(-3.0, min(3.0, round(float(raw_value) * 10) / 10))
+        except (TypeError, ValueError):
+            return
+        self.eq_value_labels[name].configure(text=f"{value:+.1f} dB")
+        self._eq_dirty = True
+        self.eq_status.configure(text="Preview only · current profile is unchanged until Apply EQ.",
+                                  fg=TEAL)
+        self._update_eq_buttons()
+
+    def _update_eq_buttons(self):
+        available = bool(self._eq_info and self._eq_info.get("available"))
+        self.eq_apply_button.set_enabled(
+            available and self._eq_dirty and not self._eq_stale and not self._eq_busy)
+        self.eq_reload_button.set_enabled(not self._eq_busy)
+        baseline_exists = AUDIO_EQ_BASELINE.exists() or AUDIO_EQ_BASELINE.is_symlink()
+        self.eq_reset_button.set_enabled(
+            baseline_exists and available and not self._eq_busy and not self._eq_stale)
+        for scale in self.eq_scale_widgets.values():
+            scale.configure(state="disabled" if self._eq_busy or not available else "normal")
+
+    def reload_eq(self):
+        if self._eq_busy:
+            return
+        self._set_eq_info(read_speaker_eq_snapshot(), force=True)
+        self._eq_dirty = False
+        self._update_eq_buttons()
+
+    def apply_eq(self):
+        self._run_eq_change(reset=False)
+
+    def reset_eq(self):
+        self._run_eq_change(reset=True)
+
+    def _run_eq_change(self, reset=False):
+        if self._eq_busy or not self._eq_info.get("available"):
+            return
+        if self._eq_stale:
+            self.eq_status.configure(text="Reload the changed profile before applying.", fg=GOLD)
+            return
+        if reset and not (AUDIO_EQ_BASELINE.exists() or AUDIO_EQ_BASELINE.is_symlink()):
+            self.eq_status.configure(text="Apply a curve once to save the original curve first.", fg=GOLD)
+            return
+        action = "reset speaker EQ to its saved original curve" if reset else "apply speaker EQ changes"
+        if not self.app.require_ops_gate(action):
+            return
+        prompt = ("Restore the speaker profile saved before the first EQ change?\n\n"
+                  "If PipeWire is active, audio output may pause briefly while it restarts."
+                  if reset else
+                  "Apply these five EQ bands to the speaker profile?\n\n"
+                  "If PipeWire is active, audio output may pause briefly while it restarts. "
+                  "Notifications on the same output pause too.")
+        if not messagebox.askyesno("Speaker EQ", prompt, parent=self.app.root):
+            return
+        gains = {name: float(scale.get()) for name, scale in self.eq_scale_widgets.items()}
+        expected_hash = self._eq_loaded_hash
+        self._eq_busy = True
+        self.eq_status.configure(text="Applying profile…", fg=FG_MUTED)
+        self._update_eq_buttons()
+        self.app.console.log(f"$ {action}", TEAL)
+
+        def work():
+            try:
+                return {"ok": True, **apply_speaker_eq(gains, expected_hash, reset=reset)}
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)}
+
+        def done(result):
+            self._eq_busy = False
+            if result.get("ok"):
+                self.app.console.log(result["message"], PINE)
+                values = result["values"]
+                info = {"available": True, "gains": values["gains"], "mult": values["mult"],
+                        "sha256": result["sha256"], "error": ""}
+                if self.alive():
+                    self._eq_dirty = False
+                    self._set_eq_info(info, force=True)
+                    self._update_eq_buttons()
+                    if not result.get("active"):
+                        self.eq_status.configure(text=result["message"], fg=GOLD)
+                    self.kick(self.NAME)
+            else:
+                self.app.console.log(result.get("error", "speaker EQ change failed"), ROSE)
+                if self.alive():
+                    if "changed outside this panel" in result.get("error", ""):
+                        self._eq_stale = True
+                    self.eq_status.configure(text=result.get("error", "EQ change failed"), fg=GOLD)
+                    self._update_eq_buttons()
+
+        self.app.bg(work, done)
+
+    def destroy(self):
+        # Tcl variable cleanup calls into Tk. Release these references here on
+        # the UI thread before a stopped poll worker can release the view.
+        super().destroy()
+        self.eq_scale_widgets.clear()
+        self.level_var = None
+
+
 class StatusView(TileView):
     NAME = "status"
     EVERY = 15000
@@ -1358,6 +2183,10 @@ class StatusView(TileView):
                   padx=12, pady=5).pack(anchor='w', padx=10, pady=(0, 8))
         lt_tile = self.labels['lt'].master
         ui.button(lt_tile, 'Open personal LT board', command=lambda: self.app.select('LT'),
+                  font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                  padx=12, pady=5).pack(anchor='w', padx=10, pady=(0, 8))
+        audio_tile = self.labels['audio'].master
+        ui.button(audio_tile, 'Open audio controls', command=lambda: self.app.select('Audio'),
                   font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
                   padx=12, pady=5).pack(anchor='w', padx=10, pady=(0, 8))
 
@@ -1383,7 +2212,7 @@ class StatusView(TileView):
         (4, 0, "awslab", "AWS lab (gvm / soclab / wazuh)"), (4, 1, "inventory", "Inventory (arc inv)"),
         (5, 0, "notify", "Notify stack (voice · bubbles · site)"),
         (5, 1, "waydroid", "Waydroid · Android sandbox"),
-        (6, 0, "lt", "LT · personal board"),
+        (6, 0, "lt", "LT · personal board"), (6, 1, "audio", "Sound output"),
     ]
 
     def checks(self):
@@ -1468,10 +2297,13 @@ class StatusView(TileView):
         def lt_board():
             return lt_status_text(read_lt_board())
 
+        def audio():
+            return audio_status_line(read_audio_snapshot(r))
+
         return {"dns": dns, "break": brk, "disk": disk, "services": services, "uptime": uptime,
                 "selfheal": selfheal, "idsips": idsips,
                 "awslab": awslab, "inventory": inventory, "notify": notify, "waydroid": waydroid,
-                "lt": lt_board}
+                "lt": lt_board, "audio": audio}
 
     def color_for(self, key, val):
         if key == "services":
@@ -1504,6 +2336,12 @@ class StatusView(TileView):
             if "unavailable" in val:
                 return ROSE
             return TEAL if " pending" in val else FG_MUTED
+        if key == "audio":
+            if "unavailable" in val:
+                return FG_MUTED
+            if "muted" in val:
+                return GOLD
+            return TEAL
         return FG
 
 
@@ -2695,9 +3533,14 @@ class SopView(View):
             padx=12, pady=7).pack(side="left", padx=5)
         ui.button(docs, "check gate", command=self.refresh_gate, font=f.small, bg=OVERLAY, fg=FG,
                   hover_bg=BG, padx=12, pady=7).pack(side="right", padx=5)
-        guide = ("Read before accepting · ~/dev-notes/intel-ops/GAMEPLAN.md · "
+        principles = ("I WWSJD  ·  II Right & tight  ·  III Swiss cheese\n"
+                      "IV Trust but verify  ·  V Operate in the light\n"
+                      "VI Leave it cleaner  ·  VII Inevitable")
+        tk.Label(docs, text=principles, font=f.small, bg=SURFACE, fg=TEAL,
+                 anchor="w", justify="left", wraplength=720).pack(fill="x", padx=10, pady=(2, 4))
+        guide = ("Full policy: ~/dev-notes/intel-ops/GAMEPLAN.md · "
                  "~/dev-notes/intel-ops/SOT.md · ~/dev-notes/intel-ops/MO.md\n"
-                 "Terminal readers: batcat <full-path> (installed) · cat <full-path>")
+                 "Read all three before accepting · batcat or cat reads the full files")
         tk.Label(docs, text=guide, font=f.small, bg=SURFACE, fg=FG_MUTED,
                  anchor="w", justify="left", wraplength=720).pack(fill="x", padx=10, pady=(2, 8))
 
@@ -2883,6 +3726,7 @@ class HelpView(View):
     DESCRIPTIONS = {
         "SOP": "Read SOT/GAMEPLAN, satisfy the gate, and review compliance",
         "Status": "Live workstation health and security snapshot",
+        "Audio": "Default output level and mute controls · full and hardware mixers",
         "Calendar": "Check events and to-dos; shared live with local Khaos Hub",
         "LT": "Personal focus and tasks from the existing lt board",
         "Commands": "Browse and run every arc or lt command safely",
@@ -3083,7 +3927,7 @@ class ActionsView(View):
 # ── the app ──────────────────────────────────────────────────────────────────
 class App:
     SPECIAL_VIEWS = {"Help": HelpView, "SOP": SopView, "Status": StatusView, "Calendar": CalendarView,
-                     "LT": LtView, "Commands": CommandsView,
+                     "Audio": AudioView, "LT": LtView, "Commands": CommandsView,
                      "Cockpit": CockpitView, "Inventory": InventoryView,
                      "Logs": LogsView, "Find": FindView}
 
@@ -3896,7 +4740,9 @@ class App:
         gate_ok = all(panel_command_allowed(cmd, opened) == expected
                       for cmd, opened, expected in gate_cases)
         original_gate = globals()["check_sop_gate"]
+        original_subprocess_run = subprocess.run
         blocked_logs, launches = [], []
+        blocked_events = []
         fake = SimpleNamespace(current="Status", _busy=set(),
                                console=SimpleNamespace(log=lambda text, _color=None: blocked_logs.append(text)),
                                select=lambda name: setattr(fake, "current", name),
@@ -3904,6 +4750,14 @@ class App:
                                bg=lambda _work, _done: launches.append("launched"))
         fake.require_ops_gate = lambda cmd: App.require_ops_gate(fake, cmd)
         globals()["check_sop_gate"] = lambda timeout=5: (False, "gate NOT satisfied (selftest)")
+        def record_test_denial(argv, *args, **kwargs):
+            # Exercise the real gate path without adding test-only denials to
+            # the user's compliance ledger.
+            if isinstance(argv, (list, tuple)) and list(argv[:2]) == ["arc-sop", "record-violation"]:
+                blocked_events.append(tuple(argv))
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return original_subprocess_run(argv, *args, **kwargs)
+        subprocess.run = record_test_denial
         try:
             App.run_async(fake, "arc inv scan")
             locked_action_blocked = not launches and fake.current == "SOP"
@@ -3913,7 +4767,9 @@ class App:
             recovery_action_available = len(launches) == 1
         finally:
             globals()["check_sop_gate"] = original_gate
-        gate_ok = gate_ok and locked_action_blocked and locked_button_blocked and recovery_action_available
+            subprocess.run = original_subprocess_run
+        gate_ok = (gate_ok and locked_action_blocked and locked_button_blocked
+                   and recovery_action_available and len(blocked_events) == 2)
         print(f"  SOP operation gate        {'ok' if gate_ok else 'FAILED'} (locked ops denied; setup retained)")
         bad = (self.errors or leaked or not gate_ok or not filter_ok or not all(layouts)
                or not route_picker_ok or not fullscreen_ok

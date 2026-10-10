@@ -58,9 +58,10 @@ _arc_greeting() {
   # ── Motd ─────────────────────────────────────────────────────────────────────
   local MOTD_FILE="$HOME/.config/arc/motd"
   if [[ -f "$MOTD_FILE" ]]; then
-    local motd
-    motd=$(cat "$MOTD_FILE" 2>/dev/null)
-    echo -e "  ${D}${motd}${N}"
+    local motd_line
+    while IFS= read -r motd_line || [[ -n "$motd_line" ]]; do
+      printf '  %b%s%b\n' "$D" "$motd_line" "$N"
+    done < "$MOTD_FILE"
   fi
 
   echo ""

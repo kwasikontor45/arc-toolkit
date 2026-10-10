@@ -18,6 +18,7 @@ Commands:
 """
 
 import hashlib
+import re
 import json
 import os
 import shutil
@@ -300,6 +301,54 @@ def print_rule(name: str, passed: bool, message: str):
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+_MO_HEADING = re.compile(r"^\*\*([IVXLCDM]+)\.\s+(.+?)\*\*\s*$")
+
+
+def current_mo_sections():
+    """Read every numbered MO in source order, failing closed on gaps."""
+    sections = []
+    current = None
+    for line in MO_FILE.read_text().splitlines():
+        if line.strip() == "---" and current is not None:
+            break
+        match = _MO_HEADING.match(line)
+        if match:
+            if current is not None:
+                sections.append((current[0], "\n".join(current[1]).strip()))
+            current = (f"{match.group(1)}. {match.group(2)}", [])
+        elif current is not None:
+            current[1].append(line.rstrip())
+    if current is not None:
+        sections.append((current[0], "\n".join(current[1]).strip()))
+    if not sections:
+        raise ValueError(f"no numbered MOs found in {MO_FILE}")
+
+    values = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100,
+              "D": 500, "M": 1000}
+    for expected, (heading, _body) in enumerate(sections, start=1):
+        numeral = heading.split(".", 1)[0]
+        total = previous = 0
+        for char in reversed(numeral):
+            value = values.get(char)
+            if value is None:
+                raise ValueError(f"invalid MO number {numeral!r} in {MO_FILE}")
+            total += -value if value < previous else value
+            previous = max(previous, value)
+        if total != expected:
+            raise ValueError(f"MO sequence has a gap or is out of order at {heading!r}")
+    return sections
+
+
+def print_current_mos(sections):
+    """Display the exact current MO text, in order, after fresh acceptance."""
+    print(f"\n{C}{BOLD}OPERATING PRINCIPLES · CURRENT MO SEQUENCE{N}")
+    for heading, body in sections:
+        print(f"\n  {C}{BOLD}{heading}{N}")
+        for line in body.splitlines():
+            print(f"    {line}" if line else "")
+    print(f"\n  {D}Full source: {MO_FILE}{N}")
+
+
 def cmd_ack():
     """Refuse unversioned acknowledgments; they cannot satisfy the gate."""
     print(f"{R}✗{N}  bare acknowledgment cannot unlock operations.")
@@ -417,6 +466,16 @@ def cmd_start(description: str, accepted_digest: str = ""):
     already_accepted = bool(
         prior_ack and prior_ack[0].get("ack_type") == f"sop-policy-sha256:{current_digest}"
     )
+    mo_sections = None
+    if not already_accepted:
+        try:
+            mo_sections = current_mo_sections()
+            if _policy_digest() != current_digest:
+                print(f"{Y}Policy changed while preparing acceptance; reread and restart.{N}")
+                return 2
+        except (OSError, ValueError) as e:
+            print(f"{R}✗{N} could not prepare the complete MO sequence: {e}")
+            return 1
     # One explicit policy acceptance covers task starts in the same live
     # session. A changed policy digest or a fresh session still requires a new
     # explicit acceptance; an explicitly supplied stale digest always fails.
@@ -453,11 +512,12 @@ def cmd_start(description: str, accepted_digest: str = ""):
         return 1
 
     print(f"{G}✓{N}  GAMEPLAN.md: logged today's [STARTING] entry")
-    return _finish_start(sid, aid, current_digest, already_accepted=already_accepted)
+    return _finish_start(sid, aid, current_digest, already_accepted=already_accepted,
+                         mo_sections=mo_sections)
 
 
 def _finish_start(sid: str, aid: str, policy_digest: str,
-                  already_accepted: bool = False) -> int:
+                  already_accepted: bool = False, mo_sections=None) -> int:
     """Shared tail of cmd_start: ack + unlock, used whether or not a fresh
     GAMEPLAN entry was written this call."""
     if already_accepted:
@@ -470,6 +530,7 @@ def _finish_start(sid: str, aid: str, policy_digest: str,
         print(f"{G}✓{N}  {who_label} {Y}{aid}{N} explicitly accepted current SOT + all MOs")
         print(f"{D}   policy sha256: {policy_digest}{N}")
         _notify("SOP acknowledged", f"{who_label} {aid} acknowledged all SOPs -- session unlocked", urgency="normal")
+        print_current_mos(mo_sections or [])
 
     print(f"\n{G}✓ unlocked{N}")
     return 0

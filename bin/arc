@@ -4477,6 +4477,8 @@ cmd_help_full() {
   echo -e "  ${D}arc ${C}cf-watch${N}              ${M}check Cloudflare Workers usage now vs the 100k/day free-tier cap${N}"
   echo -e "  ${D}arc ${C}cf-watch log${N}          ${M}last 30 checks (runs every 2h via cron)${N}"
   echo -e "  ${D}arc ${C}heal${N}                  ${M}self-healing watchdog — checks + auto-fixes what's safe, flags what isn't${N}"
+  echo -e "  ${D}arc ${C}heal ip${N}               ${M}guarded home-IP allowlist sync — direct Wi-Fi only; skips VPN/tunnels/proxies/custom DNS${N}"
+  echo -e "  ${D}arc ${C}heal ip-status${N}        ${M}latest guarded home-IP check${N}"
   echo -e "  ${D}arc ${C}heal status${N}           ${M}latest run's findings${N}"
   echo -e "  ${D}arc ${C}heal log${N}              ${M}run history${N}"
   echo -e "  ${D}arc ${C}sot${N}                   ${M}canonical SOT for this user's tooling — snapshot/pull/status, migrate to a new PC${N}"
@@ -6425,6 +6427,14 @@ cmd_desktop() {
 cmd_heal() {
   local sub="${1:-}"
   case "$sub" in
+    ip)
+      ~/.local/bin/arc-heal --ip-only
+      ;;
+    ip-status)
+      [[ -f ~/khaos-lab/arc-heal-log/home-ip-latest.md ]] \
+        && cat ~/khaos-lab/arc-heal-log/home-ip-latest.md \
+        || echo -e "  ${D}no home-IP check yet — run 'arc heal ip'${N}"
+      ;;
     log)
       [[ -f ~/khaos-lab/arc-heal-log/history.log ]] && tail -30 ~/khaos-lab/arc-heal-log/history.log \
         || echo -e "  ${D}no runs yet${N}"
@@ -6438,7 +6448,7 @@ cmd_heal() {
       ;;
     *)
       echo -e "${R}unknown:${N} arc heal $sub"
-      echo -e "${D}options: (bare) · log · status${N}"
+      echo -e "${D}options: (bare) · ip · ip-status · log · status${N}"
       ;;
   esac
 }

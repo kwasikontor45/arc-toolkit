@@ -962,7 +962,12 @@ def check_sop_gate(timeout=5):
     try:
         p = subprocess.run(["arc-sop", "gate-check"], capture_output=True, text=True,
                            timeout=timeout)
-        return p.returncode == 0, strip_ansi((p.stdout or p.stderr).strip())
+        output = strip_ansi((p.stdout or p.stderr).strip())
+        if p.returncode == 0:
+            return True, "Current session policy accepted · today's task logged."
+        reason = next((line.split(":", 1)[1].strip() for line in output.splitlines()
+                       if line.startswith("gate NOT satisfied:")), "Read the current policy and accept to unlock.")
+        return False, reason
     except Exception as e:
         return False, f"SOP gate check unavailable: {e}"
 
@@ -1224,7 +1229,11 @@ CATEGORIES = {
         Action("iftop (opens in terminal, needs sudo)", "konsole --hold -e arc net iftop", detach=True),
         Action("nethogs (opens in terminal, needs sudo)", "konsole --hold -e arc net nethogs", detach=True),
         Action("Eero: summary (one-shot)", "arc eero-summary", timeout=15),
+        Action("Eero: router and device controls (terminal)", "konsole --hold -e arc eero", detach=True),
         Action("Eero: start monitor", "arc eero-watch", confirm=True),
+        Action("Home IP: latest guarded check", "arc heal ip-status"),
+        Action("Home IP: run guarded sync (plain Wi-Fi only)", "arc heal ip",
+               confirm=True, timeout=180),
         # `arc eero-logs` pipes through glow/less then a `read` prompt -- not one-shot
         # capturable -- so read the log file directly.
         Action("Eero: recent log (last 30 lines)", "tail -n 30 ~/dev-notes/surgery-tools/eero/eero-watch.log"),
@@ -2974,7 +2983,8 @@ class CockpitView(TileView):
                         k, v = line.split(":", 1)
                         d[k.strip()] = v.strip()
                 return (f"{d.get('internet', '?')}  ·  {d.get('clients', '?')} clients  ·  {d.get('nodes', '?')} node(s)"
-                        f"\ndns {d.get('dns', '?')}  ·  {d.get('public_ip', '?')}")
+                        f"\nrouter DNS {d.get('dns', '?')}  ·  host egress {d.get('host_egress_ip', d.get('public_ip', '?'))}"
+                        f" via {d.get('host_route', 'unknown')}")
             return "not signed in — arc eero" if "not signed in" in out else "unavailable"
 
         def cloudlab():
@@ -3508,8 +3518,17 @@ class SopView(View):
         f = self.app.f
         card = tk.Frame(self.frame, bg=BG, highlightthickness=1, highlightbackground=BORDER)
         card.pack(fill="x", padx=8, pady=8)
-        tk.Label(card, text="SOP / DAILY OPERATIONS GATE", font=f.small, bg=BG, fg=TEAL,
-                 anchor="w").pack(fill="x", padx=14, pady=(12, 4))
+        self.method_label = tk.Label(card,
+                 text="Recognize · construct · visualize · analyze · interpret",
+                 font=f.small, bg=BG, fg=self.app.phase_accent,
+                 anchor="w")
+        self.method_label.pack(fill="x", padx=14, pady=(12, 4))
+        self.signature_label = tk.Label(card, text=")(  )(  ·  SOP ACCESS", font=f.big,
+                     bg=BG, fg=self.app.phase_accent, anchor="w")
+        self.signature_label.pack(fill="x", padx=14, pady=(0, 2))
+        self.identity_label = tk.Label(card, text="", font=f.small, bg=BG, fg=FG_MUTED,
+                                       anchor="w")
+        self.identity_label.pack(fill="x", padx=14, pady=(0, 6))
         self.gate_label = tk.Label(card, text="checking gate…", font=f.big, bg=BG, fg=GOLD,
                                    anchor="w")
         self.gate_label.pack(fill="x", padx=14, pady=(0, 3))
@@ -3533,13 +3552,15 @@ class SopView(View):
             padx=12, pady=7).pack(side="left", padx=5)
         ui.button(docs, "check gate", command=self.refresh_gate, font=f.small, bg=OVERLAY, fg=FG,
                   hover_bg=BG, padx=12, pady=7).pack(side="right", padx=5)
-        principles = ("I WWSJD  ·  II Right & tight  ·  III Swiss cheese\n"
-                      "IV Trust but verify  ·  V Operate in the light\n"
-                      "VI Leave it cleaner  ·  VII Inevitable")
-        tk.Label(docs, text=principles, font=f.small, bg=SURFACE, fg=TEAL,
-                 anchor="w", justify="left", wraplength=720).pack(fill="x", padx=10, pady=(2, 4))
-        guide = ("Full policy: ~/dev-notes/intel-ops/GAMEPLAN.md · "
-                 "~/dev-notes/intel-ops/SOT.md · ~/dev-notes/intel-ops/MO.md\n"
+        self.principles_label = tk.Label(docs,
+                 text=("I WWSJD  ·  II Right & tight  ·  III Swiss cheese\n"
+                       "IV Trust but verify  ·  V Operate in the light\n"
+                       "VI Leave it cleaner  ·  VII Inevitable"),
+                 font=f.small, bg=SURFACE, fg=self.app.phase_accent,
+                 anchor="w", justify="left", wraplength=720)
+        self.principles_label.pack(fill="x", padx=10, pady=(2, 4))
+        guide = (f"Full policy: {HOME / 'dev-notes/intel-ops/GAMEPLAN.md'} · "
+                 f"{HOME / 'dev-notes/intel-ops/SOT.md'} · {HOME / 'dev-notes/intel-ops/MO.md'}\n"
                  "Read all three before accepting · batcat or cat reads the full files")
         tk.Label(docs, text=guide, font=f.small, bg=SURFACE, fg=FG_MUTED,
                  anchor="w", justify="left", wraplength=720).pack(fill="x", padx=10, pady=(2, 8))
@@ -3603,8 +3624,17 @@ class SopView(View):
         if not self.alive():
             return
         ok, detail = state
+        phase = self.app.phase_name
+        accent = self.app.phase_accent
+        stamp = datetime.now()
+        self.method_label.configure(fg=accent)
+        self.signature_label.configure(fg=accent)
+        self.identity_label.configure(
+            text=f"lt · {os.environ.get('USER', 'operator')} · arc  ·  "
+                 f"{stamp:%a %d %b %Y}  ·  {stamp:%H:%M}  ·  {phase}", fg=accent)
+        self.principles_label.configure(fg=accent)
         self.gate_label.configure(text="OPERATIONS OPEN" if ok else "OPERATIONS LOCKED",
-                                  fg=TEAL if ok else ROSE)
+                                  fg=PINE if ok else ROSE)
         self.detail_label.configure(text=detail or ("This session is cleared." if ok else
                                                      "Read the current plan, then log and acknowledge."))
 

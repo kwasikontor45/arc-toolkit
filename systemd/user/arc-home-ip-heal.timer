@@ -1,0 +1,12 @@
+[Unit]
+Description=Check home IP drift on the direct Wi-Fi path
+
+[Timer]
+OnActiveSec=1min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=true
+Unit=arc-home-ip-heal.service
+
+[Install]
+WantedBy=timers.target

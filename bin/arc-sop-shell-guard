@@ -33,7 +33,7 @@ def allowed(command: str) -> bool:
     if binary == "arc-sop" and args:
         verb = args[0].lower()
         return ((verb == "start" and len(args) >= 2)
-                or (verb in {"status", "check", "verify", "gate-status", "recover"} and len(args) == 1)
+                or (verb in {"status", "check", "verify", "gate-status", "gate-hint", "recover"} and len(args) == 1)
                 or (verb == "violations" and args[1:] in ([], ["--watch"]))
                 or (verb == "record-violation" and len(args) == 3
                     and args[1] in {"pre-ack-shell-operation", "pre-ack-tool-operation"})
@@ -85,8 +85,17 @@ if __name__ == "__main__":
         except Exception:
             pass
     color = sys.stderr.isatty() and "NO_COLOR" not in os.environ
-    lock = "\033[1;35mSOP LOCKED\033[0m" if color else "SOP LOCKED"
-    step = "\033[1;36mRead\033[0m" if color else "Read"
-    print(f"{lock} · {step} GAMEPLAN.md, SOT.md, all MOs; then run arc-sop start \"<task>\".",
-          file=sys.stderr)
+    try:
+        result = subprocess.run(
+            [os.path.expanduser("~/.local/bin/arc-sop"), "gate-hint"],
+            check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=None,
+        )
+        if result.returncode == 0:
+            raise SystemExit(1)
+    except SystemExit:
+        raise
+    except Exception:
+        lock = "\033[1;31mSOP ACCESS · LOCKED\033[0m" if color else "SOP ACCESS · LOCKED"
+        print(f"{lock} · read GAMEPLAN, full SOT, all MOs; then run arc-sop start \"<task>\".",
+              file=sys.stderr)
     raise SystemExit(1)

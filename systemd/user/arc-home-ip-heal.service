@@ -1,0 +1,19 @@
+[Unit]
+Description=Guarded home IP drift check and AWS SSH allowlist repair
+
+[Service]
+Type=oneshot
+Environment=HOME=%h
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+ExecStart=%h/.local/bin/arc-heal --ip-only
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadWritePaths=%h/khaos-lab/arc-heal-log %h/.config/arc/sop -%h/khaos-lab/aws-infra

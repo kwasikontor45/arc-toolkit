@@ -298,6 +298,50 @@ def print_rule(name: str, passed: bool, message: str):
     print(f"  {symbol}  {BOLD}{name}{N}: {message}")
 
 
+def _circadian_phase():
+    hour = datetime.now().hour
+    if 6 <= hour < 11:
+        return "choice", "#80b9c9"
+    if 11 <= hour < 17:
+        return "desire", "#d8b375"
+    if 17 <= hour < 21:
+        return "still-pine", "#a2c6a5"
+    return "nyx", "#b391a0"
+
+
+def print_gate_banner(opened: bool, compact: bool = False, stream=None):
+    """Render a small, phase-aware access signal without changing gate policy."""
+    stream = sys.stdout if stream is None else stream
+    now_local = datetime.now()
+    phase, accent = _circadian_phase()
+    use_color = bool(getattr(stream, "isatty", lambda: False)()) and "NO_COLOR" not in os.environ
+
+    def paint(value, code):
+        return f"\033[{code}m{value}{N}" if use_color else value
+
+    rgb = tuple(int(accent[i:i + 2], 16) for i in (1, 3, 5))
+    phase_color = f"38;2;{rgb[0]};{rgb[1]};{rgb[2]}"
+    state_color = "1;32" if opened else "1;31"
+    state = "OPEN" if opened else "LOCKED"
+    mark = paint(")(  )(", phase_color)
+    status = paint(f"SOP ACCESS · {state}", state_color)
+    print(f"{mark}  {status}  {paint('· ' + phase, phase_color)}", file=stream)
+    if compact:
+        return
+
+    print(paint("Recognize · construct · visualize · analyze · interpret", "2"), file=stream)
+    print(paint(f"lt · {_current_username()} · arc", phase_color)
+          + paint(f"  ·  {now_local:%a %d %b %Y}  ·  {now_local:%H:%M}  ·  {phase}", "2"), file=stream)
+    if opened:
+        print(paint("I WWSJD · II Right & tight · III Swiss cheese", phase_color), file=stream)
+        print(paint("IV Trust but verify · V Operate in the light · VI Leave it cleaner · VII Inevitable", phase_color), file=stream)
+        print(paint(f"Full principles: {MO_FILE}", "2"), file=stream)
+    else:
+        print("Read the full GAMEPLAN context, SOT, and all MOs before starting a task.", file=stream)
+        print(f"Sources: {INTEL_OPS / 'GAMEPLAN.md'} · {SOT_FILE} · {MO_FILE}", file=stream)
+        print('Then: arc-sop start "<task>"', file=stream)
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -442,6 +486,7 @@ def cmd_start(description: str, accepted_digest: str = ""):
     description = description.strip()
     if not description:
         print(f"{R}✗{N}  task description must not be empty; no task was logged and the gate stays locked")
+        print_gate_banner(False, compact=True)
         print_reading_guide()
         return 2
 
@@ -484,6 +529,7 @@ def cmd_start(description: str, accepted_digest: str = ""):
             if not path.is_file():
                 print(f"{R}✗{N} required policy file missing: {path}")
                 return 1
+        print_gate_banner(False, compact=True)
         print(f"{Y}Policy not yet acknowledged.{N}")
         print_reading_guide()
         print("Then explicitly accept them for this session with this exact command:")
@@ -520,6 +566,7 @@ def _finish_start(sid: str, aid: str, policy_digest: str,
                   already_accepted: bool = False, mo_sections=None) -> int:
     """Shared tail of cmd_start: ack + unlock, used whether or not a fresh
     GAMEPLAN entry was written this call."""
+    print_gate_banner(True)
     if already_accepted:
         print(f"{G}✓{N}  current policy acceptance reused for this live session")
     else:
@@ -568,6 +615,14 @@ def cmd_gate_status():
     print(f"  {D}owner{N}     {Y}{owner_label}{N}  {D}(all identities use the same policy gate){N}")
 
 
+def cmd_gate_hint():
+    """Compact read-only locked-state display for the interactive shell guard."""
+    print_gate_banner(False, compact=True, stream=sys.stderr)
+    print("Read GAMEPLAN context, full SOT, and every MO; then: arc-sop start \"<task>\".", file=sys.stderr)
+    print(f"Sources: {INTEL_OPS / 'GAMEPLAN.md'} · {SOT_FILE} · {MO_FILE}", file=sys.stderr)
+    return 0
+
+
 def cmd_gate_check() -> bool:
     """Require this session's current, explicit SOT+MO acceptance and start log."""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -586,7 +641,8 @@ def cmd_gate_check() -> bool:
     ack_ok = bool(rows and rows[0].get("ack_type") == expected_ack)
 
     if gp_ok and ack_ok:
-        print("gate satisfied")
+        print_gate_banner(True, compact=True)
+        print(f"{G}gate satisfied{N}")
         return True
 
     missing = []
@@ -594,7 +650,8 @@ def cmd_gate_check() -> bool:
         missing.append("GAMEPLAN.md missing this session's [STARTING] entry")
     if not ack_ok:
         missing.append(f"no current SOT+all-MO acceptance for '{aid}' session '{sid}'")
-    print(f"gate NOT satisfied: {'; '.join(missing)}")
+    print_gate_banner(False, compact=True)
+    print(f"{R}gate NOT satisfied: {'; '.join(missing)}{N}")
     print_reading_guide()
     print('After reading, run: arc-sop start "<short task description>"')
     return False
@@ -1228,6 +1285,8 @@ def main():
     elif cmd == "gate-check":
         ok = cmd_gate_check()
         sys.exit(0 if ok else 1)
+    elif cmd == "gate-hint":
+        sys.exit(cmd_gate_hint())
     elif cmd == "gate-bypass":
         sys.exit(cmd_gate_bypass())
     elif cmd == "emergency":
@@ -1236,7 +1295,7 @@ def main():
         cmd_gate_enable()
     else:
         print(f"Unknown command: {cmd}")
-        print('Usage: arc-sop [start "<task>" [--accept-policy <digest>] | baseline | verify | check | status | violations [--watch] | resolve <id> | bundle | root-copy | recover | ack-today | done-balance | ack-auto | gate-check | gate-status | gate-enable]')
+        print('Usage: arc-sop [start "<task>" [--accept-policy <digest>] | baseline | verify | check | status | violations [--watch] | resolve <id> | bundle | root-copy | recover | ack-today | done-balance | ack-auto | gate-check | gate-hint | gate-status | gate-enable]')
         sys.exit(1)
 
 

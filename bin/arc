@@ -908,10 +908,12 @@ cmd_day() {
   echo -e "  ${C}${B}arc day${N}  —  morning startup"
   echo -e "$HR\n"
 
-  # ── SOP reminder (non-blocking) ────────────────────────────────────────────
-  if ! arc-sop ack-today 2>/dev/null; then
-    notify-send -u low -i dialog-warning "arc · SOP reminder" "No acknowledgment today. Run: arc sop ack. Startup continues." 2>/dev/null || true
-    echo -e "  ${Y}⚠${N}  ${B}SOP ack missing${N}  ${D}·${N}  ${M}run arc sop ack${N}  ${D}· startup continues${N}"
+  # No soft bypass: startup checks do not proceed until current policy was accepted.
+  if ! arc-sop gate-check; then
+    echo -e "  ${Y}⚠${N}  Read GAMEPLAN context, full SOT.md and every current MO, then run:"
+    echo -e "  ${M}arc-sop start \"arc day\"${N}"
+    echo -e "$HR"
+    return 1
   fi
 
   echo -e "  ${C}storage drive${N}"
@@ -4803,10 +4805,19 @@ cmd_sop() {
       arc-sop recover
       ;;
     violations)
-      arc-sop violations
+      if [[ -n "${3:-}" ]]; then arc-sop violations "$3"; else arc-sop violations; fi
+      ;;
+    emergency)
+      arc-sop emergency "${@:3}"
+      ;;
+    record-violation)
+      arc-sop record-violation "${3:-}" "${4:-}"
       ;;
     resolve)
       arc-sop resolve "${3:-}"
+      ;;
+    record-violation)
+      arc-sop record-violation "${3:-}" "${4:-}"
       ;;
     ack-today|check-today)
       arc-sop ack-today
@@ -4827,9 +4838,11 @@ cmd_sop() {
       ;;
     *)
       echo -e "  ${C}arc sop${N} — SOP enforcement"
-      echo -e "  ${D}ack · baseline · verify · check · status · violations · resolve <id>${N}"
+      echo -e "  ${D}start <task> --accept-policy <digest> · baseline · verify · check · status · violations [--watch] · resolve <id>${N}"
       echo -e "  ${D}bundle · root-copy · recover · ack-today · done-balance${N}"
-      echo -e "  ${D}start [description]        — the one command: shows GAMEPLAN.md + logs [STARTING] + acks${N}"
+      echo -e "  ${D}emergency — read-only recovery hatch; never bypasses policy acceptance${N}"
+      echo -e "  ${D}start <task>               — review current policy and print a session-bound acceptance command${N}"
+      echo -e "  ${D}emergency                  — read-only recovery hatch; recover never unlocks operations${N}"
       echo -e "  ${D}gate status|bypass|enable  — interactive-shell gate management${N}"
       ;;
   esac

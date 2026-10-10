@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Conservative pre-ack command allowlist shared by interactive shells."""
 import os
+import re
 import shlex
+import subprocess
 import sys
 
 
@@ -31,17 +33,22 @@ def allowed(command: str) -> bool:
     if binary == "arc-sop" and args:
         verb = args[0].lower()
         return ((verb == "start" and len(args) >= 2)
-                or (verb in {"ack", "status", "check", "verify", "gate-status", "violations"}
-                    and len(args) == 1)
-                or (verb == "emergency" and len(args) >= 2)
+                or (verb in {"status", "check", "verify", "gate-status", "recover"} and len(args) == 1)
+                or (verb == "violations" and args[1:] in ([], ["--watch"]))
+                or (verb == "record-violation" and len(args) == 3
+                    and args[1] in {"pre-ack-shell-operation", "pre-ack-tool-operation"})
+                or (verb == "emergency" and len(args) == 1)
                 or (verb == "gate-enable" and len(args) == 1))
     if binary == "arc" and len(args) >= 2 and args[0].lower() == "sop":
         verb = args[1].lower()
         return ((verb == "start" and len(args) >= 3)
-                or (verb in {"ack", "status", "check", "verify"} and len(args) == 2)
-                or (verb == "emergency" and len(args) >= 3)
+                or (verb in {"status", "check", "verify", "recover"} and len(args) == 2)
+                or (verb == "violations" and args[2:] in ([], ["--watch"]))
+                or (verb == "record-violation" and len(args) == 4
+                    and args[2] in {"pre-ack-shell-operation", "pre-ack-tool-operation"})
+                or (verb == "emergency" and len(args) == 2)
                 or (verb == "gate-enable" and len(args) == 2))
-    if binary in {"cd", "pwd", "ls", "cat", "head", "tail", "glow", "stat", "file", "wc",
+    if binary in {"cd", "pwd", "ls", "cat", "batcat", "bat", "head", "tail", "glow", "stat", "file", "wc",
                   "date", "id", "whoami", "grep", "rg", "clear", "history", "type", "which",
                   "echo", "printf"}:
         return True
@@ -49,6 +56,11 @@ def allowed(command: str) -> bool:
         return True
     if binary == "git" and args and args[0] in {"status", "diff", "log", "show", "branch", "remote"}:
         return True
+    # Permit read-only line extraction for policy and source inspection. Reject
+    # edits, expressions, script files, and every sed mode except a numeric print.
+    if binary == "sed" and len(args) >= 3 and args[0] == "-n":
+        return (len(args) == 3 and re.fullmatch(r"[0-9]+(?:,[0-9]+)?p", args[1]) is not None
+                and not args[2].startswith("-"))
     return False
 
 
@@ -56,6 +68,22 @@ if __name__ == "__main__":
     command = sys.argv[1] if len(sys.argv) == 2 else ""
     if allowed(command):
         raise SystemExit(0)
-    print("SOP gate: command blocked. Read the SOT/GAMEPLAN, then run `arc-sop start \"task\"`.",
+    # Persist only the attempted executable name, never its arguments, which
+    # may contain private data. The reporting command cannot unlock the gate.
+    if not os.environ.get("ARC_SOP_NO_RECORD"):
+        try:
+            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
+            lexer.whitespace_split = True
+            argv = list(lexer)
+            if argv and not any(token and all(c in ";&|<>" for c in token) for token in argv):
+                binary = os.path.basename(argv[0])[:64] or "unknown"
+                subprocess.run(
+                    [os.path.expanduser("~/.local/bin/arc-sop"), "record-violation",
+                     "pre-ack-shell-operation", binary],
+                    check=False, timeout=5, capture_output=True,
+                )
+        except Exception:
+            pass
+    print("SOP gate: command blocked. Read GAMEPLAN.md, SOT.md, and every MO in MO.md under ~/dev-notes/intel-ops. Use `less <full-path>`, `batcat <full-path>` (if installed), or `cat <full-path>`, then run `arc-sop start \"<short task>\"`.",
           file=sys.stderr)
     raise SystemExit(1)

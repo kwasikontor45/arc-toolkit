@@ -2,10 +2,10 @@
 """
 arc-sop-gate-hook — agent PreToolUse hook, real enforcement point.
 
-Blocks Bash tool calls until arc-sop's gate is actually satisfied (GAMEPLAN
-[STARTING] entry today + a same-day ack for this agent session), or the human owner
-has set an override. Only single, parsed SOP startup/status/recovery commands pass
-before acknowledgment; shell command chains never inherit that exception.
+Blocks operational tool calls until arc-sop confirms a same-day, session-scoped
+acceptance bound to the exact current SOT.md and MO.md. Before acknowledgment,
+read-only discovery and one standalone SOP setup command are allowed. Unknown
+tools fail closed.
 """
 import json
 import os
@@ -41,15 +41,20 @@ def self_serve(command: str) -> bool:
     if binary == "arc-sop" and args:
         verb = args[0].lower()
         return ((verb == "start" and len(args) >= 2)
-                or (verb in {"ack", "status", "check", "verify", "gate-status", "violations"}
-                    and len(args) == 1)
-                or (verb == "emergency" and len(args) >= 2)
+                or (verb in {"status", "check", "verify", "gate-status", "recover"} and len(args) == 1)
+                or (verb == "violations" and args[1:] in ([], ["--watch"]))
+                or (verb == "record-violation" and len(args) == 3
+                    and args[1] in {"pre-ack-shell-operation", "pre-ack-tool-operation"})
+                or (verb == "emergency" and len(args) == 1)
                 or (verb == "gate-enable" and len(args) == 1))
     if binary == "arc" and len(args) >= 2 and args[0].lower() == "sop":
         verb = args[1].lower()
         return ((verb == "start" and len(args) >= 3)
-                or (verb in {"ack", "status", "check", "verify"} and len(args) == 2)
-                or (verb == "emergency" and len(args) >= 3)
+                or (verb in {"status", "check", "verify", "recover"} and len(args) == 2)
+                or (verb == "violations" and args[2:] in ([], ["--watch"]))
+                or (verb == "record-violation" and len(args) == 4
+                    and args[2] in {"pre-ack-shell-operation", "pre-ack-tool-operation"})
+                or (verb == "emergency" and len(args) == 2)
                 or (verb == "gate-enable" and len(args) == 2))
     return False
 
@@ -77,14 +82,10 @@ def main():
         print(json.dumps({"decision": "deny", "reason": "Malformed SOP gate hook input."}),
               file=sys.stderr)
         sys.exit(2)
-    if data.get("tool_name") != "Bash":
-        sys.exit(0)
-
+    tool_name = data.get("tool_name")
     tool_input = data.get("tool_input")
-    command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
-    if self_serve(command):
+    if tool_name in {"Read", "Grep", "Glob", "ListDir", "Search"}:
         sys.exit(0)
-
     # Codex supplies the authoritative session id in the hook payload. The
     # spawned hook process may not inherit the session environment variable,
     # which otherwise makes `gate-check` identify its parent Konsole shell
@@ -119,9 +120,34 @@ def main():
     if result.returncode == 0:
         sys.exit(0)
 
+    if tool_name == "Bash":
+        command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+        if self_serve(command):
+            sys.exit(0)
+        # Reuse the interactive shell read allowlist, but suppress its own
+        # denial event: this hook records the authoritative Codex-session event
+        # below, so one denied call must produce one ledger row.
+        guard = "/home/architect-of-chaos/.local/bin/arc-sop-shell-guard"
+        guard_env = hook_env.copy()
+        guard_env["ARC_SOP_NO_RECORD"] = "1"
+        try:
+            read_result = subprocess.run([guard, command], capture_output=True,
+                                         text=True, timeout=5, env=guard_env)
+            if read_result.returncode == 0:
+                sys.exit(0)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
     reason = result.stdout.strip() or "SOP gate not satisfied"
-    _notify("SOP gate BLOCKED a command", reason)
-    print(json.dumps({"decision": "deny", "reason": reason}), file=sys.stderr)
+    # Persist a secret-safe violation event immediately. Only the tool name is
+    # recorded, never tool arguments, which may contain private data.
+    record_cmd = cmd[:-1] + ["record-violation", "pre-ack-tool-operation",
+                            str(tool_name or "unknown")[:64]]
+    try:
+        subprocess.run(record_cmd, capture_output=True, text=True, timeout=10, env=hook_env)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    print(json.dumps({"decision": "deny", "reason": f"{tool_name or 'unknown tool'} blocked: {reason}"}), file=sys.stderr)
     sys.exit(2)
 
 

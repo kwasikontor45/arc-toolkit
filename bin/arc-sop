@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import shutil
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -58,6 +59,8 @@ def _user_home() -> Path:
 
 HOME = _user_home()
 INTEL_OPS = HOME / "dev-notes/intel-ops"
+MO_FILE = INTEL_OPS / "MO.md"
+SOT_FILE = INTEL_OPS / "SOT.md"
 SOP_DIR = HOME / ".config/arc/sop"
 DB_PATH = SOP_DIR / "arc-sop.db"
 ROOT_COPY = Path("/usr/local/share/arc/sop")
@@ -285,32 +288,27 @@ def print_rule(name: str, passed: bool, message: str):
 # Commands
 # ---------------------------------------------------------------------------
 def cmd_ack():
-    """Record agent acknowledgment."""
-    init_db()
-    sid = session_id()
-    aid = agent_id()
-    ts = now()
+    """Refuse unversioned acknowledgments; they cannot satisfy the gate."""
+    print(f"{R}✗{N}  bare acknowledgment cannot unlock operations.")
+    print_reading_guide()
+    print('After reading, enter a short non-empty task description:')
+    print('  arc-sop start "task description" --accept-policy <digest-shown-by-start>')
+    return 2
 
-    db_insert(
-        "acks",
-        timestamp=ts,
-        agent_id=aid,
-        session_id=sid,
-        ack_type="sop",
-    )
 
-    who_label = "Agent" if is_agent_id(aid) else "User"
-
-    print(f"{C}arc-sop ack{N}")
-    print(f"  {G}✓{N}  {who_label} {Y}{aid}{N} acknowledged all SOPs")
-    print(f"  {D}   session: {sid}{N}")
-    print(f"  {D}   time:    {ts}{N}")
-
-    _notify(
-        "SOP acknowledged",
-        f"{who_label} {aid} acknowledged all SOPs",
-        urgency="normal",
-    )
+def print_reading_guide():
+    """Show exact policy paths and available, simple terminal readers."""
+    print("Read these complete sources before accepting:")
+    print(f"  GAMEPLAN context: {INTEL_OPS / 'GAMEPLAN.md'}")
+    print(f"  Source of truth:  {SOT_FILE}")
+    print(f"  Every current MO: {MO_FILE}")
+    readers = [name for name in ("batcat", "bat", "cat")
+               if shutil.which(name)]
+    print("Reader examples (use one command per file):")
+    for reader in readers or ["cat"]:
+        print(f"  {reader} {INTEL_OPS / 'GAMEPLAN.md'}")
+        print(f"  {reader} {SOT_FILE}")
+        print(f"  {reader} {MO_FILE}")
 
 
 def cmd_ack_auto(script_name: str):
@@ -327,83 +325,135 @@ def cmd_ack_auto(script_name: str):
     print(f"{D}[arc-sop] auto-ack: {aid} @ {ts}{N}")
 
 
-def _gameplan_today_has_starting() -> bool:
+def cmd_record_violation(rule: str, detail: str):
+    """Append a minimal, secret-safe gate denial to the compliance ledger."""
+    init_db()
+    rule = "".join(c for c in rule if c.isalnum() or c in "_.-")[:80]
+    detail = "".join(c for c in detail if c.isalnum() or c in "_.-:@")[:100]
+    if not rule or not detail:
+        print("Usage: arc-sop record-violation <rule> <safe-tool-name>", file=sys.stderr)
+        return 2
+    aid, sid = agent_id(), session_id()
+    db_insert("violations", timestamp=now(), rule=rule,
+              details=f"actor={aid[:40]}; session={sid[:64]}; tool={detail}", resolved=0)
+    cutoff = datetime.fromtimestamp(time.time() - 60).strftime("%Y-%m-%d %H:%M:%S")
+    recent = db_query("SELECT COUNT(*) AS c FROM violations WHERE timestamp >= ?", (cutoff,))[0]["c"]
+    if recent == 1:
+        _notify("SOP gate blocked an operation",
+                f"{aid} · {detail} · review with: arc sop violations", urgency="normal")
+    return 0
+
+
+def _gameplan_today_has_starting(sid: str = "", aid: str = "") -> bool:
     gp = INTEL_OPS / "GAMEPLAN.md"
     if not gp.exists():
         return False
     today = datetime.now().strftime("%Y-%m-%d")
     content = gp.read_text()
-    today_lines = [l for l in content.splitlines() if today in l]
-    return bool(today_lines) and any("[STARTING]" in l for l in today_lines)
+    today_lines = [l for l in content.splitlines() if today in l and "[STARTING]" in l]
+    if sid:
+        today_lines = [line for line in today_lines if f"[sid:{sid}]" in line]
+    if aid:
+        today_lines = [line for line in today_lines if f"· {aid} ·" in line]
+    return bool(today_lines)
 
 
-def cmd_start(description: str):
-    """The one command that satisfies the interactive gate: shows the tail of
-    GAMEPLAN.md (the 'read it' requirement), appends a properly-formatted
-    dated [STARTING] entry (the exact thing cmd_check's 'GAMEPLAN today'
-    check looks for -- today's date AND [STARTING] on the same line), then
-    acks. Exits 0 only if all three actually succeeded -- the calling shell
-    loop uses that exit code directly to decide whether to unlock."""
+def _policy_digest() -> str:
+    """Bind acceptance to current SOT/MOs and this exact user/agent session."""
+    h = hashlib.sha256()
+    for path in (SOT_FILE, MO_FILE):
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        h.update(path.name.encode("utf-8"))
+        h.update(b"\0")
+        h.update(path.read_bytes())
+        h.update(b"\0")
+    h.update(b"agent\0" + agent_id().encode("utf-8") + b"\0")
+    h.update(b"session\0" + session_id().encode("utf-8") + b"\0")
+    return h.hexdigest()
+
+
+def cmd_start(description: str, accepted_digest: str = ""):
+    """Present current policy and require explicit, version-bound acceptance
+    before logging the task or opening the operations gate."""
     init_db()
     gp = INTEL_OPS / "GAMEPLAN.md"
+    description = description.strip()
+    if not description:
+        print(f"{R}✗{N}  task description must not be empty; no task was logged and the gate stays locked")
+        print_reading_guide()
+        return 2
 
-    # 1. Show recent context -- glow if available, else plain tail.
+    # Present current gameplan context before policy acceptance.
     if not gp.exists():
         print(f"{R}✗{N}  GAMEPLAN.md not found at {gp} -- cannot satisfy the gate")
         return 1
-    print(f"{C}── GAMEPLAN.md — last entry header ──{N}")
+    print(f"{C}── GAMEPLAN.md — current context ──{N}")
     all_lines = gp.read_text().splitlines()
     header_lines = [i for i, l in enumerate(all_lines) if l.startswith("## ")]
-    if header_lines:
-        start = header_lines[-1]
-        snippet = all_lines[start:start + 6]
-    else:
-        snippet = all_lines[-15:]
-    glow = shutil.which("glow")
-    if glow:
-        subprocess.run([glow, "--pager", "-"], input="\n".join(snippet), text=True)
-    else:
-        print("\n".join(snippet))
-    print(f"{D}({len(header_lines)} dated entries on record — full history: glow {gp}){N}")
+    print("\n".join(all_lines[max(0, len(all_lines) - 80):]))
+    print(f"{D}({len(header_lines)} dated entries; read relevant prior entries in full at {gp}){N}")
     print(f"{C}──────────────────────────{N}\n")
 
-    # 2. Append a fresh dated [STARTING] entry -- but only if today doesn't
-    # already have one. The ack below still happens fresh every single call
-    # (that's the actual per-tab proof-of-engagement); the GAMEPLAN entry
-    # marks a real session start, not every terminal tab -- one new "## "
-    # header per day, not one per tab, matching how every other entry in
-    # this file is already structured (one header, many HH:MM bullets).
+    try:
+        current_digest = _policy_digest()
+    except OSError as e:
+        print(f"{R}✗{N} could not fingerprint current policy: {e}")
+        return 1
+    if accepted_digest != current_digest:
+        # Print complete policy source text; summaries cannot stand in for the
+        # current seven (or any future number of) MOs.
+        for label, path in (("SOT.md — read the complete source of truth", SOT_FILE),
+                            ("MO.md — read and accept every current MO", MO_FILE)):
+            if not path.is_file():
+                print(f"{R}✗{N} required policy file missing: {path}")
+                return 1
+            print(f"{C}── {label} ──{N}")
+            print(path.read_text())
+            print(f"{C}──────────────────────────{N}\n")
+        print(f"{Y}Policy not yet acknowledged.{N}")
+        print("Read the full GAMEPLAN context, entire SOT.md, and every current MO in MO.md.")
+        print_reading_guide()
+        print("Then explicitly accept them for this session with this exact command:")
+        print(f"  arc-sop start {shlex.quote(description)} --accept-policy {current_digest}")
+        print("The digest is session-bound and changes when SOT.md or MO.md changes; stale acknowledgments fail closed.")
+        return 2
+    print(f"{G}✓{N}  current SOT + all MOs accepted for this exact session ({current_digest})")
+
+    # 2. Log every accepted task before it can operate. Exact duplicate retries
+    # in the same session are idempotent; a second task gets its own entry.
     sid = session_id()
     aid = agent_id()
     ts_date = datetime.now().strftime("%Y-%m-%d")
 
-    if _gameplan_today_has_starting():
-        print(f"{D}today already has a [STARTING] entry -- not adding another, just acking this shell{N}")
-        return _finish_start(sid, aid)
-
     entry = f"\n## {ts_date} · {aid} · [sid:{sid}] · [STARTING] {description}\n"
-    try:
-        with open(gp, "a") as f:
-            f.write(entry)
-    except Exception as e:
-        print(f"{R}✗{N}  couldn't write to GAMEPLAN.md: {e}")
-        return 1
+    existing = gp.read_text()
+    header = entry.strip()
+    if header not in existing.splitlines():
+        try:
+            with open(gp, "a") as f:
+                f.write(entry)
+        except Exception as e:
+            print(f"{R}✗{N}  couldn't write to GAMEPLAN.md: {e}")
+            return 1
 
-    if not _gameplan_today_has_starting():
+    if not _gameplan_today_has_starting(sid, aid):
         print(f"{R}✗{N}  wrote the entry but the today+[STARTING] check still doesn't pass -- something's off, not unlocking")
         return 1
 
     print(f"{G}✓{N}  GAMEPLAN.md: logged today's [STARTING] entry")
-    return _finish_start(sid, aid)
+    return _finish_start(sid, aid, current_digest)
 
 
-def _finish_start(sid: str, aid: str) -> int:
+def _finish_start(sid: str, aid: str, policy_digest: str) -> int:
     """Shared tail of cmd_start: ack + unlock, used whether or not a fresh
     GAMEPLAN entry was written this call."""
     ts = now()
-    db_insert("acks", timestamp=ts, agent_id=aid, session_id=sid, ack_type="sop")
+    db_insert("acks", timestamp=ts, agent_id=aid, session_id=sid,
+              ack_type=f"sop-policy-sha256:{policy_digest}")
     who_label = "Agent" if is_agent_id(aid) else "User"
-    print(f"{G}✓{N}  {who_label} {Y}{aid}{N} acknowledged all SOPs")
+    print(f"{G}✓{N}  {who_label} {Y}{aid}{N} explicitly accepted current SOT + all MOs")
+    print(f"{D}   policy sha256: {policy_digest}{N}")
     _notify("SOP acknowledged", f"{who_label} {aid} acknowledged all SOPs -- session unlocked", urgency="normal")
 
     print(f"\n{G}✓ unlocked{N}")
@@ -427,51 +477,37 @@ def _active_emergency():
 
 
 def cmd_gate_status():
-    active = GATE_BYPASS_FILE.exists()
-    emergency = _active_emergency()
     gp_ok = _gameplan_today_has_starting()
-    owner_uid = _gate_owner_uid()
+    owner_uid = _gate_owner_uid(create=False)
     print(f"{C}arc-sop gate status{N}")
-    if active:
-        state = R + "OWNER BYPASS ACTIVE — until gate-enable" + N
-    elif emergency:
-        expires = datetime.fromtimestamp(float(emergency["expires_epoch"])).strftime("%H:%M:%S")
-        state = Y + f"EMERGENCY ACTIVE — auto-expires {expires}; {emergency.get('reason', 'reason unavailable')}" + N
-    else:
-        state = G + "off — gate enforced" + N
+    state = G + "enforced — no bypass/emergency window can unlock operations" + N
     print(f"  {D}state{N}     {state}")
+    if GATE_BYPASS_FILE.exists() or GATE_EMERGENCY_FILE.exists():
+        print(f"  {Y}!{N}  legacy override record exists but is ignored; owner may clear it with arc-sop gate-enable")
     print(f"  {D}gameplan{N}  {(G + 'satisfied for today' + N) if gp_ok else (Y + 'not satisfied yet' + N)}")
-    print(f"  {D}owner{N}     {Y}uid {owner_uid}{N}  {D}({_current_username() if os.getuid() == owner_uid else 'not you'}, only this uid can override; agents are always refused){N}")
+    if owner_uid is None:
+        owner_label = "not configured"
+    else:
+        owner_label = f"uid {owner_uid} ({_current_username() if os.getuid() == owner_uid else 'not you'})"
+    print(f"  {D}owner{N}     {Y}{owner_label}{N}  {D}(all identities use the same policy gate){N}")
 
 
 def cmd_gate_check() -> bool:
-    """Silent boolean check for the real enforcement point (a Claude Code
-    PreToolUse hook, see ~/.local/bin/arc-sop-gate-hook). Gate is satisfied
-    if: bypass is active (owner-only, see cmd_gate_bypass), OR both
-    GAMEPLAN.md has today's [STARTING] entry AND THIS SPECIFIC SESSION has an
-    ack recorded today. Checked by session_id, not just agent_id -- agent_id
-    is always just "claude" across every Claude Code session on the machine,
-    so checking only that meant one session acking today silently satisfied
-    every OTHER session too, including a brand new one that never checked in
-    itself. Found live 2026-07-31: opened a second session, nothing fired."""
-    if GATE_BYPASS_FILE.exists():
-        print("owner bypass active")
-        return True
-    emergency = _active_emergency()
-    if emergency:
-        until = datetime.fromtimestamp(float(emergency["expires_epoch"])).strftime("%H:%M:%S")
-        print(f"emergency access active until {until}")
-        return True
-
-    gp_ok = _gameplan_today_has_starting()
+    """Require this session's current, explicit SOT+MO acceptance and start log."""
     today = datetime.now().strftime("%Y-%m-%d")
     aid = agent_id()
     sid = session_id()
+    gp_ok = _gameplan_today_has_starting(sid, aid)
+    try:
+        expected_ack = f"sop-policy-sha256:{_policy_digest()}"
+    except OSError as e:
+        print(f"gate NOT satisfied: required policy unavailable ({e})")
+        return False
     rows = db_query(
         "SELECT * FROM acks WHERE timestamp LIKE ? AND agent_id = ? AND session_id = ? ORDER BY timestamp DESC LIMIT 1",
         (f"{today}%", aid, sid),
     )
-    ack_ok = bool(rows)
+    ack_ok = bool(rows and rows[0].get("ack_type") == expected_ack)
 
     if gp_ok and ack_ok:
         print("gate satisfied")
@@ -479,17 +515,19 @@ def cmd_gate_check() -> bool:
 
     missing = []
     if not gp_ok:
-        missing.append("GAMEPLAN.md missing today's [STARTING] entry")
+        missing.append("GAMEPLAN.md missing this session's [STARTING] entry")
     if not ack_ok:
-        missing.append(f"no SOP ack recorded today for '{aid}' session '{sid}'")
-    print(f"gate NOT satisfied: {'; '.join(missing)} -- run: arc-sop start \"<description>\"")
+        missing.append(f"no current SOT+all-MO acceptance for '{aid}' session '{sid}'")
+    print(f"gate NOT satisfied: {'; '.join(missing)}")
+    print_reading_guide()
+    print('After reading, run: arc-sop start "<short task description>"')
     return False
 
 
 GATE_OWNER_UID_FILE = HOME / ".config/arc/gate-owner-uid"
 
 
-def _gate_owner_uid() -> int:
+def _gate_owner_uid(create: bool = True):
     """The one UID allowed to bypass/enable the gate. Stored explicitly
     rather than hardcoded, and keyed on UID (not username) specifically so
     a future username change ('architect-of-chaos' renamed to something
@@ -503,6 +541,8 @@ def _gate_owner_uid() -> int:
             return int(GATE_OWNER_UID_FILE.read_text().strip())
         except (ValueError, OSError):
             pass
+    if not create:
+        return None
     uid = os.getuid()
     GATE_OWNER_UID_FILE.write_text(f"{uid}\n")
     return uid
@@ -521,57 +561,21 @@ def _current_username() -> str:
 
 
 def cmd_gate_bypass():
-    aid = agent_id()
-    if is_agent_id(aid):
-        # Checked before the uid check, on purpose: an agent sharing the
-        # owner's uid (Claude Code has no separate account on this machine)
-        # must never bypass this gate, only a human typing directly can --
-        # 2026-07-30, user's explicit call. Matching uid alone is not
-        # sufficient here.
-        print(f"{R}✗{N}  refused — agent bypass is never allowed, regardless of uid. Detected: {aid}")
-        _notify("SOP gate bypass REFUSED", f"Agent tried to bypass: {aid} (uid {os.getuid()}, {_current_username()})", urgency="critical")
-        sys.exit(1)
-    if not _is_gate_owner():
-        print(f"{R}✗{N}  refused — only the machine's owner (uid {_gate_owner_uid()}) can bypass the gate. You are: {_current_username()} (uid {os.getuid()})")
-        _notify("SOP gate bypass REFUSED", f"Non-owner tried to bypass: {_current_username()} (uid {os.getuid()})", urgency="critical")
-        sys.exit(1)
-    GATE_BYPASS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    GATE_BYPASS_FILE.write_text(f"bypassed {now()} by {aid} (owner uid {os.getuid()}, {_current_username()})\n")
-    print(f"{Y}⚠{N}  gate bypass ACTIVE — new shells will not be gated until: arc sop gate enable")
-    _notify("SOP gate bypassed", f"Gate bypass activated by {aid} ({_current_username()})", urgency="critical")
+    print(f"{R}✗{N}  gate bypass is retired; it cannot authorize operations for any user or agent.")
+    print('Read and accept the current SOT + all MOs with: arc-sop start "task"')
+    return 1
 
 
 def cmd_gate_emergency(reason: str):
-    """Owner-only, audited, 30-minute access window for genuine emergencies."""
-    aid = agent_id()
-    if is_agent_id(aid):
-        print(f"{R}✗{N}  refused — agents cannot open emergency access")
-        _notify("SOP emergency access REFUSED", f"Agent {aid} requested emergency access", urgency="critical")
-        sys.exit(1)
-    if not _is_gate_owner():
-        print(f"{R}✗{N}  refused — only the machine owner can open emergency access")
-        sys.exit(1)
-    reason = " ".join(reason.split())[:300]
-    if not reason:
-        print(f"{R}✗{N}  usage: arc-sop emergency \"why this is urgent\"")
-        sys.exit(2)
-    GATE_EMERGENCY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    started = time.time()
-    record = {
-        "started_at": now(), "expires_epoch": started + GATE_EMERGENCY_SECONDS,
-        "reason": reason, "user": _current_username(), "uid": os.getuid(),
-        "session_id": session_id(),
-    }
-    line = json.dumps(record, sort_keys=True) + "\n"
-    with GATE_EMERGENCY_LOG.open("a") as audit:
-        audit.write(line)
-    os.chmod(GATE_EMERGENCY_LOG, 0o600)
-    GATE_EMERGENCY_FILE.write_text(line)
-    os.chmod(GATE_EMERGENCY_FILE, 0o600)
-    expires = datetime.fromtimestamp(record["expires_epoch"]).strftime("%H:%M:%S")
-    print(f"{Y}⚠ emergency access open until {expires} (30 minutes); it will close automatically{N}")
-    print(f"  reason recorded: {reason}")
-    _notify("SOP emergency access opened", f"{reason} -- auto-expires at {expires}", urgency="critical")
+    """Read-only emergency hatch; it diagnoses recovery without bypassing policy."""
+    print(f"{C}SOP emergency hatch · read-only · operations remain locked{N}")
+    print_reading_guide()
+    print("If a policy source is missing or unreadable, `arc sop recover` makes a dated copy")
+    print("of the current files, restores from the configured root copy or USB archive, and")
+    print("invalidates all previous acceptances. Re-read the restored sources and accept again.")
+    print("This hatch never authorizes application, system, or deployment operations.")
+    cmd_gate_status()
+    return 0
 
 
 def cmd_gate_enable():
@@ -688,18 +692,23 @@ def cmd_verify():
             print(f"  {R}✗{N}  changed: {Y}{p}{N}")
             details.append(f"changed:{p}")
         details_str = "; ".join(details)
-        db_insert(
-            "violations",
-            timestamp=now(),
-            rule="SOP-baseline-mismatch",
-            details=details_str,
-            resolved=0,
-        )
-        _notify(
-            "SOP violation: baseline mismatch",
-            f"{len(missing)} missing, {len(added)} added, {len(changed)} changed",
-            urgency="critical",
-        )
+        already_open = db_query(
+            "SELECT COUNT(*) AS c FROM violations WHERE rule = ? AND details = ? AND resolved = 0",
+            ("SOP-baseline-mismatch", details_str),
+        )[0]["c"]
+        if not already_open:
+            db_insert(
+                "violations",
+                timestamp=now(),
+                rule="SOP-baseline-mismatch",
+                details=details_str,
+                resolved=0,
+            )
+            _notify(
+                "SOP violation: baseline mismatch",
+                f"{len(missing)} missing, {len(added)} added, {len(changed)} changed",
+                urgency="critical",
+            )
         return False
 
     print(f"{G}✓{N}  SOP files match local DB baseline ({len(current)} files)")
@@ -727,18 +736,40 @@ def cmd_done_balance() -> bool:
     return True
 
 
-def cmd_violations():
-    """List all open (unresolved) violations."""
+def cmd_violations(watch: bool = False):
+    """List unresolved violations, or stream newly recorded events."""
     init_db()
-    rows = db_query("SELECT * FROM violations WHERE resolved = 0 ORDER BY timestamp DESC")
     print(f"{C}arc-sop violations{N}")
-    if not rows:
-        print(f"  {G}✓{N}  No open violations")
-        return
-    print(f"  {Y}{len(rows)} open violation(s){N}\n")
-    for r in rows:
-        print(f"  {D}[{r['id']}]{N}  {r['timestamp']}  {Y}{r['rule']}{N}")
-        print(f"        {D}{r['details']}{N}")
+    last_id = 0
+    if watch:
+        state = db_query("SELECT COALESCE(MAX(id), 0) AS last_id, "
+                         "SUM(CASE WHEN resolved = 0 THEN 1 ELSE 0 END) AS open_count "
+                         "FROM violations")[0]
+        last_id = int(state["last_id"] or 0)
+        open_count = int(state["open_count"] or 0)
+        print(f"  watching new events from id {last_id}; current open count: {open_count}", flush=True)
+    try:
+        while True:
+            rows = db_query(
+                "SELECT * FROM violations WHERE id > ? ORDER BY id ASC" if watch else
+                "SELECT * FROM violations WHERE resolved = 0 ORDER BY timestamp DESC",
+                (last_id,) if watch else (),
+            )
+            if not rows and not watch:
+                print(f"  {G}✓{N}  No open violations")
+                return
+            if not rows and watch and last_id == 0:
+                print(f"  {G}✓{N}  No violations recorded; watching for new events…")
+            for row in rows:
+                last_id = max(last_id, int(row["id"]))
+                state = "open" if not row["resolved"] else "resolved"
+                print(f"  {Y}[{row['id']}]{N}  {row['timestamp']}  {row['rule']} · {state}")
+                print(f"        {row['details']}", flush=True)
+            if not watch:
+                return
+            time.sleep(2)
+    except KeyboardInterrupt:
+        print("\nStopped watching.")
 
 
 def cmd_resolve(vid: str):
@@ -759,8 +790,7 @@ def cmd_resolve(vid: str):
 
 
 def cmd_ack_today() -> bool:
-    """Return True if an ack exists for today's date, for this specific agent+session
-    (same scoping as cmd_gate_check -- a different session's ack shouldn't satisfy this)."""
+    """Return True only for this session's current SOT+all-MO acceptance."""
     init_db()
     today = datetime.now().strftime("%Y-%m-%d")
     aid = agent_id()
@@ -769,11 +799,16 @@ def cmd_ack_today() -> bool:
         "SELECT * FROM acks WHERE timestamp LIKE ? AND agent_id = ? AND session_id = ? ORDER BY timestamp DESC LIMIT 1",
         (f"{today}%", aid, sid),
     )
-    if rows:
+    try:
+        expected_ack = f"sop-policy-sha256:{_policy_digest()}"
+    except OSError:
+        expected_ack = ""
+    if rows and rows[0].get("ack_type") == expected_ack:
         print(f"{G}✓{N}  SOP acknowledged today  {D}({rows[0]['timestamp']}){N}")
         return True
-    print(f"{R}✗{N}  No SOP acknowledgment recorded today ({today})")
-    print(f"  {D}Run: arc sop ack{N}")
+    print(f"{R}✗{N}  No current SOT + all-MO acceptance for this session ({today})")
+    print_reading_guide()
+    print('  After reading, run: arc-sop start "<short task description>"')
     return False
 
 
@@ -802,22 +837,12 @@ def cmd_check():
         else:
             checks.append((f"{label} read-only", True, f"{label} not present (OK)"))
 
-    # 3. GAMEPLAN.md has a [STARTING] entry for today (not just any mention of the date)
+    # 3. GAMEPLAN has a task start for this same session, not merely any entry today.
     gp = INTEL_OPS / "GAMEPLAN.md"
-    gp_ok = False
-    gp_msg = "GAMEPLAN.md missing"
-    if gp.exists():
-        content = gp.read_text()
-        today = datetime.now().strftime("%Y-%m-%d")
-        today_lines = [l for l in content.splitlines() if today in l]
-        if today_lines and any("[STARTING]" in l for l in today_lines):
-            gp_ok = True
-            gp_msg = f"GAMEPLAN.md has {today} [STARTING] entry"
-        elif today_lines:
-            gp_ok = False
-            gp_msg = f"GAMEPLAN.md has {today} entry but no [STARTING] — pre-task log missing"
-        else:
-            gp_msg = f"GAMEPLAN.md missing {today} entry"
+    today = datetime.now().strftime("%Y-%m-%d")
+    gp_ok = _gameplan_today_has_starting(session_id(), agent_id())
+    gp_msg = (f"GAMEPLAN.md has {today} [STARTING] for this session" if gp_ok
+              else f"GAMEPLAN.md missing {today} [STARTING] for this session")
     checks.append(("GAMEPLAN today", gp_ok, gp_msg))
 
     # 4. Recent ack -- same-session, same-day (mirrors cmd_gate_check's scoping;
@@ -825,17 +850,21 @@ def cmd_check():
     check_today = datetime.now().strftime("%Y-%m-%d")
     check_aid = agent_id()
     check_sid = session_id()
+    try:
+        expected_ack = f"sop-policy-sha256:{_policy_digest()}"
+    except OSError:
+        expected_ack = ""
     recent_ack = db_query(
         "SELECT * FROM acks WHERE timestamp LIKE ? AND agent_id = ? AND session_id = ? ORDER BY timestamp DESC LIMIT 1",
         (f"{check_today}%", check_aid, check_sid),
     )
     ack_ok = False
     ack_msg = "no SOP acknowledgment on record"
-    if recent_ack:
+    if recent_ack and recent_ack[0].get("ack_type") == expected_ack:
         last = recent_ack[0]["timestamp"]
         ack_msg = f"last ack: {last}"
         ack_ok = True
-    checks.append(("SOP acknowledgment", ack_ok, ack_msg))
+    checks.append(("Current SOT + all-MO acknowledgment", ack_ok, ack_msg))
 
     # 5. Backup recent (< 24h)
     stamp = HOME / ".usb-bakup/.last-sync"
@@ -851,6 +880,10 @@ def cmd_check():
         except ValueError:
             backup_msg = f"last backup: {last} (parse error)"
     checks.append(("Backup <24h", backup_ok, backup_msg))
+
+    open_violations = db_query("SELECT COUNT(*) AS c FROM violations WHERE resolved = 0")[0]["c"]
+    checks.append(("Open compliance violations", open_violations == 0,
+                   f"{open_violations} unresolved event(s)"))
 
     # Print results
     all_passed = True
@@ -987,26 +1020,64 @@ def cmd_recover():
     backup_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_dir = HOME / f"dev-notes/intel-ops-backup-{backup_ts}"
     if INTEL_OPS.exists():
-        run(["cp", "-a", str(INTEL_OPS), str(backup_dir)])
+        rc, _, stderr = run(["cp", "-a", str(INTEL_OPS), str(backup_dir)])
+        if rc != 0 or not backup_dir.is_dir():
+            print(f"{R}✗{N}  current policy backup failed; recovery stopped: {stderr}")
+            return False
         print(f"{D}   current backed up to: {backup_dir}{N}")
 
+    # Recovery is deliberately available while locked, but it cannot preserve
+    # an earlier acceptance. Invalidate before modifying files so partial
+    # failures remain fail-closed; repeat after restoring a root-copy DB below.
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE acks SET ack_type = 'invalidated-after-policy-recovery:' || ack_type "
+                 "WHERE ack_type LIKE 'sop-policy-sha256:%'")
+    conn.commit()
+    conn.close()
+
     if source_type == "dir":
-        run(["rsync", "-a", "--delete", "--exclude=arc-sop.db", f"{source}/", f"{INTEL_OPS}/"])
+        rc, _, stderr = run(["rsync", "-a", "--delete", "--exclude=arc-sop.db", f"{source}/", f"{INTEL_OPS}/"])
     else:
         INTEL_OPS.mkdir(parents=True, exist_ok=True)
-        run(["tar", "-xzf", str(source), "-C", str(INTEL_OPS.parent)])
+        rc, _, stderr = run(["tar", "-xzf", str(source), "-C", str(INTEL_OPS.parent)])
+    if rc != 0:
+        print(f"{R}✗{N}  policy restore failed; gate remains locked: {stderr}")
+        return False
+    if not (SOT_FILE.is_file() and MO_FILE.is_file()):
+        print(f"{R}✗{N}  restored policy is incomplete; gate remains locked")
+        return False
 
     # Restore the SQLite DB if a root copy exists.
     dr_db = source / "arc-sop.db" if source_type == "dir" else None
     if dr_db and dr_db.exists():
         SOP_DIR.mkdir(parents=True, exist_ok=True)
         db_backup = DB_PATH.with_suffix(f".db.pre-recover-{backup_ts}")
-        run(["cp", "-a", str(DB_PATH), str(db_backup)])
-        run(["cp", "-a", str(dr_db), str(DB_PATH)])
+        rc, _, stderr = run(["cp", "-a", str(DB_PATH), str(db_backup)])
+        if rc != 0:
+            print(f"{R}✗{N}  current enforcement DB backup failed: {stderr}")
+            return False
+        rc, _, stderr = run(["cp", "-a", str(dr_db), str(DB_PATH)])
+        if rc != 0:
+            print(f"{R}✗{N}  recovery DB restore failed: {stderr}")
+            return False
         print(f"{G}✓{N}  DB restored from:   {dr_db}")
         print(f"{D}   previous DB saved: {db_backup}{N}")
 
+    # A root-copy DB may contain historical acknowledgments; invalidate them
+    # after copying as well, then retain a visible audit check.
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE acks SET ack_type = 'invalidated-after-policy-recovery:' || ack_type "
+        "WHERE ack_type LIKE 'sop-policy-sha256:%'"
+    )
+    conn.execute(
+        "INSERT INTO checks (timestamp, check_name, passed, message) VALUES (?, ?, ?, ?)",
+        (now(), "SOP recovery", 1, "Policy sources restored; all prior acceptances invalidated; gate remains locked"),
+    )
+    conn.commit()
+    conn.close()
     print(f"{G}✓{N}  SOP recovery complete")
+    print(f"{Y}!{N}  all prior policy acknowledgments invalidated; explicitly re-read and accept before operating")
     return True
 
 
@@ -1015,18 +1086,18 @@ def cmd_recover():
 # ---------------------------------------------------------------------------
 def main():
     if len(sys.argv) < 2:
-        print("Usage: arc-sop start <task> | gate-status | emergency <reason> | gate-enable | ...")
+        print('Usage: arc-sop start "<non-empty task>" [--accept-policy <digest>] | emergency | recover | gate-check | status | check | violations [--watch] | ...')
         sys.exit(1)
 
     cmd = sys.argv[1]
     if cmd == "ack":
-        cmd_ack()
+        sys.exit(cmd_ack())
     elif cmd == "baseline":
         cmd_baseline()
     elif cmd == "verify":
-        cmd_verify()
+        sys.exit(0 if cmd_verify() else 1)
     elif cmd == "check":
-        cmd_check()
+        sys.exit(0 if cmd_check() else 1)
     elif cmd == "status":
         cmd_status()
     elif cmd == "bundle":
@@ -1034,7 +1105,7 @@ def main():
     elif cmd == "root-copy":
         cmd_root_copy()
     elif cmd == "recover":
-        cmd_recover()
+        sys.exit(0 if cmd_recover() else 1)
     elif cmd in ("ack-today", "check-today"):
         ok = cmd_ack_today()
         sys.exit(0 if ok else 1)
@@ -1042,15 +1113,35 @@ def main():
         ok = cmd_done_balance()
         sys.exit(0 if ok else 1)
     elif cmd == "violations":
-        cmd_violations()
+        if len(sys.argv) == 2:
+            cmd_violations()
+        elif sys.argv[2:] == ["--watch"]:
+            cmd_violations(watch=True)
+        else:
+            print("Usage: arc-sop violations [--watch]")
+            sys.exit(2)
+    elif cmd == "record-violation":
+        if len(sys.argv) != 4:
+            print("Usage: arc-sop record-violation <rule> <safe-tool-name>")
+            sys.exit(2)
+        sys.exit(cmd_record_violation(sys.argv[2], sys.argv[3]))
     elif cmd == "resolve":
         if len(sys.argv) < 3:
             print("Usage: arc-sop resolve <id>")
             sys.exit(1)
         cmd_resolve(sys.argv[2])
     elif cmd == "start":
-        description = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "general session"
-        sys.exit(cmd_start(description))
+        args = sys.argv[2:]
+        accepted_digest = ""
+        if "--accept-policy" in args:
+            index = args.index("--accept-policy")
+            if index + 1 >= len(args) or index + 2 != len(args):
+                print("Usage: arc-sop start \"<non-empty task>\" [--accept-policy <sha256-digest>]")
+                sys.exit(2)
+            accepted_digest = args[index + 1]
+            args = args[:index]
+        description = " ".join(args)
+        sys.exit(cmd_start(description, accepted_digest))
     elif cmd == "ack-auto":
         if len(sys.argv) < 3:
             print("Usage: arc-sop ack-auto <script-name>")
@@ -1062,14 +1153,14 @@ def main():
         ok = cmd_gate_check()
         sys.exit(0 if ok else 1)
     elif cmd == "gate-bypass":
-        cmd_gate_bypass()
+        sys.exit(cmd_gate_bypass())
     elif cmd == "emergency":
-        cmd_gate_emergency(" ".join(sys.argv[2:]))
+        sys.exit(cmd_gate_emergency(" ".join(sys.argv[2:])))
     elif cmd == "gate-enable":
         cmd_gate_enable()
     else:
         print(f"Unknown command: {cmd}")
-        print("Usage: arc-sop [start <task> | ack | baseline | verify | check | status | violations | resolve <id> | bundle | root-copy | recover | ack-today | done-balance | ack-auto | gate-status | emergency <reason> | gate-bypass | gate-enable]")
+        print('Usage: arc-sop [start "<task>" [--accept-policy <digest>] | baseline | verify | check | status | violations [--watch] | resolve <id> | bundle | root-copy | recover | ack-today | done-balance | ack-auto | gate-check | gate-status | gate-enable]')
         sys.exit(1)
 
 

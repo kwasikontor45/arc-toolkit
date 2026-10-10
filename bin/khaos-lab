@@ -42,10 +42,12 @@ doesn't touch your real screen).
 
 import calendar
 import concurrent.futures as cf
+import hashlib
 import json
 import os
 import queue
 import re
+import sqlite3
 import shlex
 import signal
 import shutil
@@ -55,6 +57,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+from tkinter import messagebox
 import traceback
 import webbrowser
 import urllib.request
@@ -504,21 +507,36 @@ def sop_setup_command(cmd):
         words = shlex.split(cmd)
     except ValueError:
         return False
-    if words[:2] == ["arc-sop", "emergency"]:
-        return len(words) >= 3 and bool(" ".join(words[2:]).strip())
+    if words[:2] == ["arc-sop", "start"]:
+        return (len(words) == 3 and bool(words[2].strip()) or
+                len(words) == 5 and words[3] == "--accept-policy"
+                and bool(words[2].strip()) and re.fullmatch(r"[a-f0-9]{64}", words[4]) is not None)
+    if words[:2] == ["arc-sop", "violations"]:
+        return len(words) == 2 or words[2:] == ["--watch"]
+    if words[:2] == ["arc-sop", "gate-check"]:
+        return len(words) == 2
+    if words == ["arc-sop", "recover"]:
+        return True
+    if words == ["arc-sop", "emergency"]:
+        return True
     if words == ["arc-sop", "gate-enable"]:
         return True
-    if words[:3] == ["arc", "sop", "emergency"]:
-        return len(words) >= 4 and bool(" ".join(words[3:]).strip())
     if words == ["arc", "sop", "gate-enable"]:
         return True
     if words[:2] != ["arc", "sop"]:
         return False
-    if len(words) == 4 and words[:3] == ["arc", "sop", "start"]:
-        return bool(words[3].strip())
-    return len(words) == 3 and words[2] in {
-        "ack", "ack-today", "check", "gate-check", "verify", "status", "violations",
-    }
+    if len(words) >= 4 and words[:3] == ["arc", "sop", "start"]:
+        if len(words) == 4:
+            return bool(words[3].strip())
+        return ("--accept-policy" in words[4:] and len(words) == 6
+                and bool(words[3].strip()) and re.fullmatch(r"[a-f0-9]{64}", words[5]) is not None)
+    if words[:3] == ["arc", "sop", "violations"]:
+        return len(words) == 3 or words[3:] == ["--watch"]
+    if words == ["arc", "sop", "recover"]:
+        return True
+    if words == ["arc", "sop", "emergency"]:
+        return True
+    return len(words) == 3 and words[2] in {"ack-today", "check", "gate-check", "verify", "status"}
 
 
 def panel_preflight_command(cmd):
@@ -547,9 +565,7 @@ def check_sop_gate(timeout=5):
 
 
 def gate_status(ok, detail=''):
-    """Show an owner bypass as a distinct, temporary policy state."""
-    if ok and 'owner bypass active' in str(detail).lower():
-        return "SOP GATE  ·  BYPASS ACTIVE", GOLD
+    """Show the current, version-bound session gate state."""
     return ("SOP GATE  ·  OPEN", PINE) if ok else ("SOP GATE  ·  LOCKED", ROSE)
 
 
@@ -2666,13 +2682,24 @@ class SopView(View):
         docs = tk.Frame(self.frame, bg=SURFACE)
         docs.pack(fill="x", padx=8, pady=(0, 8))
         ui.button(docs, "read latest GAMEPLAN", command=lambda: self._read_doc(
-            "GAMEPLAN · latest 100 lines", HOME / "dev-notes/intel-ops/GAMEPLAN.md", tail=100),
+            "GAMEPLAN · latest 100 lines", HOME / "dev-notes/intel-ops/GAMEPLAN.md", tail=100,
+            read_key="gameplan"),
             font=f.small, bg=OVERLAY, fg=GOLD, hover_bg=BG, padx=12, pady=7).pack(side="left", padx=5)
         ui.button(docs, "read SOT", command=lambda: self._read_doc(
-            "SOURCE OF TRUTH · SOT.md", HOME / "dev-notes/intel-ops/SOT.md"),
+            "SOURCE OF TRUTH · SOT.md", HOME / "dev-notes/intel-ops/SOT.md",
+            read_key="sot"),
             font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG, padx=12, pady=7).pack(side="left", padx=5)
+        ui.button(docs, "read all MOs", command=lambda: self._read_doc(
+            "OPERATING PRINCIPLES · all current MOs", HOME / "dev-notes/intel-ops/MO.md",
+            read_key="mo"), font=f.small, bg=OVERLAY, fg=GOLD, hover_bg=BG,
+            padx=12, pady=7).pack(side="left", padx=5)
         ui.button(docs, "check gate", command=self.refresh_gate, font=f.small, bg=OVERLAY, fg=FG,
                   hover_bg=BG, padx=12, pady=7).pack(side="right", padx=5)
+        guide = ("Read before accepting · ~/dev-notes/intel-ops/GAMEPLAN.md · "
+                 "~/dev-notes/intel-ops/SOT.md · ~/dev-notes/intel-ops/MO.md\n"
+                 "Terminal readers: batcat <full-path> (installed) · cat <full-path>")
+        tk.Label(docs, text=guide, font=f.small, bg=SURFACE, fg=FG_MUTED,
+                 anchor="w", justify="left", wraplength=720).pack(fill="x", padx=10, pady=(2, 8))
 
         start = tk.Frame(self.frame, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
         start.pack(fill="x", padx=8, pady=(0, 8))
@@ -2687,30 +2714,28 @@ class SopView(View):
         self.task_entry.insert(0, "briefly name today's work…")
         self.task_entry.bind("<FocusIn>", self._clear_placeholder)
         self.task_entry.bind("<Return>", lambda _e: self.start_task())
-        ui.button(row, "log + acknowledge", command=self.start_task, font=f.small, bg=OVERLAY,
+        ui.button(row, "accept all MOs · log task", command=self.start_task, font=f.small, bg=OVERLAY,
                   fg=TEAL, hover_bg=BG, padx=12, pady=7).pack(side="right")
 
-        emergency = tk.Frame(self.frame, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
-        emergency.pack(fill="x", padx=8, pady=(0, 10))
-        tk.Label(emergency, text="EMERGENCY ACCESS  ·  OWNER ONLY  ·  30 MINUTES",
-                 font=f.small, bg=OVERLAY, fg=ROSE, anchor="w").pack(fill="x", padx=12, pady=(10, 3))
-        tk.Label(emergency, text="Use only when normal SOP startup is unavailable. Access expires automatically; agents cannot open it.",
-                 font=f.small, bg=OVERLAY, fg=FG_MUTED, anchor="w", justify="left",
-                 wraplength=700).pack(fill="x", padx=12, pady=(0, 7))
-        emergency_row = tk.Frame(emergency, bg=OVERLAY)
-        emergency_row.pack(fill="x", padx=12, pady=(0, 10))
-        self.emergency_text = tk.StringVar()
-        self.emergency_entry = tk.Entry(emergency_row, textvariable=self.emergency_text, font=f.small,
-                                        bg=BG, fg=FG, insertbackground=FG, relief="flat")
-        self.emergency_entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 8))
-        self.emergency_entry.insert(0, "brief emergency reason…")
-        self.emergency_entry.bind("<FocusIn>", self._clear_emergency_placeholder)
-        self.emergency_entry.bind("<Return>", lambda _e: self.open_emergency())
-        ui.button(emergency_row, "open 30-minute window", command=self.open_emergency, font=f.small,
-                  bg=OVERLAY, fg=ROSE, hover_bg=BG, padx=10, pady=6).pack(side="right")
-        ui.button(emergency, "close override · enforce gate now", command=lambda: self.app.run_async(
-            "arc-sop gate-enable", timeout=10, on_done=self.refresh_gate), font=f.small,
-            bg=OVERLAY, fg=TEAL, hover_bg=BG, padx=10, pady=5).pack(anchor="e", padx=12, pady=(0, 9))
+        self.docs_read = set()
+        self.doc_hashes = {}
+        self.accept_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(self.frame,
+                       text="I read GAMEPLAN context, all of SOT.md, and every current MO in MO.md; I accept them for this session.",
+                       variable=self.accept_var, font=f.small, bg=BG, fg=FG,
+                       activebackground=BG, activeforeground=TEAL, selectcolor=OVERLAY,
+                       anchor="w", justify="left", wraplength=720).pack(fill="x", padx=14, pady=(0, 8))
+
+        violations = tk.Frame(self.frame, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
+        violations.pack(fill="x", padx=8, pady=(0, 8))
+        tk.Label(violations, text="LIVE COMPLIANCE EVENTS", font=f.small, bg=OVERLAY, fg=TEAL,
+                 anchor="w").pack(fill="x", padx=12, pady=(9, 3))
+        self.violations_label = tk.Label(violations, text="loading…", font=f.small, bg=OVERLAY,
+                                         fg=FG_MUTED, anchor="w", justify="left", wraplength=700)
+        self.violations_label.pack(fill="x", padx=12, pady=(0, 9))
+        ui.button(violations, "open violation ledger", command=lambda: self.app.run_async(
+            "arc sop violations", timeout=10), font=f.small, bg=OVERLAY, fg=FG,
+            hover_bg=BG, padx=10, pady=6).pack(anchor="e", padx=10, pady=(0, 8))
 
         ui.button(self.frame, "run full SOP compliance check", command=lambda: self.app.run_async(
             "arc sop check", timeout=20, on_done=self.refresh_gate), font=f.small, bg=SURFACE,
@@ -2719,34 +2744,24 @@ class SopView(View):
                  font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left",
                  wraplength=720).pack(fill="x", padx=12, pady=(0, 10))
         self.refresh_gate()
+        self.poll("sop-gate-status", 5000, check_sop_gate, self._show_gate_status)
+        self.poll("sop-violations", 1000, self._read_violations, self._show_violations)
 
     def _clear_placeholder(self, _event=None):
         if self.task_text.get() == "briefly name today's work…":
             self.task_text.set("")
 
-    def _clear_emergency_placeholder(self, _event=None):
-        if self.emergency_text.get() == "brief emergency reason…":
-            self.emergency_text.set("")
-
-    def open_emergency(self):
-        reason = self.emergency_text.get().strip()
-        if reason == "brief emergency reason…":
-            reason = ""
-        if not reason:
-            self.app.console.log("enter a short reason before opening emergency access", ROSE)
-            self.emergency_entry.focus_set()
-            return
-        self.app.run_async(f"arc-sop emergency {shlex.quote(reason)}", timeout=10,
-                           on_done=self.refresh_gate)
-
     def refresh_gate(self):
         if not self.alive():
             return
-        ok, detail = check_sop_gate()
-        bypass = ok and 'owner bypass active' in str(detail).lower()
-        self.gate_label.configure(text="OWNER BYPASS ACTIVE" if bypass else
-                                  "OPERATIONS OPEN" if ok else "OPERATIONS LOCKED",
-                                  fg=GOLD if bypass else TEAL if ok else ROSE)
+        self._show_gate_status(check_sop_gate())
+
+    def _show_gate_status(self, state):
+        if not self.alive():
+            return
+        ok, detail = state
+        self.gate_label.configure(text="OPERATIONS OPEN" if ok else "OPERATIONS LOCKED",
+                                  fg=TEAL if ok else ROSE)
         self.detail_label.configure(text=detail or ("This session is cleared." if ok else
                                                      "Read the current plan, then log and acknowledge."))
 
@@ -2758,10 +2773,36 @@ class SopView(View):
             self.app.console.log("enter a short task name before unlocking operations", GOLD)
             self.task_entry.focus_set()
             return
+        if not self.accept_var.get() or not {"gameplan", "sot", "mo"}.issubset(self.docs_read):
+            self.app.console.log("read the three current sources and explicitly accept every MO before starting", ROSE)
+            return
+        try:
+            for name, key in (("SOT.md", "sot"), ("MO.md", "mo")):
+                current = (HOME / "dev-notes/intel-ops" / name).read_bytes()
+                if hashlib.sha256(current).hexdigest() != self.doc_hashes.get(key):
+                    self.app.console.log(f"{name} changed since you read it; reopen it before accepting", ROSE)
+                    self.docs_read.discard(key)
+                    self.accept_var.set(False)
+                    return
+        except OSError as e:
+            self.app.console.log(f"policy unavailable; gate stays locked: {e}", ROSE)
+            return
         self.app.run_async(f"arc sop start {shlex.quote(description)}", timeout=20,
-                           on_done=self.refresh_gate)
+                           on_result=lambda result: self._confirm_policy(description, result))
 
-    def _read_doc(self, title, path, tail=None):
+    def _confirm_policy(self, description, result):
+        _ok, output = result
+        match = re.search(r"--accept-policy ([a-f0-9]{64})", output or "")
+        if not match:
+            self.app.console.log("could not obtain a fresh session policy digest; gate remains locked", ROSE)
+            return
+        if messagebox.askyesno("Accept all current MOs?",
+                               "I read the current GAMEPLAN context, all of SOT.md, and every MO in MO.md.\n\n"
+                               "Accept them for this session and log the task?", parent=self.app.root):
+            command = f"arc sop start {shlex.quote(description)} --accept-policy {match.group(1)}"
+            self.app.run_async(command, timeout=20, on_done=self.refresh_gate)
+
+    def _read_doc(self, title, path, tail=None, read_key=None):
         d = Dialog(self.app, title, resizable=True, geometry="940x650")
         tk.Label(d.shell, text=f"read-only source  ·  {path}", font=self.app.f.small,
                  bg=SURFACE, fg=FG_MUTED, anchor="w").pack(fill="x", padx=14, pady=(12, 5))
@@ -2794,9 +2835,40 @@ class SopView(View):
                 text.insert("1.0", content or "(empty)")
                 text.configure(state="disabled")
                 text.see("1.0")
+                if read_key and not str(content).startswith("Could not read"):
+                    self.docs_read.add(read_key)
+                    if read_key in {"sot", "mo"}:
+                        self.doc_hashes[read_key] = hashlib.sha256(content.encode("utf-8")).hexdigest()
             except tk.TclError:
                 pass
         self.app.bg(load, show)
+
+    def _read_violations(self):
+        db = HOME / ".config/arc/sop/arc-sop.db"
+        try:
+            with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1) as conn:
+                count = conn.execute("SELECT COUNT(*) FROM violations WHERE resolved = 0").fetchone()[0]
+                rows = conn.execute("SELECT timestamp, rule FROM violations WHERE resolved = 0 ORDER BY id DESC LIMIT 3").fetchall()
+            return count, rows
+        except (OSError, sqlite3.Error):
+            return None, []
+
+    def _show_violations(self, result):
+        count, rows = result
+        if count is None:
+            summary = "ledger unavailable; see `arc sop violations`"
+            color = ROSE
+        elif count == 0:
+            summary = "No open violations · live refresh (1 second)"
+            color = PINE
+        else:
+            summary = f"{count} open violation(s) · live refresh (1 second)\n" + "\n".join(
+                f"{stamp} · {rule}" for stamp, rule in rows)
+            color = ROSE
+        try:
+            self.violations_label.configure(text=summary, fg=color)
+        except tk.TclError:
+            pass
 
 
 class HelpView(View):
@@ -3509,7 +3581,7 @@ class App:
         self._console_room_done = True
         self._fit_console_pane()
 
-    def run_async(self, cmd, timeout=30, on_done=None):
+    def run_async(self, cmd, timeout=30, on_done=None, on_result=None):
         if not self.require_ops_gate(cmd):
             return
         # Ignore a repeat while the identical command is still running: a double-click used to run
@@ -3524,9 +3596,14 @@ class App:
         def done(res):
             ok, out = res
             self._busy.discard(cmd)
+            waiting = not ok and "Policy not yet acknowledged." in (out or "")
             if out:
-                self.console.log(out, FG if ok else ROSE)
-            self.console.log(f"[{'ok' if ok else 'failed'}]", PINE if ok else ROSE)
+                self.console.log(out, FG if ok else GOLD if waiting else ROSE)
+            self.console.log("[review required · no task logged yet]" if waiting else
+                             f"[{'ok' if ok else 'failed'}]",
+                             GOLD if waiting else PINE if ok else ROSE)
+            if on_result:
+                on_result(res)
             if on_done:
                 on_done()
             if isinstance(self.view, StatusView) and self.view.alive():
@@ -3566,9 +3643,16 @@ class App:
         if hasattr(self, "status_gate"):
             self.status_gate.configure(text="SOP GATE  ·  LOCKED", fg=ROSE)
         self.console.log("⛔ BLOCKED — operations are locked until this session satisfies the SOP gate.", ROSE)
+        try:
+            words = shlex.split(cmd)
+            tool = os.path.basename(words[0]) if words else "unknown"
+            subprocess.run(["arc-sop", "record-violation", "pre-ack-panel-operation", tool],
+                           capture_output=True, timeout=5, check=False)
+        except Exception:
+            pass
         if detail:
             self.console.log(detail, GOLD)
-        self.console.log("Open SOP to read SOT/GAMEPLAN, then log + acknowledge a task.", FG_MUTED)
+        self.console.log("Read GAMEPLAN.md, all of SOT.md, and every MO in MO.md under ~/dev-notes/intel-ops. Use batcat or cat with each full path; then explicitly accept before operating.", FG_MUTED)
         if self.current != "SOP":
             self.select("SOP")
         return False

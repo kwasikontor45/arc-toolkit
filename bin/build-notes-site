@@ -195,6 +195,68 @@ nav.uplinks { display: flex; gap: 6px; flex-wrap: wrap; }
 .pill.up { color: #8fe08f; background: rgba(143,224,143,.12); }
 .pill.down { color: var(--text-dim); background: rgba(255,255,255,.06); }
 .pill.watch { color: #f0a868; background: rgba(240,168,104,.12); }
+
+/* Clickable Kataleya map: plain HTML anchors keep it keyboard and touch friendly,
+   with no JS or third-party drag library in this private, offline-capable site. */
+.kat-map { margin: 18px 0; }
+.kat-map-intro { margin: 0 0 14px; }
+.kat-field {
+  display: grid; gap: 3px; margin: 12px 0 8px; padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--cyan) 24%, var(--border)); border-radius: 12px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--cyan) 5%, var(--panel-bg-alt)), var(--panel-bg));
+  color: var(--text); text-decoration: none;
+  box-shadow: inset 0 1px rgba(255,255,255,.07), 0 3px 9px rgba(0,0,0,.18);
+}
+.kat-field b { color: var(--cyan); font-size: 11px; }
+.kat-field span { color: var(--text-mid); font-size: 10px; line-height: 1.5; }
+.kat-field:hover { border-color: color-mix(in srgb, var(--cyan) 48%, var(--border)); }
+.kat-field:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+.kat-flow-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: stretch; }
+.kat-node {
+  min-width: 0; min-height: 86px; position: relative; display: flex; flex-direction: column;
+  justify-content: center; gap: 5px; padding: 12px; border: 1px solid color-mix(in srgb, var(--node-accent, var(--cyan)) 26%, var(--border));
+  border-radius: 12px; background: linear-gradient(145deg, color-mix(in srgb, var(--node-accent, var(--cyan)) 5%, var(--panel-bg-alt)), var(--panel-bg));
+  color: var(--text); text-decoration: none;
+  box-shadow: inset 0 1px rgba(255,255,255,.07), 0 3px 9px rgba(0,0,0,.18);
+  transition: border-color .16s ease, transform .16s ease, box-shadow .16s ease;
+}
+.kat-flow-row > .kat-node:not(:last-child)::after {
+  content: ''; position: absolute; right: -10px; top: 50%; width: 7px; height: 7px;
+  border-top: 1px solid var(--node-accent, var(--cyan)); border-right: 1px solid var(--node-accent, var(--cyan));
+  transform: translateY(-50%) rotate(45deg); pointer-events: none;
+}
+.kat-node:hover { border-color: color-mix(in srgb, var(--node-accent, var(--cyan)) 54%, var(--border)); transform: translateY(-1px); box-shadow: inset 0 1px rgba(255,255,255,.09), 0 4px 11px rgba(0,0,0,.2); }
+.kat-node:focus-visible { outline: 2px solid var(--node-accent, var(--cyan)); outline-offset: 3px; }
+.kat-node b { color: var(--node-accent, var(--cyan)); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+.kat-node span { color: var(--text-mid); font-size: 10px; line-height: 1.5; }
+.kat-map-label { margin: 20px 0 9px; color: var(--text-mid); font-size: 10px; letter-spacing: 1.3px; text-transform: uppercase; }
+.kat-route-row { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 9px; }
+.kat-route-row .kat-node { min-height: 66px; padding: 10px; border-radius: 10px; }
+.kat-route-row .kat-node b { font-size: 10px; }
+.kat-phase-rail { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); margin-top: 12px; overflow: hidden; border: 1px solid var(--border); border-radius: 999px; }
+.kat-phase-rail span { padding: 8px 7px; text-align: center; font-size: 10px; color: var(--text); background: color-mix(in srgb, var(--phase) 12%, var(--panel-bg)); border-right: 1px solid var(--border); }
+.kat-phase-rail span:last-child { border-right: 0; }
+.kat-detail-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin-top: 18px; }
+.kat-detail { scroll-margin-top: 16px; padding: 13px 14px; border: 1px solid var(--border); border-radius: 12px; background: linear-gradient(145deg, rgba(255,255,255,.025), rgba(255,255,255,.01)); box-shadow: inset 0 1px rgba(255,255,255,.05), 0 3px 9px rgba(0,0,0,.16); }
+.kat-detail h3 { margin: 0 0 5px; color: var(--detail-accent, var(--cyan)); }
+.kat-detail p { margin: 0; }
+.kat-reference-link { margin-top: 14px; }
+.kat-reference-link a { color: var(--text-mid); }
+@media (max-width: 700px) {
+  .kat-flow-row { grid-auto-columns: minmax(164px, 82%); grid-auto-flow: column; grid-template-columns: none; gap: 12px; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scrollbar-width: thin; scrollbar-color: var(--border) transparent; padding: 2px 3px 10px; }
+  .kat-node { min-height: 72px; padding: 12px 15px; scroll-snap-align: start; }
+  .kat-route-row { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .kat-phase-rail { grid-template-columns: repeat(2,minmax(0,1fr)); border-radius: 14px; }
+  .kat-phase-rail span:nth-child(2) { border-right: 0; }
+  .kat-phase-rail span:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+  .kat-detail-grid { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .panel { animation: none; }
+  .kat-field, .kat-node { transition: none; }
+  .kat-node:hover { transform: none; }
+}
 """
 
 PHASE_SCRIPT = """
@@ -366,13 +428,15 @@ def inventory_summary_panel(inv):
 
 def inventory_blueprint_body():
     inv = _load_inventory()
+    kat_map = kataleya_flow_map()
     if not inv:
-        return '<div class="panel hero"><h1>INFRASTRUCTURE BLUEPRINT</h1><p class="hero-sub">no inventory yet &mdash; run <code>arc inv scan</code></p></div>'
+        return '<div class="panel hero"><h1>INFRASTRUCTURE BLUEPRINT</h1><p class="hero-sub">no inventory yet &mdash; run <code>arc inv scan</code></p></div>' + kat_map
     scan = (inv.get("scan") or {}).get("at", "never")
     led = inv.get("ledger", {})
     out = [f'<div class="panel hero"><h1>INFRASTRUCTURE BLUEPRINT</h1><p class="hero-sub">generated from the live inventory &mdash; '
            f'{len(inv["assets"])} assets, last scan {html.escape(scan[:16].replace("T", " "))}, ledger {"verified" if led.get("verified") else "BROKEN"} '
            f'({led.get("entries", 0)} entries). Nothing on this page is hand-written.</p></div>']
+    out.append(kat_map)
     out.append(inventory_summary_panel(inv))
     live = [r for r in inv["assets"] if r.get("status") != "retired"]
     for kind, title in KIND_TITLES:
@@ -404,6 +468,91 @@ def inventory_blueprint_body():
             links.append(f'<p><a href="notes/{slug_for(path)}">{label}</a></p>')
     out.append('<div class="panel"><span class="tag">paper trail</span>' + "".join(links) + '<p><a href="browse.html">browse // search</a> &mdash; full-text search across every note.</p></div>')
     return "\n".join(out)
+
+
+def kataleya_flow_map():
+    """Clickable, responsive Kataleya state map based on the supplied SVG.
+
+    The reference drawing predates the current phase names and app behavior; it
+    informs the visual layout only. Current details are linked to this note and
+    use the live project's state model and canonical Circadian palette.
+    """
+    ref = HOME / "khaos-lab" / "refs" / "kat-state-engine-flow-map.md"
+    ref_link = f'<a href="notes/{slug_for(ref)}">Read the state map and Kanban fit audit</a>' if ref.exists() else ""
+    nodes = [
+        ("onboarding", "Onboarding", "A person's first setup and entry", "#5ec8ed"),
+        ("room", "Room", "Home space and living orb", "#f6c177"),
+        ("bridge", "Practice", "Breathing, grounding, and wave flows", "#c4a7e7"),
+    ]
+    main_nodes = "".join(
+        f'<a class="kat-node" style="--node-accent:{color}" href="#kat-{key}">'
+        f'<b>{title}</b><span>{desc}</span></a>'
+        for key, title, desc, color in nodes
+    )
+    routes = [
+        ("cover", "Rain cocoon", "the rain room"),
+        ("sky", "Sun & moon", "local sky guide"),
+        ("terminal", "More", "navigation and tools"),
+        ("mirror", "Mirror", "personal reflection"),
+        ("burn", "Let something go", "release practice"),
+        ("scars", "Your scars", "patterns, not diagnosis"),
+        ("vault", "Vault", "journal and backup"),
+        ("settings", "Settings", "preferences and access"),
+        ("pairing", "Pairing", "optional trusted connection"),
+        ("data", "Data & privacy", "where local records live"),
+    ]
+    route_nodes = "".join(
+        f'<a class="kat-node" href="#kat-{key}">'
+        f'<b>{title}</b><span>{desc}</span></a>'
+        for key, title, desc in routes
+    )
+    phases = (
+        ("Night", "Nyx", "21:00–06:00", "#ea9a97"),
+        ("Morning", "Choice", "06:00–11:00", "#5ec8ed"),
+        ("Day", "Desire", "11:00–17:00", "#f6c177"),
+        ("Golden hour", "Still-Pine", "17:00–21:00", "#c4a7e7"),
+    )
+    phase_rail = "".join(
+        f'<span role="listitem" style="--phase:{color}">{daypart} · <b style="color:{color}">{name}</b><br>{hours}</span>'
+        for daypart, name, hours, color in phases
+    )
+    details = [
+        ("circadian", "Circadian field", "The phase engine continuously blends the visual field and breath pacing across transitions. Nyx, Choice, Desire, and Still-Pine keep their canonical names, times, and accents; this is an always-on layer, not an onboarding step."),
+        ("onboarding", "Onboarding", "First-run setup leads into the Room, where the living orb is the app's home surface."),
+        ("room", "Room", "The Room is the home hub. The More screen opens optional practices, Rain, Sun & moon, and other destinations."),
+        ("bridge", "Practice", "Optional guided breathing, grounding, and wave experiences. Wave sound is off by default and has a direct user toggle."),
+        ("cover", "Rain cocoon", "An optional rain scene. Its drops animate only while this screen is open."),
+        ("sky", "Sun & moon", "The moon phase works without location. Rise, set, and local position are calculated on-device after the user explicitly asks to share location; coordinates stay in memory and clear when the screen closes."),
+        ("terminal", "More", "A navigation surface for breathing, reflections, sky, rain, pairing, and settings. Its advanced tools are local app commands, not a remote shell."),
+        ("mirror", "Mirror", "A personal reflection and pattern view. An optional clinician PIN can lock the Mirror and Vault; the app does not diagnose."),
+        ("burn", "Let something go", "A voluntary urge-release practice that records a change locally when the user chooses."),
+        ("scars", "Your scars", "A reflection built from locally stored mood and urge entries. It is not a diagnosis."),
+        ("vault", "Vault", "Journal and wellbeing entries stay in this browser's local storage and are not encrypted at rest. The Settings screen provides a backup code for export and recovery."),
+        ("settings", "Settings", "Preferences include breathing, haptics, wave sound, the optional PIN, and local backup and restore."),
+        ("pairing", "Pairing", "An optional connection with someone the user trusts. The relay can deliver encrypted message payloads, but it can still see connection metadata; relay use is opt-in."),
+        ("data", "Local data and network use", "Profile and wellbeing records use browser local storage and are not encrypted at rest. The routine phrase bank is a static same-site fetch with local fallback content. Pairing is the optional path that sends encrypted message payloads through a relay; connection metadata remains visible to that relay."),
+    ]
+    detail_html = "".join(
+        f'<section class="kat-detail" id="kat-{key}" tabindex="-1" aria-labelledby="kat-title-{key}">'
+        f'<h3 id="kat-title-{key}">{title}</h3><p>{body}</p></section>'
+        for key, title, body in details
+    )
+    return (
+        '<div class="panel kat-map" id="kataleya-state-map">'
+        '<span class="tag">Kataleya · clickable state map</span>'
+        '<p class="kat-map-intro">The circadian field runs through every screen. Onboarding leads to the Room; people choose practices and other screens from there. Select any node to jump to its notes.</p>'
+        '<a class="kat-field" href="#kat-circadian"><b>Circadian field</b>'
+        '<span>The active phase shapes color and breath pacing across screens; this band shows the canonical hours.</span></a>'
+        f'<div class="kat-phase-rail" role="list" aria-label="Canonical Circadian phases">{phase_rail}</div>'
+        '<div class="kat-map-label">Main path</div>'
+        f'<nav class="kat-flow-row" aria-label="Kataleya main path">{main_nodes}</nav>'
+        '<div class="kat-map-label">Supporting screens and data</div>'
+        f'<nav class="kat-route-row" aria-label="Kataleya supporting screens">{route_nodes}</nav>'
+        '<div class="kat-map-label">Screen notes and data boundaries</div>'
+        f'<div class="kat-detail-grid">{detail_html}</div>'
+        f'<p class="kat-reference-link">{ref_link}</p>'
+        '</div>'
+    )
 
 
 

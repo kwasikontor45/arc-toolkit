@@ -16,10 +16,11 @@ VPN or DNS settings on or off.
 The existing repair path uses the tracked `~/khaos-lab/aws-infra` Terraform
 source and never changes security groups through raw AWS calls. That checkout
 is currently absent, so the timer cannot repair a changed SSH allowlist until
-the Terraform source is restored and validated. Current VPN and NextDNS are
-both active, so the live check correctly defers. Use `arc heal ip-status` to
-read the latest result, `arc heal ip` for a guarded one-shot, and
-`systemctl --user disable --now arc-home-ip-heal.timer` to stop the schedule.
+the Terraform source is restored and validated. Each run re-evaluates the live
+route and DNS conditions; the timer never changes VPN or DNS. Use
+`arc heal ip-status` for the latest result; `arc heal ip` runs one guarded
+one-shot. To stop it, run:
+`systemctl --user disable --now arc-home-ip-heal.timer`
 
 Eero's device, node, speed-test, diagnostics, password, and forwarding controls
 remain in `arc eero`; Khaos Lab opens that manager in a terminal. The periodic

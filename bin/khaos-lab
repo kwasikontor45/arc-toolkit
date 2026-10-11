@@ -130,18 +130,18 @@ LOG_SOURCES = [
 # fix (WM_CLASS was generic "Tk").
 
 # ── Palette -- "low-life-high-tech", khaos-lab's own fixed identity ───────────
-# Lifted mineral ground; the surface follows the continuous circadian palette.
+# Workshop-dark ground; the surface follows the continuous circadian palette.
 # Status semantics stay stable while text and dividers remain easy to scan.
-BG       = "#f2e8d5"
-SURFACE  = "#fbf6eb"
-OVERLAY  = "#e6d8bd"
-BORDER   = "#c5b392"
-FG       = "#302719"
-FG_MUTED = "#66563e"
-GOLD     = "#895600"
-ROSE     = "#a72d48"
-PINE     = "#266b50"
-TEAL     = "#176d6e"
+BG       = "#080d12"
+SURFACE  = "#10171e"
+OVERLAY  = "#18232c"
+BORDER   = "#2c3a45"
+FG       = "#dce5eb"
+FG_MUTED = "#a6b3bd"
+GOLD     = "#ff9d2e"
+ROSE     = "#ff3864"
+PINE     = "#0f9b9b"
+TEAL     = "#00e5c7"
 
 # Palette anchors. The ambience moves with the same continuous circadian engine as
 # Kataleya; signal colors (success/warning/error) remain fixed for reliable reading.

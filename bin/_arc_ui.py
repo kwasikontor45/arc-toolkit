@@ -18,10 +18,9 @@ source of truth for the palette, and provides:
     the real clock rather than hard-cut at phase boundaries -- matching
     Kataleya's own most recent design direction (its GAMEPLAN explicitly
     moved away from the four phases as discrete buckets toward continuous
-    drift). Not a pixel-exact port of Kataleya's real palette values (that
-    repo isn't available on this machine) -- the user explicitly said
-    exact values don't matter here, gave four palette-family anchors, and
-    said "feel free, do you."
+    drift). The desktop palette follows the established Phosphor Noir
+    graphite/teal treatment while using Kataleya's canonical phase times
+    and accents.
 
 Not a framework -- just consistent building blocks. Each app still owns
 its own layout/logic; this owns *what it looks like*.
@@ -33,16 +32,16 @@ from tkinter import font as tkfont
 
 # ── Palette -- Phosphor Noir. Mineral graphite and verdigris, with warm
 # circadian accents; Rose Pine remains a color influence, not the whole UI. ──
-BG       = "#f2e8d5"
-SURFACE  = "#fbf6eb"
-OVERLAY  = "#e6d8bd"
-FG       = "#302719"
-FG_MUTED = "#66563e"
-GOLD     = "#895600"
-ROSE     = "#a72d48"
-PINE     = "#266b50"
-TEAL     = "#176d6e"
-IRIS     = "#614a91"
+BG       = "#0c1211"
+SURFACE  = "#121d1a"
+OVERLAY  = "#192723"
+FG       = "#e5eee8"
+FG_MUTED = "#aab7b0"
+GOLD     = "#dbb77d"
+ROSE     = "#d9877f"
+PINE     = "#8fc4aa"
+TEAL     = "#88bfb2"
+IRIS     = "#ada2c9"
 
 # Semantic aliases -- read at the call site instead of the palette. Same
 # colors, names that describe *why*, not just which Rose Pine Moon hue.
@@ -60,25 +59,23 @@ COLOR_ERROR = ROSE
 # to a real hour of day. Only the five "ambient" roles drift (bg/surface/
 # overlay/fg/fg_muted) -- functional colors above stay fixed for legibility.
 PHASES = {
-    "choice":     {"hour": 6,  "bg": "#e3eff1", "surface": "#f5fafb", "overlay": "#d5e5e8", "fg": "#1a2b30", "fg_muted": "#4b6268"},  # cool green dawn
-    "desire":     {"hour": 13, "bg": "#f2e8d5", "surface": "#fbf6eb", "overlay": "#e6d8bd", "fg": "#302719", "fg_muted": "#66563e"},  # warm mineral day
-    "still-pine": {"hour": 18, "bg": "#ece6f1", "surface": "#f8f5fb", "overlay": "#ddd4e8", "fg": "#2b2534", "fg_muted": "#60566c"},  # low amber dusk
-    "nyx":        {"hour": 24, "bg": "#e9e0e7", "surface": "#f8f3f7", "overlay": "#ded3df", "fg": "#2d222d", "fg_muted": "#655665"},   # night, deepest mineral palette
+    "choice":     {"hour": 6,  "bg": "#111918", "surface": "#192321", "overlay": "#24322e", "fg": "#e3eee8", "fg_muted": "#9aada4"},  # cool dawn
+    "desire":     {"hour": 11, "bg": "#0c1717", "surface": "#142322", "overlay": "#1d302e", "fg": "#dcece8", "fg_muted": "#93aaa5"},  # warm day
+    "still-pine": {"hour": 17, "bg": "#191712", "surface": "#242018", "overlay": "#342d20", "fg": "#f0e8d9", "fg_muted": "#b6a487"},  # low amber dusk
+    "nyx":        {"hour": 21, "bg": BG,        "surface": SURFACE,  "overlay": OVERLAY,   "fg": FG,        "fg_muted": FG_MUTED},   # deep night
 }
 _PHASE_ORDER = ["choice", "desire", "still-pine", "nyx"]
 
 # Canonical Kataleya phase table (fixed 2026-07-06 across every reimplementation;
 # hours are phase START times): choice 6-11 . desire 11-17 . still-pine 17-21 .
-# nyx 21-6. Until 2026-09-19 this engine had the desire/still-pine NAMES swapped
-# relative to it (colors/timing were fine, only the labels were wrong). The
-# anchors above stay where they are (palette drifts on its own schedule); the
-# `phase` label and PHASE_ACCENT below always follow the canonical table.
+# nyx 21-6. Palette anchors, labels, and accents share these canonical
+# boundaries so no interface drifts into a second circadian schedule.
 PHASE_START = {"choice": 6, "desire": 11, "still-pine": 17, "nyx": 21}
-PHASE_ACCENT = {  # muted toolkit accents keyed to Kataleya's canonical phases
-    "choice":     "#80b9c9",
-    "desire":     "#d8b375",
-    "still-pine": "#a2c6a5",
-    "nyx":        "#b391a0",
+PHASE_ACCENT = {  # exact canonical accents, keyed to Kataleya's phases
+    "choice":     "#5ec8ed",
+    "desire":     "#f6c177",
+    "still-pine": "#c4a7e7",
+    "nyx":        "#ea9a97",
 }
 
 

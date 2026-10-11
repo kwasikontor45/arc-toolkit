@@ -53,22 +53,22 @@ if FAVICON_SOURCE.exists():
 
 CSS = """
 :root {
-  color-scheme: light;
-  --bg: #f2e8d5;
-  --panel-bg: #fbf6eb;
-  --panel-bg-alt: #e6d8bd;
+  color-scheme: dark;
+  --bg: #080809;
+  --panel-bg: #0e0e11;
+  --panel-bg-alt: #171a20;
   --phosphor: #c8f563;
   --cyan: #5ec8ed;
-  --text: #302719;
-  --text-dim: #66563e;
-  --text-mid: #4a3a24;
-  --border: #c5b392;
+  --text: #e2e0dc;
+  --text-dim: #aab0bb;
+  --text-mid: #c8ccd3;
+  --border: #343942;
   --border-hot: rgba(200,245,99,0.2);
 }
-:root[data-phase="nyx"] { --bg:#e9e0e7; --panel-bg:#f8f3f7; --panel-bg-alt:#ded3df; --text:#2d222d; --text-dim:#655665; --text-mid:#493b49; --border:#b9aab8; }
-:root[data-phase="choice"] { --bg:#e3eff1; --panel-bg:#f5fafb; --panel-bg-alt:#d5e5e8; --text:#1a2b30; --text-dim:#4b6268; --text-mid:#2f454b; --border:#a7bdc2; }
-:root[data-phase="desire"] { --bg:#f2e8d5; --panel-bg:#fbf6eb; --panel-bg-alt:#e6d8bd; --text:#302719; --text-dim:#66563e; --text-mid:#4a3a24; --border:#c5b392; }
-:root[data-phase="still-pine"] { --bg:#ece6f1; --panel-bg:#f8f5fb; --panel-bg-alt:#ddd4e8; --text:#2b2534; --text-dim:#60566c; --text-mid:#443a51; --border:#b6a9c5; }
+:root[data-phase="nyx"] { --bg:#0c1211; --panel-bg:#121d1a; --panel-bg-alt:#192723; --text:#e5eee8; --text-dim:#aab7b0; --text-mid:#d1ddd5; --border:#394b45; }
+:root[data-phase="choice"] { --bg:#111918; --panel-bg:#192321; --panel-bg-alt:#24322e; --text:#e3eee8; --text-dim:#a9b9b1; --text-mid:#d3e2db; --border:#40534c; }
+:root[data-phase="desire"] { --bg:#0c1717; --panel-bg:#142322; --panel-bg-alt:#1d302e; --text:#dcece8; --text-dim:#aabdb6; --text-mid:#cfe1dc; --border:#3e5b57; }
+:root[data-phase="still-pine"] { --bg:#191712; --panel-bg:#242018; --panel-bg-alt:#342d20; --text:#f0e8d9; --text-dim:#c4b99f; --text-mid:#e5dccb; --border:#544a37; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body {

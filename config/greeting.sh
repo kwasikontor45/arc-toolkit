@@ -12,7 +12,7 @@ _arc_greeting() {
   local M='\033[38;5;250m'
   local B='\033[1m'
   local N='\033[0m'
-  local CG='Recognize, construct, visualize, analyze, interpret.'
+  local CG='Recognize > construct > visualize > analyze > interpret'
 
   # ── Circadian ────────────────────────────────────────────────────────────────
   # C  = current phase accent (all labels)
@@ -42,25 +42,20 @@ _arc_greeting() {
     ART='\033[1;38;5;210m'    # bold rose
   fi
 
-  # ── Butterfly ────────────────────────────────────────────────────────────────
-  echo -e "  ${D}${CG}${N}"
-  echo -e "             ${GOLD})(  )(${N}        "
-  echo -e "           ${GOLD}/  \\\\  /  \\\\${N}      "
-  echo -e "          ${GOLD}| \\\\      / |${N}     "
-  echo -e "           ${ART}\\ \\\\    / /${N}      "
-  echo -e "             ${ART}\\\\\\\\  //${N}        "
-  echo -e "              ${ART}\\/\\/${N}          "
-
-  # ── Identity ─────────────────────────────────────────────────────────────────
-  echo -e "  ${C}${B}lt${N}  ${D}·${N}  ${M}$(whoami)${N}  ${D}·${N}  ${ART}arc${N}"
-  echo -e "      ${M}$(date '+%a %d %b %Y')${N}  ${D}·${N}  ${C}$(date '+%H:%M')${N}  ${D}·${N}  ${ART}${_phase}${N}"
+  # ── Compact mark, identity, method, and clock ────────────────────────────────
+  printf '  %b)(  )(%b  %blt%b %b·%b %b%s%b %b·%b %barc%b\n' \
+    "$GOLD" "$N" "$C" "$N" "$D" "$N" "$M" "$(whoami)" "$N" "$D" "$N" "$ART" "$N"
+  printf '  %b/  \\ /  \\%b  %b%s%b %b·%b %b%s%b %b·%b %b%s%b\n' \
+    "$GOLD" "$N" "$M" "$(date '+%a %d %b %Y')" "$N" "$D" "$N" \
+    "$C" "$(date '+%H:%M')" "$N" "$D" "$N" "$ART" "${_phase}" "$N"
+  printf '  %b\\  V  /%b  %b%s%b\n' "$ART" "$N" "$D" "$CG" "$N"
 
   # Daily word comes from a small local Arc dataset. Suppress a missing/bad
   # source so it can never disrupt shell startup; no network or user data.
   local word_line
   word_line=$(command arc word --compact 2>/dev/null)
-  [[ -n "$word_line" ]] && printf '  %b[✧]%b %bword%b····················%b%s%b\n' \
-    "$D" "$N" "$C" "$N" "$D" "$word_line" "$N"
+  word_line=${word_line/ · adjective · / · adj. · }
+  [[ -n "$word_line" ]] && printf '  %bWOD%b  %s\n' "$C" "$N" "$word_line"
 
   # ── Motd ─────────────────────────────────────────────────────────────────────
   local MOTD_FILE="$HOME/.config/arc/motd"
@@ -71,55 +66,34 @@ _arc_greeting() {
     done < "$MOTD_FILE"
   fi
 
-  echo ""
-
-  # ── Workflow ─────────────────────────────────────────────────────────────────
-
-  # Memory
+  # ── Compact live status ─────────────────────────────────────────────────────
   local mem_used mem_free mem_total
   mem_used=$(free -h | awk '/Mem:/ {print $3}')
   mem_free=$(free -h | awk '/Mem:/ {print $7}')
   mem_total=$(free -h | awk '/Mem:/ {print $2}')
-  echo -e "  ${D}[✧]${N} ${C}memory${D}·················${N}${M}${mem_used}${N} used ${D}·${N} ${M}${mem_free}${N} free ${D}/ ${mem_total}${N}"
 
-  # Focus
-  local LT_FOCUS="$HOME/.local/share/lt/focus"
-  if [[ -f "$LT_FOCUS" ]] && [[ -s "$LT_FOCUS" ]]; then
-    echo -e "  ${D}[✧]${N} ${C}focus${D}··················${N}${M}$(cat "$LT_FOCUS")${N}"
-  fi
-
-  # Tasks
-  local LT_TASKS="$HOME/.local/share/lt/tasks"
+  local LT_FOCUS="$HOME/.local/share/lt/focus" focus="—"
+  [[ -s "$LT_FOCUS" ]] && focus=$(cat "$LT_FOCUS")
+  local LT_TASKS="$HOME/.local/share/lt/tasks" pending=0 tasks_text tasks_color
   if [[ -f "$LT_TASKS" ]]; then
-    local pending
-    pending=$(grep -c '^pending ' "$LT_TASKS" 2>/dev/null || echo 0)
-    if (( pending > 0 )); then
-      echo -e "  ${D}[✧]${N} ${C}tasks${D}··················${N}${Y}${pending} pending${N}"
-    else
-      echo -e "  ${D}[✧]${N} ${C}tasks${D}··················${N}${D}clear${N}"
-    fi
+    pending=$(grep -c '^pending ' "$LT_TASKS" 2>/dev/null || true)
+    pending=${pending:-0}
   fi
+  tasks_text='clear'; tasks_color="$G"
+  if (( pending > 0 )); then tasks_text="${pending} pending"; tasks_color="$Y"; fi
 
-  # Snap reminder
-  # Bug fixed 2026-08-13: this used to read ~/.usb-bakup/.last-sync (the
-  # unrelated bakup-usb stamp), which could show e.g. "1d since last
-  # snapshot" even with zero Timeshift snapshots ever taken. `arc snap` is
-  # just `timeshift-check --manual` (cmd_snap), so check the same
-  # /var/cache/timeshift-last-snapshot the timeshift status line below uses.
-  local STAMP="/var/cache/timeshift-last-snapshot"
+  # Timeshift cache is the same source used by the dedicated status row.
+  local STAMP="/var/cache/timeshift-last-snapshot" snap_text snap_color
+  local snap_date last_epoch now_epoch days_ago
   if [[ -f "$STAMP" ]]; then
-    local snap_date last_epoch now_epoch days_ago
-    snap_date=$(cat "$STAMP" 2>/dev/null | grep -oP '\d{4}-\d{2}-\d{2}' | head -1)
+    snap_date=$(grep -oP '\d{4}-\d{2}-\d{2}' "$STAMP" 2>/dev/null | head -1)
     last_epoch=$(date -d "$snap_date" +%s 2>/dev/null || echo 0)
     now_epoch=$(date +%s)
     days_ago=$(( (now_epoch - last_epoch) / 86400 ))
-    if (( days_ago >= 1 )); then
-      echo -e "  ${D}[✧]${N} ${C}snap${D}···················${N}${Y}arc snap${N} ${D}— ${days_ago}d since last snapshot${N}"
-    else
-      echo -e "  ${D}[✧]${N} ${C}snap${D}···················${N}${D}today ✓${N}"
-    fi
+    if (( days_ago >= 1 )); then snap_text="${days_ago}d · arc snap"; snap_color="$Y"
+    else snap_text='today ✓'; snap_color="$G"; fi
   else
-    echo -e "  ${D}[✧]${N} ${C}snap${D}···················${N}${Y}arc snap${N} ${D}— trigger snapshot + MEGA sync${N}"
+    snap_text='none · arc snap'; snap_color="$Y"
   fi
 
   # SOP status — fast sqlite3 + grep, no subprocess overhead
@@ -128,7 +102,7 @@ _arc_greeting() {
   sop_ack_count=0
   if command -v python3 &>/dev/null && [[ -f "$HOME/.config/arc/sop/arc-sop.db" ]]; then
     sop_ack_count=$(python3 -c "
-import sqlite3, sys
+import sqlite3
 try:
     conn = sqlite3.connect('$HOME/.config/arc/sop/arc-sop.db')
     print(conn.execute(\"SELECT COUNT(*) FROM acks WHERE timestamp LIKE ?\", ('${sop_today}%',)).fetchone()[0])
@@ -136,148 +110,89 @@ except Exception:
     print(0)
 " 2>/dev/null || echo 0)
   fi
-  sop_gp_ok=0
+  local sop_gp_ok=0
   grep -q "${sop_today}.*\[STARTING\]" "$HOME/dev-notes/intel-ops/GAMEPLAN.md" 2>/dev/null && sop_gp_ok=1
+  sop_ack_str='acked'; sop_ack_color="$G"
+  (( sop_ack_count > 0 )) || { sop_ack_str='no ack'; sop_ack_color="$Y"; }
+  sop_gp_str='plan ✓'; sop_gp_color="$G"
+  (( sop_gp_ok )) || { sop_gp_str='no plan'; sop_gp_color="$Y"; }
 
-  (( sop_ack_count > 0 )) && sop_ack_str="${G}acked${N}" || sop_ack_str="${Y}no ack${N}"
-  (( sop_gp_ok ))         && sop_gp_str="${G}gameplan ✓${N}" || sop_gp_str="${Y}no gameplan entry${N}"
-  echo -e "  ${D}[✧]${N} ${C}sop${D}·····················${N}${sop_ack_str}  ${D}·${N}  ${sop_gp_str}"
-
-  # vpn — proton0 interface presence, no sudo, no live protonvpn CLI round-trip
-  # (same "cheap local check only" philosophy as the security-stack rows below).
-  # Replaced the old "mirrors" row 2026-08-22 (stale-looking, last-sync timestamp
-  # from 2026-08-18 sitting there for days) with something that actually changes
-  # and matters day to day. `arc mirrors` still exists for the real repo-sync
-  # status if needed, just not on this always-visible banner anymore.
-  local vpn_ip
+  # VPN/DNS checks are local and read-only; no state is changed.
+  local vpn_ip vpn_text vpn_color dns_text dns_color
   vpn_ip=$(ip -br addr show proton0 2>/dev/null | awk '{print $3}' | cut -d/ -f1)
-  if [[ -n "$vpn_ip" ]]; then
-    echo -e "  ${D}[✧]${N} ${C}vpn${D}····················${N}${G}connected${N}  ${D}· ${vpn_ip}${N}"
-  else
-    echo -e "  ${D}[✧]${N} ${C}vpn${D}····················${N}${Y}disconnected${N}  ${D}— arc vpn connect${N}"
-  fi
+  if [[ -n "$vpn_ip" ]]; then vpn_text="up ${vpn_ip}"; vpn_color="$G"
+  else vpn_text='down · arc vpn connect'; vpn_color="$Y"; fi
+  if systemctl is-active --quiet nextdns 2>/dev/null; then dns_text='NextDNS'; dns_color="$G"
+  else dns_text='local · arc dns on'; dns_color="$Y"; fi
 
-  echo ""
-
-  # ── Security stack — no sudo, process checks only ─────────────────────────
-
-  # DNS
-  if systemctl is-active --quiet nextdns 2>/dev/null; then
-    echo -e "  ${D}[✧]${N} ${C}dns${D}····················${N}${G}nextdns active${N}"
-  else
-    echo -e "  ${D}[✧]${N} ${C}dns${D}····················${N}${D}local ${D}·${N} ${Y}arc dns on${N} to activate${N}"
-  fi
-
-  # UFW — systemctl check, no sudo
-  if systemctl is-active --quiet ufw 2>/dev/null; then
-    echo -e "  ${D}[✧]${N} ${C}ufw${D}····················${N}${G}✓${N}"
-  else
-    echo -e "  ${D}[✧]${N} ${C}ufw${D}····················${N}${R}✗  inactive${N}"
-  fi
-
-  # Fail2ban — pgrep only, no sudo
-  if pgrep -x "fail2ban-server" &>/dev/null; then
-    echo -e "  ${D}[✧]${N} ${C}fail2ban${D}·············${N}${G}✓${N}"
-  else
-    echo -e "  ${D}[✧]${N} ${C}fail2ban${D}·············${N}${R}✗  not running${N}"
-  fi
-
-  # AppArmor
-  if systemctl is-active --quiet apparmor 2>/dev/null; then
-    echo -e "  ${D}[✧]${N} ${C}apparmor${D}·············${N}${G}✓${N}"
-  else
-    echo -e "  ${D}[✧]${N} ${C}apparmor${D}·············${N}${R}✗${N}"
-  fi
-
-  # LUKS — mapper device stays alive after USB unplug; check I/O too
+  local ufw_text ufw_color f2b_text f2b_color aa_text aa_color luks_text luks_color
+  if systemctl is-active --quiet ufw 2>/dev/null; then ufw_text='✓'; ufw_color="$G"; else ufw_text='✗'; ufw_color="$R"; fi
+  if pgrep -x 'fail2ban-server' &>/dev/null; then f2b_text='✓'; f2b_color="$G"; else f2b_text='✗'; f2b_color="$R"; fi
+  if systemctl is-active --quiet apparmor 2>/dev/null; then aa_text='✓'; aa_color="$G"; else aa_text='✗'; aa_color="$R"; fi
   if [[ -b /dev/mapper/storage_crypt ]]; then
-    if ls /mnt/storage/ >/dev/null 2>&1; then
-      echo -e "  ${D}[✧]${N} ${C}luks${D}···················${N}${G}✓${N}"
-    else
-      echo -e "  ${D}[✧]${N} ${C}luks${D}···················${N}${Y}stale${N}  ${D}(USB unplugged?)${N}"
-    fi
-  else
-    echo -e "  ${D}[✧]${N} ${C}luks${D}···················${N}${D}closed${N}"
-  fi
+    if ls /mnt/storage/ >/dev/null 2>&1; then luks_text='open'; luks_color="$G"; else luks_text='stale'; luks_color="$Y"; fi
+  else luks_text='closed'; luks_color="$D"; fi
 
-  echo ""
-
-  # ── Network ──────────────────────────────────────────────────────────────────
-
-  # Local IP — fast, no network call
-  local local_ip
+  local local_ip ext_ip ext_color
   local_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-
-  # External IP — timeout 2s, graceful fallback
-  local ext_ip
+  local_ip=${local_ip:-offline}
   ext_ip=$(curl -s --max-time 2 https://api.ipify.org 2>/dev/null)
-  [[ -z "$ext_ip" ]] && ext_ip="${D}offline${N}"
+  if [[ -n "$ext_ip" ]]; then ext_color="$M"; else ext_ip='offline'; ext_color="$D"; fi
 
-  echo -e "  ${D}[✧]${N} ${C}ip${D}·····················${N}${M}${local_ip}${N}  ${D}·  ext${N}  ${M}${ext_ip}${N}"
-
-  echo ""
-
-  # ── Storage ───────────────────────────────────────────────────────────────────
-
-  # USB — real I/O test so a stale dm-crypt mount doesn't lie
+  # Storage checks include actual mount I/O to avoid reporting a stale mount as healthy.
+  local usb_text fortress_text uu uf fu ff
   if mountpoint -q /mnt/storage 2>/dev/null && ls /mnt/storage/ >/dev/null 2>&1; then
-    local uu uf
     uu=$(df -h /mnt/storage | awk 'NR==2 {print $3}')
     uf=$(df -h /mnt/storage | awk 'NR==2 {print $4}')
-    echo -e "  ${D}[✧]${N} ${C}usb${D}····················${N}${G}✓${N}  ${M}${uu}${N} used ${D}·${N} ${M}${uf}${N} free"
-  elif mountpoint -q /mnt/storage 2>/dev/null; then
-    echo -e "  ${D}[✧]${N} ${C}usb${D}····················${N}${Y}stale${N}  ${D}— arc mount to repair${N}"
-  else
-    echo -e "  ${D}[✧]${N} ${C}usb${D}····················${N}${D}not mounted${N}"
-  fi
-
-  # Fortress (Timeshift snapshot partition) -- same real I/O test as usb above
+    usb_text="${uu} used / ${uf} free"; usb_color="$M"
+  elif mountpoint -q /mnt/storage 2>/dev/null; then usb_text='stale · arc mount'; usb_color="$Y"
+  else usb_text='not mounted'; usb_color="$D"; fi
   if mountpoint -q /fortress 2>/dev/null && ls /fortress/ >/dev/null 2>&1; then
-    local fu ff
     fu=$(df -h /fortress | awk 'NR==2 {print $3}')
     ff=$(df -h /fortress | awk 'NR==2 {print $4}')
-    echo -e "  ${D}[✧]${N} ${C}fortress${D}·············${N}${G}✓${N}  ${M}${fu}${N} used ${D}·${N} ${M}${ff}${N} free"
-  elif mountpoint -q /fortress 2>/dev/null; then
-    echo -e "  ${D}[✧]${N} ${C}fortress${D}·············${N}${Y}stale${N}  ${D}— check mount${N}"
-  else
-    echo -e "  ${D}[✧]${N} ${C}fortress${D}·············${N}${D}not mounted${N}"
-  fi
+    fortress_text="${fu} used / ${ff} free"; fortress_color="$M"
+  elif mountpoint -q /fortress 2>/dev/null; then fortress_text='stale'; fortress_color="$Y"
+  else fortress_text='not mounted'; fortress_color="$D"; fi
 
-  # Disk
-  local disk_used disk_free disk_pct
+  local disk_used disk_free disk_pct sw_used sw_total shell_name shell_ver omz_tag=''
   disk_used=$(df -h / | awk 'NR==2 {print $3}')
   disk_free=$(df -h / | awk 'NR==2 {print $4}')
   disk_pct=$(df / | awk 'NR==2 {print $5}')
-  echo -e "  ${D}[✧]${N} ${C}disk${D}···················${N}${M}${disk_used}${N} used ${D}·${N} ${M}${disk_free}${N} free  ${D}(${disk_pct})${N}"
-
-  # Shell
-  local shell_name shell_ver omz_tag=""
-  shell_name=$(basename "${SHELL:-zsh}")
-  shell_ver=$("$SHELL" --version 2>/dev/null | head -1 | awk '{print $2}' | cut -d. -f1,2)
-  [[ -d "$HOME/.oh-my-zsh" ]] && omz_tag=" ${D}· omz${N}"
-  echo -e "  ${D}[✧]${N} ${C}shell${D}··················${N}${M}${shell_name} ${shell_ver}${N}${omz_tag}"
-
-  # Swap
-  local sw_used sw_total
   sw_used=$(free -h | awk '/Swap:/ {print $3}')
   sw_total=$(free -h | awk '/Swap:/ {print $2}')
-  echo -e "  ${D}[✧]${N} ${C}swap${D}···················${N}${M}${sw_used}${N} ${D}/${N} ${M}${sw_total}${N}"
+  shell_name=$(basename "${SHELL:-zsh}")
+  shell_ver=$("$SHELL" --version 2>/dev/null | head -1 | awk '{print $2}' | cut -d. -f1,2)
+  [[ -d "$HOME/.oh-my-zsh" ]] && omz_tag='/omz'
 
-  # Timeshift
-  local ts_name="" ts_date="" ts_manual=""
-  if [[ -f "/var/cache/timeshift-last-snapshot" ]]; then
+  local ts_name ts_date ts_manual ts_tag
+  ts_date='none'; ts_tag='auto'
+  if [[ -f /var/cache/timeshift-last-snapshot ]]; then
     ts_name=$(cat /var/cache/timeshift-last-snapshot 2>/dev/null)
-    ts_date=$(echo "$ts_name" | grep -oP '\d{4}-\d{2}-\d{2}' | head -1)
-    [[ -f "/var/cache/timeshift-last-run-manual" ]] && ts_manual=$(cat /var/cache/timeshift-last-run-manual 2>/dev/null | tr -d '[:space:]')
+    ts_date=$(grep -oP '\d{4}-\d{2}-\d{2}' <<<"$ts_name" | head -1)
+    [[ -f /var/cache/timeshift-last-run-manual ]] && ts_manual=$(tr -d '[:space:]' < /var/cache/timeshift-last-run-manual)
+    [[ "$ts_manual" == '1' ]] && ts_tag='manual'
+    [[ -n "$ts_date" ]] || ts_date='unknown'
   fi
 
-  if [[ -n "$ts_date" ]]; then
-    local ts_tag=""
-    [[ "$ts_manual" == "1" ]] && ts_tag=" ${D}·${N} ${C}manual${N}"
-    echo -e "  ${D}[✧]${N} ${C}timeshift${D}·············${N}${D}${ts_date}${ts_tag}${N}"
-  else
-    echo -e "  ${D}[✧]${N} ${C}timeshift${D}·············${N}${D} · manual${N}"
-  fi
+  printf '  %bRAM%b %b%s/%s used%b · %b%s free%b  %bfocus%b %b%s%b · %btodo%b %b%s%b\n' \
+    "$C" "$N" "$M" "$mem_used" "$mem_total" "$N" "$M" "$mem_free" "$N" \
+    "$C" "$N" "$M" "$focus" "$N" "$C" "$N" "$tasks_color" "$tasks_text" "$N"
+  printf '  %bsnap%b %b%s%b · %bSOP%b %b%s%b %b%s%b · %bTS%b %s %s\n' \
+    "$C" "$N" "$snap_color" "$snap_text" "$N" "$C" "$N" \
+    "$sop_ack_color" "$sop_ack_str" "$N" "$sop_gp_color" "$sop_gp_str" "$N" \
+    "$C" "$N" "$ts_date" "$ts_tag"
+  printf '  %bVPN%b %b%s%b · %bDNS%b %b%s%b\n' \
+    "$C" "$N" "$vpn_color" "$vpn_text" "$N" "$C" "$N" "$dns_color" "$dns_text" "$N"
+  printf '  %bUFW%b %b%s%b · %bF2B%b %b%s%b · %bAA%b %b%s%b · %bLUKS%b %b%s%b\n' \
+    "$C" "$N" "$ufw_color" "$ufw_text" "$N" "$C" "$N" "$f2b_color" "$f2b_text" "$N" \
+    "$C" "$N" "$aa_color" "$aa_text" "$N" "$C" "$N" "$luks_color" "$luks_text" "$N"
+  printf '  %bIP%b %b%s%b · %bext%b %b%s%b\n' \
+    "$C" "$N" "$M" "$local_ip" "$N" "$C" "$N" "$ext_color" "$ext_ip" "$N"
+  printf '  %bUSB%b %b%s%b · %bFortress%b %b%s%b\n' \
+    "$C" "$N" "$usb_color" "$usb_text" "$N" "$C" "$N" "$fortress_color" "$fortress_text" "$N"
+  printf '  %bdisk%b %b%s/%s free (%s)%b · %bswap%b %b%s/%s%b · %bshell%b %b%s %s%s%b\n' \
+    "$C" "$N" "$M" "$disk_used" "$disk_free" "$disk_pct" "$N" \
+    "$C" "$N" "$M" "$sw_used" "$sw_total" "$N" \
+    "$C" "$N" "$M" "$shell_name" "$shell_ver" "$omz_tag" "$N"
 
-  echo ""
 }

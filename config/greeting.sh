@@ -7,14 +7,17 @@
 # opening several shells does not repeatedly query the network.
 _arc_greeting_public_ipv4() {
   local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/arc"
-  local cache_file="$cache_dir/greeting-public-ip-v4" now cached_at='' cached_ip='' age fetched temp
+  local cache_file="$cache_dir/greeting-public-ip-v4" now cached_at='' cached_scope='' cached_ip='' age fetched temp
+  local scope="${1:-direct}" ttl=1800
+  [[ "$scope" == vpn ]] || scope='direct'
+  [[ "$scope" == vpn ]] && ttl=300
   now=$(date +%s)
   if [[ -r "$cache_file" ]]; then
-    IFS=' ' read -r cached_at cached_ip < "$cache_file" || true
+    IFS=' ' read -r cached_at cached_scope cached_ip < "$cache_file" || true
   fi
-  if [[ "$cached_at" =~ ^[0-9]+$ && "$cached_ip" =~ ^[0-9.]+$ ]]; then
+  if [[ "$cached_at" =~ ^[0-9]+$ && "$cached_scope" == "$scope" && "$cached_ip" =~ ^[0-9.]+$ ]]; then
     age=$((now - cached_at))
-    if (( age >= 0 && age < 1800 )); then
+    if (( age >= 0 && age < ttl )); then
       printf '%s\n' "$cached_ip"
       return 0
     fi
@@ -30,7 +33,7 @@ _arc_greeting_public_ipv4() {
         chmod 700 "$cache_dir" 2>/dev/null || true
         temp=$(mktemp "$cache_dir/.greeting-ip.XXXXXX" 2>/dev/null || true)
         if [[ -n "$temp" ]]; then
-          printf '%s %s\n' "$now" "$fetched" > "$temp"
+          printf '%s %s %s\n' "$now" "$scope" "$fetched" > "$temp"
           chmod 600 "$temp" 2>/dev/null || true
           mv -f -- "$temp" "$cache_file" 2>/dev/null || rm -f -- "$temp"
         fi
@@ -40,12 +43,24 @@ _arc_greeting_public_ipv4() {
     fi
   fi
 
-  if [[ "$cached_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  if [[ "$cached_scope" == "$scope" && "$cached_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
       && python3 -c 'import ipaddress,sys; raise SystemExit(ipaddress.ip_address(sys.argv[1]).version != 4)' "$cached_ip" 2>/dev/null; then
     printf '%s · cached\n' "$cached_ip"
   else
     printf 'unavailable\n'
   fi
+}
+
+# Optional, owner-only ISP baseline used only to compare the routed VPN egress.
+_arc_greeting_configured_isp_ip() {
+  local config="$HOME/.config/arc/greeting-isp-ip" ip=''
+  [[ -r "$config" ]] || return 0
+  IFS= read -r ip < "$config" || true
+  [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 0
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import ipaddress,sys; raise SystemExit(ipaddress.ip_address(sys.argv[1]).version != 4)' "$ip" 2>/dev/null || return 0
+  fi
+  printf '%s\n' "$ip"
 }
 
 # Shared, width-aware renderers for the architecture banner and status rows.
@@ -56,6 +71,29 @@ _arc_greeting_line() {
   while IFS= read -r _part; do
     printf '  %b%s%b\n' "$_color" "$_part" "$N"
   done < <(printf '%s\n' "$_text" | fmt -w "$((_width - 2))" -s | fold -w "$((_width - 2))" -s)
+}
+
+# Circadian labels stay softly colored; only the beads use bold color.
+_arc_greeting_phase_rail() {
+  local _width="${COLUMNS:-80}" _nyx="$1" _nyx_circle="$2"
+  local _choice="$3" _choice_circle="$4" _desire="$5" _desire_circle="$6"
+  local _pine="$7" _pine_circle="$8" _reset="$9"
+  [[ "$_width" =~ ^[0-9]+$ ]] || _width=$(tput cols 2>/dev/null || printf '80')
+  (( _width >= 24 )) || _width=24
+  if (( _width >= 52 )); then
+    printf '  %b●%b %bNyx%b   %b●%b %bChoice%b   %b●%b %bDesire%b   %b●%b %bStill-Pine%b\n' \
+      "$_nyx_circle" "$_reset" "$_nyx" "$_reset" \
+      "$_choice_circle" "$_reset" "$_choice" "$_reset" \
+      "$_desire_circle" "$_reset" "$_desire" "$_reset" \
+      "$_pine_circle" "$_reset" "$_pine" "$_reset"
+  else
+    printf '  %b●%b %bNyx%b  %b●%b %bChoice%b\n' \
+      "$_nyx_circle" "$_reset" "$_nyx" "$_reset" \
+      "$_choice_circle" "$_reset" "$_choice" "$_reset"
+    printf '  %b●%b %bDesire%b  %b●%b %bStill-Pine%b\n' \
+      "$_desire_circle" "$_reset" "$_desire" "$_reset" \
+      "$_pine_circle" "$_reset" "$_pine" "$_reset"
+  fi
 }
 
 # The divider begins under the motto's E and ends under the last visible
@@ -81,7 +119,7 @@ _arc_greeting_rule() {
 _arc_greeting_section() {
   local _title="$1" _spaced="${2:-1}"
   (( _spaced )) && printf '\n'
-  printf '  %b●%b  %b%s%b\n' "$ART" "$N" "$ART" "$_title" "$N"
+  printf '  %b●%b  %b%s%b\n' "$CIRCLE" "$N" "$ART" "$_title" "$N"
 }
 
 # Key, value, and continuation columns stay aligned as the terminal narrows.
@@ -132,24 +170,28 @@ _arc_greeting() {
     G=''; R=''; Y=''; D=''; TEXT=''; MUTED=''; N=''
   fi
 
-  # Circadian Canonical Hours and accents: Nyx 21–06, Choice 06–11,
-  # Desire 11–17, Still-Pine 17–21. The mark carries the prior/current phase.
-  local _h _phase C GOLD ART
+  # Canonical phase colors: Nyx 21–06, Choice 06–11, Desire 11–17,
+  # Still-Pine 17–21. Phase text stays regular; only circles use bold color.
+  local _h _phase C CIRCLE ART NYX CHOICE DESIRE PINE
+  local NYX_CIRCLE CHOICE_CIRCLE DESIRE_CIRCLE PINE_CIRCLE
+  NYX='\033[38;2;234;154;151m'; NYX_CIRCLE='\033[1;38;2;234;154;151m'
+  CHOICE='\033[38;2;94;200;237m'; CHOICE_CIRCLE='\033[1;38;2;94;200;237m'
+  DESIRE='\033[38;2;246;193;119m'; DESIRE_CIRCLE='\033[1;38;2;246;193;119m'
+  PINE='\033[38;2;196;167;231m'; PINE_CIRCLE='\033[1;38;2;196;167;231m'
   _h=$(date +%-H)
   if   (( _h >= 6 && _h < 11 )); then
-    _phase='choice'
-    C='\033[38;2;94;200;237m'; GOLD='\033[38;2;234;154;151m'; ART='\033[1;38;2;94;200;237m'
+    _phase='choice'; C="$CHOICE"; CIRCLE="$CHOICE_CIRCLE"; ART="$CHOICE"
   elif (( _h >= 11 && _h < 17 )); then
-    _phase='desire'
-    C='\033[38;2;246;193;119m'; GOLD='\033[38;2;94;200;237m'; ART='\033[1;38;2;246;193;119m'
+    _phase='desire'; C="$DESIRE"; CIRCLE="$DESIRE_CIRCLE"; ART="$DESIRE"
   elif (( _h >= 17 && _h < 21 )); then
-    _phase='still-pine'
-    C='\033[38;2;196;167;231m'; GOLD='\033[38;2;246;193;119m'; ART='\033[1;38;2;196;167;231m'
+    _phase='still-pine'; C="$PINE"; CIRCLE="$PINE_CIRCLE"; ART="$PINE"
   else
-    _phase='nyx'
-    C='\033[38;2;234;154;151m'; GOLD='\033[38;2;196;167;231m'; ART='\033[1;38;2;234;154;151m'
+    _phase='nyx'; C="$NYX"; CIRCLE="$NYX_CIRCLE"; ART="$NYX"
   fi
-  [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]] || { C=''; GOLD=''; ART=''; }
+  [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]] || {
+    C=''; CIRCLE=''; ART=''; NYX=''; CHOICE=''; DESIRE=''; PINE=''
+    NYX_CIRCLE=''; CHOICE_CIRCLE=''; DESIRE_CIRCLE=''; PINE_CIRCLE=''
+  }
 
   local profile="${ARC_GREETING_PROFILE:-station}" host_name now session_state radar_label origin_name
   host_name=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'unknown-node')
@@ -165,20 +207,78 @@ _arc_greeting() {
     origin_name="$host_name · workstation"
   fi
 
-  printf '  %bSYSTEM%b: %bARCHITECTURE_LOGS%b\n' "$ART" "$N" "$TEXT" "$N"
-  printf '  %b%sSTATE%b: %bADAPTIVE_SYNC%b  %b☿⚕%b\n' "$C" "$_phase" "$N" "$ART" "$N" "$C"
-  printf '             %b%s%b\n' "$GOLD" ')(  )(' "$N"
-  printf '           %b%s%b\n' "$GOLD" '/  \  /  \' "$N"
-  printf '          %b%s%b\n' "$GOLD" '| \      / |' "$N"
-  printf '           %b%s%b\n' "$ART" '\ \    / /' "$N"
-  printf '             %b%s%b\n' "$ART" '\\  //' "$N"
-  printf '              %b%s%b\n' "$ART" '\/\/' "$N"
+  local vpn_ip='' dns_ip='' isp_ext_ip='' route_text='' route_ip='' route_summary='' compare_ext_ip=''
+  if [[ "$profile" != cloud ]]; then
+    vpn_ip=$(ip -br addr show proton0 2>/dev/null | awk '$2 != "DOWN" {print $3; exit}' | cut -d/ -f1)
+    dns_ip=$(awk '$1 == "nameserver" {print $2; exit}' /etc/resolv.conf 2>/dev/null)
+    isp_ext_ip=$(_arc_greeting_configured_isp_ip)
+    if [[ -n "$vpn_ip" ]]; then
+      route_text=$(_arc_greeting_public_ipv4 vpn)
+      compare_ext_ip="$isp_ext_ip"
+      if [[ -n "$compare_ext_ip" ]]; then
+        route_summary="EXT_IP $compare_ext_ip"
+      else
+        route_summary='EXT_IP unavailable'
+      fi
+      if [[ -n "$vpn_ip" && "$vpn_ip" != "$compare_ext_ip" ]]; then
+        route_summary+=" · VPN_IP $vpn_ip"
+      fi
+      route_ip=${route_text%% *}
+      if [[ "$route_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+          && [[ -n "$compare_ext_ip" && "$route_ip" != "$compare_ext_ip" ]]; then
+        route_summary+=" · VPN_EGRESS $route_text"
+      fi
+    else
+      route_text=$(_arc_greeting_public_ipv4 direct)
+      route_ip=${route_text%% *}
+      if [[ "$route_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        compare_ext_ip="$route_ip"
+        route_summary="EXT_IP $route_text"
+      elif [[ -n "$isp_ext_ip" ]]; then
+        compare_ext_ip="$isp_ext_ip"
+        route_summary="EXT_IP $isp_ext_ip · saved"
+      else
+        route_summary='EXT_IP unavailable'
+      fi
+    fi
+    if [[ -n "$dns_ip" && "$dns_ip" != "$compare_ext_ip" ]]; then
+      route_summary+=" · DNS_IP $dns_ip"
+    fi
+  fi
+
+  local word_line=''
+  if [[ "$profile" != cloud ]] && command -v arc >/dev/null 2>&1; then
+    word_line=$(command arc word --compact 2>/dev/null || true)
+    word_line=${word_line/ · adjective · / · adj. · }
+  fi
+  [[ -n "$word_line" ]] && _arc_greeting_item 'WOD' "$word_line" "$TEXT"
+  printf '  %b%sSTATE%b: %bADAPTIVE_SYNC%b  %b☿⚕%b\n' \
+    "$C" "$_phase" "$N" "$TEXT" "$N" "$TEXT" "$N"
+  _arc_greeting_phase_rail \
+    "$NYX" "$NYX_CIRCLE" "$CHOICE" "$CHOICE_CIRCLE" \
+    "$DESIRE" "$DESIRE_CIRCLE" "$PINE" "$PINE_CIRCLE" "$N"
+  printf '             %b%s%b\n' "$C" ')(  )(' "$N"
+  printf '           %b%s%b\n' "$C" '/  \  /  \' "$N"
+  printf '          %b%s%b\n' "$C" '| \      / |' "$N"
+  printf '           %b%s%b\n' "$C" '\ \    / /' "$N"
+  printf '             %b%s%b\n' "$C" '\\  //' "$N"
+  printf '              %b%s%b\n' "$C" '\/\/' "$N"
   if [[ "$profile" == cloud ]]; then
     _arc_greeting_item "$radar_label" "$session_state" "$G"
     _arc_greeting_item 'ORIGIN' "$origin_name" "$TEXT"
   else
     _arc_greeting_item 'LOCAL_RADAR' "$session_state" "$G"
-    _arc_greeting_item 'EXT_IP' "$(_arc_greeting_public_ipv4)" "$TEXT"
+    local route_width="${COLUMNS:-80}" route_part route_label route_value
+    [[ "$route_width" =~ ^[0-9]+$ ]] || route_width=80
+    if (( route_width >= 76 )); then
+      _arc_greeting_item 'ROUTE' "$route_summary" "$TEXT"
+    else
+      while IFS= read -r route_part; do
+        route_label=${route_part%% *}
+        route_value=${route_part#* }
+        _arc_greeting_item "$route_label" "$route_value" "$TEXT"
+      done < <(printf '%s\n' "$route_summary" | sed -E 's/ · (EXT_IP|VPN_IP|VPN_EGRESS|DNS_IP) /\n\1 /g')
+    fi
   fi
   local time_value="$now · ${_phase}"
   _arc_greeting_item 'LOCAL_TIME' "$time_value" "$TEXT"
@@ -188,14 +288,6 @@ _arc_greeting() {
   _arc_greeting_section 'IDENTITY & INTENT' 0
   _arc_greeting_item 'IDENTITY' "lt · $(whoami) · arc" "$TEXT"
   _arc_greeting_item 'METHOD' "$CG" "$TEXT"
-  # The local word helper is optional; the greeting still stands alone without it.
-  if [[ "$profile" != cloud ]] && command -v arc >/dev/null 2>&1; then
-    local word_line
-    word_line=$(command arc word --compact 2>/dev/null || true)
-    word_line=${word_line/ · adjective · / · adj. · }
-    [[ -n "$word_line" ]] && _arc_greeting_item 'WOD' "$word_line" "$TEXT"
-  fi
-
   # ── Principles and policy source ───────────────────────────────────────────
   local MOTD_FILE="$HOME/.config/arc/motd"
   if [[ -f "$MOTD_FILE" ]]; then
@@ -285,9 +377,8 @@ except Exception:
   (( sop_gp_ok )) || { sop_gp_str='no plan'; sop_gp_color="$Y"; }
 
   # VPN/DNS checks are local and read-only; no state is changed.
-  local vpn_ip vpn_text vpn_color dns_text dns_color
-  vpn_ip=$(ip -br addr show proton0 2>/dev/null | awk '{print $3}' | cut -d/ -f1)
-  if [[ -n "$vpn_ip" ]]; then vpn_text="up ${vpn_ip}"; vpn_color="$G"
+  local vpn_text vpn_color dns_text dns_color
+  if [[ -n "$vpn_ip" ]]; then vpn_text='up'; vpn_color="$G"
   else vpn_text='down · arc vpn connect'; vpn_color="$Y"; fi
   if systemctl is-active --quiet nextdns 2>/dev/null; then dns_text='NextDNS'; dns_color="$G"
   else dns_text='local · arc dns on'; dns_color="$Y"; fi

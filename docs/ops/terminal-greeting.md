@@ -2,7 +2,7 @@
 
 The local shell greeting is rendered from `config/greeting.sh` and the principles file `config/motd`. It follows the current Circadian Canonical Hours, keeps the word of the day, and shows the current public IPv4 egress beside the local radar status. The IP is cached for 30 minutes under `${XDG_CACHE_HOME:-~/.cache}/arc/`; refresh is limited to a two-second request, with a cached value shown if refresh fails. The local interface address stays in the Systems section. Cloud-profile greetings do not query an IP service.
 
-The banner uses a short `#---------- --------------#` separator; section markers and titles use the current bold Circadian accent.
+The banner divider starts under the `E` in “E Pluribus Unum” and ends under the final character of the phase shown in `LOCAL_TIME`. Its length follows the rendered, wrapped time row at the current terminal width. Section markers and titles use the current bold Circadian accent.
 
 Cloud greeting rollout is available for the three configured on-demand EC2 labs:
 

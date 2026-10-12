@@ -3,6 +3,51 @@
 # Sourced by .bashrc and .zshrc on shell start
 # No sudo calls — process checks only for security stack
 
+# Cached, bounded public-egress lookup. The cache is one fixed owner-only file;
+# opening several shells does not repeatedly query the network.
+_arc_greeting_public_ipv4() {
+  local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/arc"
+  local cache_file="$cache_dir/greeting-public-ip-v4" now cached_at='' cached_ip='' age fetched temp
+  now=$(date +%s)
+  if [[ -r "$cache_file" ]]; then
+    IFS=' ' read -r cached_at cached_ip < "$cache_file" || true
+  fi
+  if [[ "$cached_at" =~ ^[0-9]+$ && "$cached_ip" =~ ^[0-9.]+$ ]]; then
+    age=$((now - cached_at))
+    if (( age >= 0 && age < 1800 )); then
+      printf '%s\n' "$cached_ip"
+      return 0
+    fi
+  else
+    cached_at=''; cached_ip=''
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    fetched=$(curl -4fsS --connect-timeout 1 --max-time 2 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]')
+    if [[ "$fetched" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+        && python3 -c 'import ipaddress,sys; raise SystemExit(ipaddress.ip_address(sys.argv[1]).version != 4)' "$fetched" 2>/dev/null; then
+      if mkdir -p -m 700 "$cache_dir" 2>/dev/null; then
+        chmod 700 "$cache_dir" 2>/dev/null || true
+        temp=$(mktemp "$cache_dir/.greeting-ip.XXXXXX" 2>/dev/null || true)
+        if [[ -n "$temp" ]]; then
+          printf '%s %s\n' "$now" "$fetched" > "$temp"
+          chmod 600 "$temp" 2>/dev/null || true
+          mv -f -- "$temp" "$cache_file" 2>/dev/null || rm -f -- "$temp"
+        fi
+      fi
+      printf '%s\n' "$fetched"
+      return 0
+    fi
+  fi
+
+  if [[ "$cached_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+      && python3 -c 'import ipaddress,sys; raise SystemExit(ipaddress.ip_address(sys.argv[1]).version != 4)' "$cached_ip" 2>/dev/null; then
+    printf '%s · cached\n' "$cached_ip"
+  else
+    printf 'unavailable\n'
+  fi
+}
+
 # Shared, width-aware renderers for the architecture banner and status rows.
 _arc_greeting_line() {
   local _text="$1" _color="$2" _width="${COLUMNS:-80}" _part
@@ -13,29 +58,15 @@ _arc_greeting_line() {
   done < <(printf '%s\n' "$_text" | fmt -w "$((_width - 2))" -s | fold -w "$((_width - 2))" -s)
 }
 
-# Section titles use a single fine rule instead of heavy boxes or bars.
+# One short studio mark replaces width-filling divider bars.
 _arc_greeting_rule() {
-  local _width="${COLUMNS:-80}" _i
-  [[ "$_width" =~ ^[0-9]+$ ]] || _width=$(tput cols 2>/dev/null || printf '80')
-  (( _width >= 24 )) || _width=24
-  printf '  %b' "$MUTED"
-  for ((_i = 0; _i < _width - 4; _i++)); do printf '─'; done
-  printf '%b\n' "$N"
+  printf '  %b#---------- --------------#%b\n' "$MUTED" "$N"
 }
 
 _arc_greeting_section() {
-  local _title="$1" _spaced="${2:-1}" _width="${COLUMNS:-80}" _fill _i
-  [[ "$_width" =~ ^[0-9]+$ ]] || _width=$(tput cols 2>/dev/null || printf '80')
-  (( _width >= 24 )) || _width=24
+  local _title="$1" _spaced="${2:-1}"
   (( _spaced )) && printf '\n'
-  printf '  %b●%b  %b%s%b' "$C" "$N" "$ART" "$_title" "$N"
-  _fill=$((_width - ${#_title} - 8))
-  if (( _fill > 0 )); then
-    printf '  %b' "$MUTED"
-    for ((_i = 0; _i < _fill; _i++)); do printf '─'; done
-    printf '%b' "$N"
-  fi
-  printf '\n'
+  printf '  %b●%b  %b%s%b\n' "$ART" "$N" "$ART" "$_title" "$N"
 }
 
 # Key, value, and continuation columns stay aligned as the terminal narrows.
@@ -127,18 +158,15 @@ _arc_greeting() {
   printf '           %b%s%b\n' "$ART" '\ \    / /' "$N"
   printf '             %b%s%b\n' "$ART" '\\  //' "$N"
   printf '              %b%s%b\n' "$ART" '\/\/' "$N"
-  printf '  %bKWASIKONTOR.DEV%b  %b··%b  %bDEV_STUDIO_v6.6%b  %b/%b  %b%s%b\n' \
-    "$ART" "$N" "$MUTED" "$N" "$TEXT" "$N" "$MUTED" "$N" "$TEXT" \
-    "$([[ "$profile" == cloud ]] && printf 'CLOUD NODE' || printf 'LOCAL STATION')" "$N"
-  _arc_greeting_item "$radar_label" "$session_state" "$G"
-  _arc_greeting_item 'ORIGIN' "$origin_name" "$TEXT"
+  if [[ "$profile" == cloud ]]; then
+    _arc_greeting_item "$radar_label" "$session_state" "$G"
+    _arc_greeting_item 'ORIGIN' "$origin_name" "$TEXT"
+  else
+    _arc_greeting_item 'LOCAL_RADAR' "$session_state" "$G"
+    _arc_greeting_item 'EXT_IP' "$(_arc_greeting_public_ipv4)" "$TEXT"
+  fi
   _arc_greeting_item 'LOCAL_TIME' "$now · ${_phase}" "$TEXT"
   _arc_greeting_line 'E Pluribus Unum  ·  ☠  ·  In God We Trust' "$C"
-  if [[ "$profile" == cloud ]]; then
-    _arc_greeting_line "Type 'exit' to close this SSH session." "$MUTED"
-  else
-    _arc_greeting_line "Type 'arc help all' to enumerate available signals." "$MUTED"
-  fi
   _arc_greeting_rule
 
   _arc_greeting_section 'IDENTITY & INTENT' 0
@@ -182,7 +210,7 @@ _arc_greeting() {
     _arc_greeting_item 'RAM' "${cloud_mem_used:-unknown} / ${cloud_mem_total:-unknown}" "$TEXT"
     _arc_greeting_item 'ROOT_FS' "${cloud_disk:-unknown}" "$TEXT"
     _arc_greeting_item 'UPTIME' "$cloud_uptime" "$TEXT"
-    _arc_greeting_section 'SYSTEM'
+    _arc_greeting_section 'SYSTEMS'
     _arc_greeting_item 'NODE' "$host_name · AWS EC2 · $(uname -sr 2>/dev/null || printf 'Linux')" "$TEXT"
     _arc_greeting_item 'SESSION' "$session_state · $cloud_shell" "$G"
     printf '\n'
@@ -303,7 +331,7 @@ except Exception:
   [[ "$sop_ack_str" == acked && "$sop_gp_str" == 'plan ✓' ]] || ops_color="$Y"
   _arc_greeting_item 'SNAP' "${snap_text} · SOP ${sop_ack_str} · ${sop_gp_str} · TS ${ts_date} ${ts_tag}" "$ops_color"
 
-  _arc_greeting_section 'SYSTEM'
+  _arc_greeting_section 'SYSTEMS'
   local network_color="$vpn_color"
   [[ "$dns_color" == "$Y" ]] && network_color="$Y"
   _arc_greeting_item 'NET' "VPN ${vpn_text} · DNS ${dns_text}" "$network_color"

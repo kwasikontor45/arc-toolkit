@@ -1,6 +1,8 @@
 # Terminal architecture greeting
 
-The local shell greeting is rendered from `config/greeting.sh` and the principles file `config/motd`. It follows the current Circadian Canonical Hours and shows this workstation's local identity and status. It does not call a public-IP service.
+The local shell greeting is rendered from `config/greeting.sh` and the principles file `config/motd`. It follows the current Circadian Canonical Hours, keeps the word of the day, and shows the current public IPv4 egress beside the local radar status. The IP is cached for 30 minutes under `${XDG_CACHE_HOME:-~/.cache}/arc/`; refresh is limited to a two-second request, with a cached value shown if refresh fails. The local interface address stays in the Systems section. Cloud-profile greetings do not query an IP service.
+
+The banner uses a short `#---------- --------------#` separator; section markers and titles use the current bold Circadian accent.
 
 Cloud greeting rollout is available for the three configured on-demand EC2 labs:
 

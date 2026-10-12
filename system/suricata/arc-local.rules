@@ -1,0 +1,5 @@
+# Local alert-only reconnaissance thresholds. These rules never block traffic.
+# The matching event is forwarded immediately by arc-suricata-watch.
+alert tcp any any -> $HOME_NET any (msg:"ARC LOCAL TCP port sweep threshold"; flags:S; flow:stateless; detection_filter:track by_src,count 30,seconds 10; classtype:attempted-recon; sid:10000001; rev:1;)
+alert udp any any -> $HOME_NET any (msg:"ARC LOCAL UDP reconnaissance threshold"; detection_filter:track by_src,count 40,seconds 10; classtype:attempted-recon; sid:10000002; rev:1;)
+alert icmp any any -> $HOME_NET any (msg:"ARC LOCAL ICMP host sweep threshold"; itype:8; detection_filter:track by_src,count 20,seconds 10; classtype:attempted-recon; sid:10000003; rev:1;)

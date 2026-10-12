@@ -126,7 +126,7 @@ GVM database exports from `arc gvm cloud-stop` are stored on the encrypted USB v
 
 Arc Pine keeps its notification audio under its own named PipeWire client. In Arc Pine → Settings, enable **sound on new notification**, use **test** to preview it, and adjust **Arc Pine alert level** (25–100%). Chimes do not change the system sink volume or mute other applications; speech retains its existing duck-and-restore behavior. Volume-control and power OSD notifications remain muted even when the chime is enabled.
 
-Suricata severity 1/2 alerts and Nmap/port-scan signatures also sound during scheduled DND so time-sensitive network detections are not silent overnight. Sagan and Fail2ban security alerts follow the same DND exception. Explicit Arc Pine Snooze still silences them; ordinary informational Suricata traffic stays in the IDS log without a popup.
+Suricata severity 1/2 alerts and Nmap/port-scan signatures also sound during scheduled DND so time-sensitive network detections are not silent overnight. The local watcher also raises immediate alert-only notifications for an ARP sweep (20 distinct LAN targets in 5 seconds) and for Suricata's configured TCP/UDP/ICMP reconnaissance thresholds; see [the detection notes](docs/ops/realtime-recon-alerts.md). Sagan and Fail2ban security alerts follow the same DND exception. Explicit Arc Pine Snooze still silences them; ordinary informational Suricata traffic stays in the IDS log without a popup.
 
 The scheduled YARA scanner uses its installed ruleset snapshot at `~/.local/share/arc-toolkit/yara-rules/`; this keeps the rule data available without retaining the upstream rules repository checkout. Refresh the data from the Yara-Rules/rules remote when you intentionally update signatures.
 

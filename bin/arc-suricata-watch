@@ -13,6 +13,8 @@ import re
 import subprocess
 import sys
 import time
+from collections import defaultdict, deque
+from ipaddress import ip_address
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -30,17 +32,17 @@ TARGET_UID = 1000
 # suricata`/`arc sec suricata` to review, this just stops interrupting you
 # for traffic that was never actually suspicious.
 MIN_NOTIFY_SEVERITY = 2
-SCAN_SIGNATURE = re.compile(r"\b(?:nmap|port[\s_-]*scan)\b", re.IGNORECASE)
+SCAN_SIGNATURE = re.compile(
+    r"\b(?:nmap|port[\s_-]*(?:scan|sweep)|host[\s_-]*sweep|network[\s_-]*scan)\b",
+    re.IGNORECASE,
+)
 
 SEV_URGENCY = {1: "critical", 2: "normal", 3: "low"}
 
 
-# Alerts are batched over this window and collapsed into one notification per
-# (signature, src, dst) group -- a burst like a 100-file `arc sync` run (one
-# ET FILE_SHARING alert per HTTP POST) used to fire 100 separate popups in
-# ~80 seconds, flooding/hanging the notification daemon. A single real,
-# isolated alert still surfaces within FLUSH_INTERVAL seconds -- no signature
-# is ever silenced, only de-duplicated within the window.
+# Ordinary severity 1/2 alerts are batched over this window and collapsed into
+# one notification per (signature, src, dst) group. Recon alerts bypass the
+# batch below so a scan raises an immediate signal.
 FLUSH_INTERVAL = 8.0
 
 # Real, separate flood vector from the per-signature batching above: a burst
@@ -49,6 +51,14 @@ FLUSH_INTERVAL = 8.0
 # Cap the popups any single flush can actually spawn -- anything beyond this
 # collapses into one summary notification instead of N more individual ones.
 MAX_POPUPS_PER_FLUSH = 4
+
+# ARP discovery (including Nmap -sn on a directly connected LAN) is not a
+# Suricata signature alert. Keep a short sliding set of distinct targets per
+# source and raise one immediate notification when it looks like a sweep.
+ARP_WINDOW = 5.0
+ARP_TARGET_THRESHOLD = 20
+ARP_ALERT_COOLDOWN = 60.0
+SCAN_ALERT_COOLDOWN = 30.0
 
 # Rewired 2026-08-22 to call arc-pine-notify instead of notify-send/
 # xfce4-notifyd directly -- arc-pine now owns rendering for this whole
@@ -81,6 +91,9 @@ def flush(pending):
 
 def main():
     pending = {}
+    arp_targets = defaultdict(deque)
+    arp_last_alert = {}
+    scan_last_alert = {}
     last_flush = time.time()
     for line in watch.follow(EVE_LOG):
         if line:
@@ -88,7 +101,37 @@ def main():
                 ev = json.loads(line)
             except Exception:
                 ev = None
-            if ev is not None and ev.get("event_type") == "alert":
+            if ev is not None and ev.get("event_type") == "arp":
+                arp = ev.get("arp", {})
+                src_ip = arp.get("src_ip") or ev.get("src_ip")
+                dst_ip = arp.get("dest_ip") or ev.get("dest_ip")
+                opcode = str(arp.get("opcode", "")).lower()
+                # Suricata represents ARP requests as opcode 1. Ignore replies,
+                # malformed records, and probes without a usable source IP.
+                try:
+                    src = str(ip_address(src_ip))
+                    dst = str(ip_address(dst_ip))
+                except (TypeError, ValueError):
+                    src = dst = None
+                if src and dst and opcode in {"1", "request", "arp_request"}:
+                    now = time.monotonic()
+                    targets = arp_targets[src]
+                    while targets and now - targets[0][0] > ARP_WINDOW:
+                        targets.popleft()
+                    if dst not in {target for _seen, target in targets}:
+                        targets.append((now, dst))
+                    if (
+                        len(targets) >= ARP_TARGET_THRESHOLD
+                        and now - arp_last_alert.get(src, 0) >= ARP_ALERT_COOLDOWN
+                    ):
+                        arp_last_alert[src] = now
+                        notify(
+                            "LAN reconnaissance detected",
+                            f"ARP sweep: {src} queried {len(targets)} distinct LAN addresses in {ARP_WINDOW:g}s",
+                            "critical",
+                        )
+                        targets.clear()
+            elif ev is not None and ev.get("event_type") == "alert":
                 alert = ev.get("alert", {})
                 sev = alert.get("severity", 3)
                 sig = alert.get("signature", "unknown signature")
@@ -101,6 +144,12 @@ def main():
                     # (severity 3); still alert, at normal urgency, rather than
                     # leaving the event only in eve.json.
                     notify_sev = min(sev, 2) if scan_alert else sev
+                    if scan_alert:
+                        now = time.monotonic()
+                        if now - scan_last_alert.get(key, 0) >= SCAN_ALERT_COOLDOWN:
+                            scan_last_alert[key] = now
+                            notify("LAN reconnaissance detected", f"{sig}\n{src} -> {dst}", "critical")
+                        continue
                     entry = pending.setdefault(key, {"count": 0, "sev": notify_sev})
                     entry["count"] += 1
 

@@ -3,128 +3,193 @@
 # Sourced by .bashrc and .zshrc on shell start
 # No sudo calls — process checks only for security stack
 
-# Shared, width-aware one-line renderer for greeting copy and status rows.
-# Keep it local and dependency-light; fmt wraps at spaces and never breaks words.
+# Shared, width-aware renderers for the architecture banner and status rows.
 _arc_greeting_line() {
   local _text="$1" _color="$2" _width="${COLUMNS:-80}" _part
   [[ "$_width" =~ ^[0-9]+$ ]] || _width=$(tput cols 2>/dev/null || printf '80')
   (( _width >= 24 )) || _width=24
   while IFS= read -r _part; do
-    printf '  %b%s\033[0m\n' "$_color" "$_part"
-  done < <(printf '%s\n' "$_text" | fmt -w "$((_width - 2))" -s)
+    printf '  %b%s%b\n' "$_color" "$_part" "$N"
+  done < <(printf '%s\n' "$_text" | fmt -w "$((_width - 2))" -s | fold -w "$((_width - 2))" -s)
 }
 
-# Three calm groups; the accent dot and title follow the current circadian phase.
-_arc_greeting_section() {
-  local _title="$1" _spaced="${2:-1}"
-  (( _spaced )) && printf '\n'
-  printf '  %b●%b  %b%s%b\n' "$C" "$N" "$ART" "$_title" "$N"
-}
-
-# fmt wraps plain text before ANSI styling so escape codes never distort width.
-_arc_greeting_item() {
-  local _label="$1" _text="$2" _color="${3:-$C}"
-  local _width="${COLUMNS:-80}" _line _first=1 _content _label_prefix
+# Section titles use a single fine rule instead of heavy boxes or bars.
+_arc_greeting_rule() {
+  local _width="${COLUMNS:-80}" _i
   [[ "$_width" =~ ^[0-9]+$ ]] || _width=$(tput cols 2>/dev/null || printf '80')
   (( _width >= 24 )) || _width=24
-  _content="$_text"
-  if [[ -n "$_label" ]]; then
-    _label_prefix="$_label: "
-    _content="${_label_prefix}${_text}"
+  printf '  %b' "$MUTED"
+  for ((_i = 0; _i < _width - 4; _i++)); do printf '─'; done
+  printf '%b\n' "$N"
+}
+
+_arc_greeting_section() {
+  local _title="$1" _spaced="${2:-1}" _width="${COLUMNS:-80}" _fill _i
+  [[ "$_width" =~ ^[0-9]+$ ]] || _width=$(tput cols 2>/dev/null || printf '80')
+  (( _width >= 24 )) || _width=24
+  (( _spaced )) && printf '\n'
+  printf '  %b●%b  %b%s%b' "$C" "$N" "$ART" "$_title" "$N"
+  _fill=$((_width - ${#_title} - 8))
+  if (( _fill > 0 )); then
+    printf '  %b' "$MUTED"
+    for ((_i = 0; _i < _fill; _i++)); do printf '─'; done
+    printf '%b' "$N"
   fi
+  printf '\n'
+}
+
+# Key, value, and continuation columns stay aligned as the terminal narrows.
+_arc_greeting_item() {
+  local _label="$1" _text="$2" _color="${3:-$TEXT}"
+  local _width="${COLUMNS:-80}" _line _first=1 _value_width _indent
+  [[ "$_width" =~ ^[0-9]+$ ]] || _width=$(tput cols 2>/dev/null || printf '80')
+  (( _width >= 24 )) || _width=24
+  if [[ -n "$_label" && $_width -ge 52 ]]; then
+    _value_width=$((_width - 20)); _indent='                  '
+  elif [[ -n "$_label" ]]; then
+    _value_width=$((_width - 8)); _indent='      '
+  else
+    _value_width=$((_width - 7)); _indent='     '
+  fi
+  (( _value_width >= 12 )) || _value_width=12
   while IFS= read -r _line; do
     if (( _first )); then
-      if [[ -n "$_label" && "$_line" == "${_label}:" ]]; then
-        printf '  %b·%b  %b%s%b:\n' "$C" "$N" "$ART" "$_label" "$N"
-        _first=0
-        continue
-      fi
       if [[ -n "$_label" ]]; then
-        _line=${_line#"$_label_prefix"}
-        printf '  %b·%b  %b%s%b: %b%s%b\n' \
-          "$C" "$N" "$ART" "$_label" "$N" "$_color" "$_line" "$N"
+        if (( _width >= 52 )); then
+          printf '  %b·%b  %b%-11s%b  %b%s%b\n' \
+            "$C" "$N" "$ART" "$_label" "$N" "$_color" "$_line" "$N"
+        else
+          printf '  %b·%b  %b%s%b\n' "$C" "$N" "$ART" "$_label" "$N"
+          printf '%s%b%s%b\n' "$_indent" "$_color" "$_line" "$N"
+        fi
       else
         printf '  %b·%b  %b%s%b\n' "$C" "$N" "$_color" "$_line" "$N"
       fi
       _first=0
     else
-      printf '     %b%s%b\n' "$_color" "$_line" "$N"
+      printf '%s%b%s%b\n' "$_indent" "$_color" "$_line" "$N"
     fi
-  done < <(printf '%s\n' "$_content" | fmt -w "$((_width - 5))" -s | fold -w "$((_width - 5))" -s)
+  done < <(printf '%s\n' "$_text" | fmt -w "$_value_width" -s | fold -w "$_value_width" -s)
 }
 
 _arc_greeting() {
-  # ── Colors ───────────────────────────────────────────────────────────────────
-  local G='\033[0;32m'
-  local R='\033[0;31m'
-  local Y='\033[1;33m'
-  local D='\033[0;90m'
+  # Canonical Circadian accents; copy stays readable on monochrome terminals.
+  local G='\033[38;2;164;194;139m'
+  local R='\033[38;2;234;154;151m'
+  local Y='\033[38;2;246;193;119m'
+  local D='\033[38;2;128;137;145m'
+  local TEXT='\033[38;2;226;229;233m'
+  local MUTED='\033[38;2;112;124;132m'
   local N='\033[0m'
   local CG='Recognize > construct > visualize > analyze > interpret'
-
-  # ── Circadian ────────────────────────────────────────────────────────────────
-  # C  = current phase accent (all labels)
-  # GOLD = previous phase (butterfly top — where you came from)
-  # ART  = current phase bold (butterfly bottom — where you are)
-  local _h; _h=$(date +%-H)
-  local _phase C GOLD ART
-  if   (( _h >= 6  && _h < 11 )); then
-    _phase="choice"
-    C='\033[38;5;80m'         # Midnight Ocean
-    GOLD='\033[38;5;210m'     # prev: nyx rose
-    ART='\033[1;38;5;80m'     # bold teal
-  elif (( _h >= 11 && _h < 17 )); then
-    _phase="desire"
-    C='\033[38;5;222m'        # Rose Pine Gold
-    GOLD='\033[38;5;80m'      # prev: choice teal
-    ART='\033[1;38;5;222m'    # bold gold
-  elif (( _h >= 17 && _h < 21 )); then
-    _phase="still-pine"
-    C='\033[38;5;183m'        # Rose Pine Iris
-    GOLD='\033[38;5;222m'     # prev: desire gold
-    ART='\033[1;38;5;183m'    # bold iris
-  else
-    _phase="nyx"
-    C='\033[38;5;210m'        # Rose Pine Rose
-    GOLD='\033[38;5;183m'     # prev: still-pine iris
-    ART='\033[1;38;5;210m'    # bold rose
+  if [[ ! -t 1 || -n "${NO_COLOR:-}" || "${TERM:-dumb}" == dumb ]]; then
+    G=''; R=''; Y=''; D=''; TEXT=''; MUTED=''; N=''
   fi
 
-  # Original six-line butterfly/heart/angel mark, recovered from the August
-  # repository snapshot. Top wings follow the preceding phase; lower wings
-  # carry the current phase accent.
-  _arc_greeting_line "$CG" "$C"
+  # Circadian Canonical Hours and accents: Nyx 21–06, Choice 06–11,
+  # Desire 11–17, Still-Pine 17–21. The mark carries the prior/current phase.
+  local _h _phase C GOLD ART
+  _h=$(date +%-H)
+  if   (( _h >= 6 && _h < 11 )); then
+    _phase='choice'
+    C='\033[38;2;94;200;237m'; GOLD='\033[38;2;234;154;151m'; ART='\033[1;38;2;94;200;237m'
+  elif (( _h >= 11 && _h < 17 )); then
+    _phase='desire'
+    C='\033[38;2;246;193;119m'; GOLD='\033[38;2;94;200;237m'; ART='\033[1;38;2;246;193;119m'
+  elif (( _h >= 17 && _h < 21 )); then
+    _phase='still-pine'
+    C='\033[38;2;196;167;231m'; GOLD='\033[38;2;246;193;119m'; ART='\033[1;38;2;196;167;231m'
+  else
+    _phase='nyx'
+    C='\033[38;2;234;154;151m'; GOLD='\033[38;2;196;167;231m'; ART='\033[1;38;2;234;154;151m'
+  fi
+  [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]] || { C=''; GOLD=''; ART=''; }
+
+  local profile="${ARC_GREETING_PROFILE:-station}" host_name now session_state radar_label origin_name
+  host_name=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'unknown-node')
+  now=$(date '+%a, %d %b %Y · %H:%M:%S %Z')
+  if [[ "$profile" == cloud ]]; then
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then session_state='[ SSH_SESSION_ACTIVE ]'
+    else session_state='[ CLOUD_NODE_READY ]'; fi
+    radar_label='REMOTE_RADAR'
+    origin_name="${ARC_GREETING_TARGET:-AWS EC2} · $host_name"
+  else
+    session_state='[ STATION_READY ]'
+    radar_label='LOCAL_RADAR'
+    origin_name="$host_name · workstation"
+  fi
+
+  printf '  %bSYSTEM%b: %bARCHITECTURE_LOGS%b\n' "$ART" "$N" "$TEXT" "$N"
+  printf '  %b%sSTATE%b: %bADAPTIVE_SYNC%b  %b☿⚕%b\n' "$C" "$_phase" "$N" "$ART" "$N" "$C"
   printf '             %b%s%b\n' "$GOLD" ')(  )(' "$N"
   printf '           %b%s%b\n' "$GOLD" '/  \  /  \' "$N"
   printf '          %b%s%b\n' "$GOLD" '| \      / |' "$N"
   printf '           %b%s%b\n' "$ART" '\ \    / /' "$N"
   printf '             %b%s%b\n' "$ART" '\\  //' "$N"
-  printf '              %b%s%b\n\n' "$ART" '\/\/' "$N"
+  printf '              %b%s%b\n' "$ART" '\/\/' "$N"
+  printf '  %bKWASIKONTOR.DEV%b  %b··%b  %bDEV_STUDIO_v6.6%b  %b/%b  %b%s%b\n' \
+    "$ART" "$N" "$MUTED" "$N" "$TEXT" "$N" "$MUTED" "$N" "$TEXT" \
+    "$([[ "$profile" == cloud ]] && printf 'CLOUD NODE' || printf 'LOCAL STATION')" "$N"
+  _arc_greeting_item "$radar_label" "$session_state" "$G"
+  _arc_greeting_item 'ORIGIN' "$origin_name" "$TEXT"
+  _arc_greeting_item 'LOCAL_TIME' "$now · ${_phase}" "$TEXT"
+  _arc_greeting_line 'E Pluribus Unum  ·  ☠  ·  In God We Trust' "$C"
+  if [[ "$profile" == cloud ]]; then
+    _arc_greeting_line "Type 'exit' to close this SSH session." "$MUTED"
+  else
+    _arc_greeting_line "Type 'arc help all' to enumerate available signals." "$MUTED"
+  fi
+  _arc_greeting_rule
 
   _arc_greeting_section 'IDENTITY & INTENT' 0
-  _arc_greeting_item '' "lt · $(whoami) · arc" "$C"
-  _arc_greeting_item 'TIME' "$(date '+%a %d %b %Y · %H:%M') · ${_phase}" "$C"
-  # Daily word comes from a small local Arc dataset. Suppress a missing/bad
-  # source so it can never disrupt shell startup; no network or user data.
-  local word_line
-  word_line=$(command arc word --compact 2>/dev/null)
-  word_line=${word_line/ · adjective · / · adj. · }
-  [[ -n "$word_line" ]] && _arc_greeting_item 'WOD' "$word_line" "$C"
+  _arc_greeting_item 'IDENTITY' "lt · $(whoami) · arc" "$TEXT"
+  _arc_greeting_item 'METHOD' "$CG" "$TEXT"
+  # The local word helper is optional; the greeting still stands alone without it.
+  if [[ "$profile" != cloud ]] && command -v arc >/dev/null 2>&1; then
+    local word_line
+    word_line=$(command arc word --compact 2>/dev/null || true)
+    word_line=${word_line/ · adjective · / · adj. · }
+    [[ -n "$word_line" ]] && _arc_greeting_item 'WOD' "$word_line" "$TEXT"
+  fi
 
-  # ── Motd ─────────────────────────────────────────────────────────────────────
+  # ── Principles and policy source ───────────────────────────────────────────
   local MOTD_FILE="$HOME/.config/arc/motd"
   if [[ -f "$MOTD_FILE" ]]; then
-    local motd_line motd_color
+    local motd_line
     while IFS= read -r motd_line || [[ -n "$motd_line" ]]; do
       if [[ "$motd_line" == MO:* ]]; then
-        _arc_greeting_item 'MO' "${motd_line#MO: }" "$C"
+        if [[ "$profile" == cloud ]]; then
+          _arc_greeting_item 'MO' 'workstation policy · local reference' "$MUTED"
+        else
+          _arc_greeting_item 'MO' "${motd_line#MO: }" "$TEXT"
+        fi
+      elif [[ "$motd_line" == *:* ]]; then
+        _arc_greeting_item "${motd_line%%:*}" "${motd_line#*: }" "$TEXT"
       else
-        _arc_greeting_item '' "$motd_line" "$C"
+        _arc_greeting_item 'PRINCIPLES' "$motd_line" "$TEXT"
       fi
     done < "$MOTD_FILE"
   fi
 
-  # ── Compact live status ─────────────────────────────────────────────────────
+  if [[ "$profile" == cloud ]]; then
+    local cloud_mem_used cloud_mem_total cloud_disk cloud_uptime cloud_shell='bash'
+    [[ -n "${ZSH_VERSION:-}" ]] && cloud_shell='zsh'
+    cloud_mem_used=$(free -h | awk '/Mem:/ {print $3}')
+    cloud_mem_total=$(free -h | awk '/Mem:/ {print $2}')
+    cloud_disk=$(df -h / | awk 'NR==2 {print $3 " used / " $4 " free (" $5 ")"}')
+    cloud_uptime=$(uptime -p 2>/dev/null || printf 'unknown')
+    _arc_greeting_section 'OPERATIONS'
+    _arc_greeting_item 'RAM' "${cloud_mem_used:-unknown} / ${cloud_mem_total:-unknown}" "$TEXT"
+    _arc_greeting_item 'ROOT_FS' "${cloud_disk:-unknown}" "$TEXT"
+    _arc_greeting_item 'UPTIME' "$cloud_uptime" "$TEXT"
+    _arc_greeting_section 'SYSTEM'
+    _arc_greeting_item 'NODE' "$host_name · AWS EC2 · $(uname -sr 2>/dev/null || printf 'Linux')" "$TEXT"
+    _arc_greeting_item 'SESSION' "$session_state · $cloud_shell" "$G"
+    printf '\n'
+    return
+  fi
+
+  # ── Compact local status ───────────────────────────────────────────────────
   local mem_used mem_free mem_total
   mem_used=$(free -h | awk '/Mem:/ {print $3}')
   mem_free=$(free -h | awk '/Mem:/ {print $7}')
@@ -191,24 +256,22 @@ except Exception:
     if ls /mnt/storage/ >/dev/null 2>&1; then luks_text='open'; luks_color="$G"; else luks_text='stale'; luks_color="$Y"; fi
   else luks_text='closed'; luks_color="$D"; fi
 
-  local local_ip ext_ip ip_color
+  local local_ip
   local_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
   local_ip=${local_ip:-offline}
-  ext_ip=$(curl -s --max-time 2 https://api.ipify.org 2>/dev/null)
-  if [[ -n "$ext_ip" ]]; then ip_color="$C"; else ext_ip='offline'; ip_color="$D"; fi
 
   # Storage checks include actual mount I/O to avoid reporting a stale mount as healthy.
   local usb_text fortress_text uu uf fu ff
   if mountpoint -q /mnt/storage 2>/dev/null && ls /mnt/storage/ >/dev/null 2>&1; then
     uu=$(df -h /mnt/storage | awk 'NR==2 {print $3}')
     uf=$(df -h /mnt/storage | awk 'NR==2 {print $4}')
-    usb_text="${uu} used / ${uf} free"; usb_color="$C"
+    usb_text="${uu} used / ${uf} free"; usb_color="$TEXT"
   elif mountpoint -q /mnt/storage 2>/dev/null; then usb_text='stale · arc mount'; usb_color="$Y"
   else usb_text='not mounted'; usb_color="$D"; fi
   if mountpoint -q /fortress 2>/dev/null && ls /fortress/ >/dev/null 2>&1; then
     fu=$(df -h /fortress | awk 'NR==2 {print $3}')
     ff=$(df -h /fortress | awk 'NR==2 {print $4}')
-    fortress_text="${fu} used / ${ff} free"; fortress_color="$C"
+    fortress_text="${fu} used / ${ff} free"; fortress_color="$TEXT"
   elif mountpoint -q /fortress 2>/dev/null; then fortress_text='stale'; fortress_color="$Y"
   else fortress_text='not mounted'; fortress_color="$D"; fi
 
@@ -233,7 +296,9 @@ except Exception:
   fi
 
   _arc_greeting_section 'OPERATIONS'
-  _arc_greeting_item 'RAM' "${mem_used}/${mem_total} used · ${mem_free} free · focus ${focus} · todo ${tasks_text}" "$C"
+  _arc_greeting_item 'RAM' "${mem_used}/${mem_total} used · ${mem_free} free" "$TEXT"
+  _arc_greeting_item 'FOCUS' "${focus}" "$TEXT"
+  _arc_greeting_item 'TASKS' "${tasks_text}" "${tasks_color}"
   local ops_color="$snap_color"
   [[ "$sop_ack_str" == acked && "$sop_gp_str" == 'plan ✓' ]] || ops_color="$Y"
   _arc_greeting_item 'SNAP' "${snap_text} · SOP ${sop_ack_str} · ${sop_gp_str} · TS ${ts_date} ${ts_tag}" "$ops_color"
@@ -246,11 +311,11 @@ except Exception:
   [[ "$ufw_text$f2b_text$aa_text" == *✗* ]] && security_color="$R"
   [[ "$luks_text" == stale ]] && security_color="$R"
   _arc_greeting_item 'SEC' "UFW ${ufw_text} · F2B ${f2b_text} · AA ${aa_text} · LUKS ${luks_text}" "$security_color"
-  _arc_greeting_item 'IP' "${local_ip} · ext ${ext_ip}" "$ip_color"
+  _arc_greeting_item 'LOCAL_IP' "$local_ip" "$TEXT"
   local storage_color="$C"
   [[ "$usb_color" == "$Y" || "$fortress_color" == "$Y" ]] && storage_color="$Y"
   [[ "$usb_color" == "$D" && "$fortress_color" == "$D" ]] && storage_color="$D"
   _arc_greeting_item 'STORE' "USB ${usb_text} · Fortress ${fortress_text}" "$storage_color"
-  _arc_greeting_item 'HOST' "disk ${disk_used}/${disk_free} free (${disk_pct}) · swap ${sw_used}/${sw_total} · shell ${shell_name} ${shell_ver}${omz_tag}" "$C"
+  _arc_greeting_item 'HOST' "disk ${disk_used}/${disk_free} free (${disk_pct}) · swap ${sw_used}/${sw_total} · shell ${shell_name} ${shell_ver}${omz_tag}" "$TEXT"
   printf '\n'
 }

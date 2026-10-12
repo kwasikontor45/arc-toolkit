@@ -4532,6 +4532,7 @@ cmd_help_full() {
   echo -e "  ${D}arc ${C}evebox open${N}           ${M}open the web UI (http://127.0.0.1:5636)${N}"
   echo -e "  ${D}arc ${C}soc-lab${N}               ${M}status of the local Splunk lab container${N}"
   echo -e "  ${D}arc ${C}soc-lab start/stop/restart/logs${N}  ${M}manage the Splunk lab container (docker compose under the hood)${N}"
+  echo -e "  ${D}arc ${C}greeting push ${W}<gvm|soclab|wazuh> [--apply]${N}  ${M}preview or update one already-running EC2 user greeting; never starts/stops it${N}"
   echo -e "  ${D}arc ${C}aws-status${N}             ${M}quick combined snapshot -- all three cloud instances (gvm/soclab/wazuh) + budget spend${N}"
   echo -e "  ${D}arc ${C}aws-guardrails${N}         ${M}read-only audit: identity, instance metadata, ingress, EBS encryption/snapshots, spend, alarms${N}"
   echo -e "  ${D}arc ${C}aws-ip-check${N}          ${M}read-only compare of current public egress with SSH allowlists on the lab security groups${N}"
@@ -5810,6 +5811,166 @@ _aws_lab_ip() {
     --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>/dev/null
 }
 
+
+# Show the shared architecture console on one explicitly selected, already-running AWS lab.
+# It never starts/stops instances, edits system files, or requires root on the remote.
+cmd_greeting() (
+  set -euo pipefail
+  local action="${1:-help}" target="${2:-}" apply="${3:-}"
+  case "$action" in
+    push) ;;
+    help|''|-h|--help)
+      echo "Usage: arc greeting push <gvm|soclab|wazuh> [--apply]"
+      echo "Preview is read-only. --apply updates only that running EC2 user's greeting and .bashrc."
+      echo "This command never starts or stops an instance."
+      return 0 ;;
+    *) echo -e "  ${R}unknown:${N} arc greeting $action"; return 2 ;;
+  esac
+
+  case "$target" in
+    gvm)    local iid_var='GVM_INSTANCE_ID' target_name='gvm-cloud' ;;
+    soclab) local iid_var='SOCLAB_INSTANCE_ID' target_name='soclab-cloud' ;;
+    wazuh)  local iid_var='WAZUH_INSTANCE_ID' target_name='wazuh-cloud' ;;
+    *) echo "Usage: arc greeting push <gvm|soclab|wazuh> [--apply]"; return 2 ;;
+  esac
+  if (( $# > 3 )) || [[ -n "$apply" && "$apply" != --apply ]]; then
+    echo "Usage: arc greeting push <gvm|soclab|wazuh> [--apply]"
+    return 2
+  fi
+  if [[ "$apply" != --apply ]]; then
+    echo "Plan only: update ${target_name}'s user greeting after its EC2 instance is already running."
+    echo "Files: config/greeting.sh and config/motd; remote hook: ~/.bashrc."
+    echo "No AWS or SSH calls made. Add --apply to perform this one-target update."
+    return 0
+  fi
+
+  command arc-sop gate-check >/dev/null 2>&1 || {
+    echo -e "  ${R}✗${N}  SOP gate is closed; accept the current policy before pushing a cloud greeting."
+    return 1
+  }
+  _aws_lab_conf || return 1
+  local iid="${!iid_var:-}" state ip remote script_dir toolkit_root stage
+  [[ "${AWS_LAB_REGION:-}" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]] || {
+    echo -e "  ${R}✗${N}  AWS_LAB_REGION is missing or invalid"; return 1;
+  }
+  [[ "$iid" =~ ^i-[[:xdigit:]]+$ ]] || { echo -e "  ${R}✗${N}  ${iid_var} is missing or invalid in aws-lab.conf"; return 1; }
+  [[ "${AWS_LAB_SSH_USER:-}" =~ ^[a-z_][a-z0-9_-]*$ ]] || {
+    echo -e "  ${R}✗${N}  AWS_LAB_SSH_USER is missing or invalid"; return 1;
+  }
+  [[ -r "${AWS_LAB_SSH_KEY:-}" ]] || { echo -e "  ${R}✗${N}  configured AWS lab SSH key is unavailable"; return 1; }
+  command -v aws >/dev/null && command -v ssh >/dev/null && command -v scp >/dev/null || {
+    echo -e "  ${R}✗${N}  aws, ssh, and scp are required"; return 1;
+  }
+  state=$(aws ec2 describe-instances --instance-ids "$iid" --region "$AWS_LAB_REGION" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || true)
+  if [[ "$state" != running ]]; then
+    echo -e "  ${Y}·${N}  ${target_name} state is ${state:-unknown}; nothing changed."
+    echo "Start it separately with its normal arc cloud-start workflow, then retry."
+    return 1
+  fi
+  ip=$(_aws_lab_ip "$iid")
+  [[ -n "$ip" && "$ip" != None ]] || { echo -e "  ${R}✗${N}  running instance has no public SSH endpoint"; return 1; }
+  script_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+  toolkit_root=$(dirname -- "$script_dir")
+  [[ -r "$toolkit_root/config/greeting.sh" && -r "$toolkit_root/config/motd" ]] || {
+    echo -e "  ${R}✗${N}  toolkit greeting source files are missing"; return 1;
+  }
+  local remote="${AWS_LAB_SSH_USER}@${ip}"
+  local local_stage
+  local_stage=$(mktemp -d "${TMPDIR:-/tmp}/arc-greeting-${target}.XXXXXX") || {
+    echo -e "  ${R}✗${N}  could not create a private local staging directory"; return 1;
+  }
+  trap 'rm -rf -- "$local_stage"' EXIT
+  sed 's|^MO:.*$|MO: cloud node policy · local reference|' "$toolkit_root/config/motd" > "$local_stage/motd"
+  install -m 600 -- "$toolkit_root/config/greeting.sh" "$local_stage/greeting.sh"
+  stage="/tmp/arc-greeting-${target}-$$"
+  local -a ssh_opts=(-i "$AWS_LAB_SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+    -o ConnectTimeout=15 -o "HostKeyAlias=arc-greeting-${iid}")
+  echo "Pushing greeting theme to ${target_name} (${state}); no instance lifecycle changes."
+  ssh "${ssh_opts[@]}" "$remote" "umask 077 && mkdir -m 700 '$stage'" || {
+    echo -e "  ${R}✗${N}  SSH staging failed; the instance was not started or changed."; return 1;
+  }
+  if ! scp "${ssh_opts[@]}" "$local_stage/greeting.sh" "$local_stage/motd" "$remote:$stage/"; then
+    ssh "${ssh_opts[@]}" "$remote" "rm -rf -- '$stage'" >/dev/null 2>&1 || true
+    echo -e "  ${R}✗${N}  file transfer failed; remote staging was cleaned where reachable."; return 1
+  fi
+  ssh "${ssh_opts[@]}" "$remote" "bash -s -- '$stage' '$target_name'" <<'REMOTE'
+set -eu
+stage="$1"
+cloud_target="${2:-}"
+case "$stage" in /tmp/arc-greeting-*) ;; *) echo 'refusing unexpected staging path' >&2; exit 2 ;; esac
+trap 'rm -rf -- "$stage"' EXIT
+case "$cloud_target" in gvm-cloud|soclab-cloud|wazuh-cloud) ;; *) echo 'refusing unexpected cloud target' >&2; exit 2 ;; esac
+config_dir="$HOME/.config/arc"
+mkdir -p -m 700 "$config_dir"
+chmod 700 "$config_dir"
+start='# >>> ARC GREETING >>>'
+end='# <<< ARC GREETING <<<'
+shell_rc="$HOME/.bashrc"
+rc_temp="$HOME/.bashrc.arc-greeting.$$"
+greeting_temp="$config_dir/.greeting.sh.$$"
+motd_temp="$config_dir/.motd.$$"
+cleanup() {
+  rm -f -- "$rc_temp" "$greeting_temp" "$motd_temp" "$rc_temp.next"
+  rm -rf -- "$stage"
+}
+trap cleanup EXIT
+if [ -e "$shell_rc" ]; then
+  cp -p -- "$shell_rc" "$rc_temp"
+else
+  install -m 600 /dev/null "$rc_temp"
+fi
+if grep -Fq "$start" "$rc_temp" || grep -Fq "$end" "$rc_temp"; then
+  awk -v start="$start" -v end="$end" '
+    $0 == start { if (inside) exit 3; inside=1; next }
+    $0 == end { if (!inside) exit 3; inside=0; next }
+    !inside { print }
+    END { if (inside) exit 3 }
+  ' "$rc_temp" > "$rc_temp.next" || {
+    echo 'malformed Arc greeting block in .bashrc; stopped before changing live files' >&2
+    exit 3
+  }
+  mv -f -- "$rc_temp.next" "$rc_temp"
+fi
+cat >> "$rc_temp" <<'HOOK'
+
+# >>> ARC GREETING >>>
+if [[ $- == *i* && -t 1 && -r "$HOME/.config/arc/greeting.sh" ]]; then
+  ARC_GREETING_PROFILE=cloud
+  ARC_GREETING_TARGET='@ARC_GREETING_TARGET@'
+  export ARC_GREETING_PROFILE
+  export ARC_GREETING_TARGET
+  . "$HOME/.config/arc/greeting.sh"
+  _arc_greeting
+fi
+# <<< ARC GREETING <<<
+HOOK
+sed -i "s/@ARC_GREETING_TARGET@/$cloud_target/" "$rc_temp"
+bash -n "$rc_temp"
+install -m 600 -- "$stage/greeting.sh" "$greeting_temp"
+install -m 600 -- "$stage/motd" "$motd_temp"
+cmp -s "$stage/greeting.sh" "$greeting_temp"
+cmp -s "$stage/motd" "$motd_temp"
+if [ -e "$config_dir/greeting.sh" ] && [ ! -e "$config_dir/greeting.sh.before-arc-greeting" ]; then
+  cp -p -- "$config_dir/greeting.sh" "$config_dir/greeting.sh.before-arc-greeting"
+fi
+if [ -e "$config_dir/motd" ] && [ ! -e "$config_dir/motd.before-arc-greeting" ]; then
+  cp -p -- "$config_dir/motd" "$config_dir/motd.before-arc-greeting"
+fi
+if [ -e "$shell_rc" ] && [ ! -e "$shell_rc.before-arc-greeting" ]; then
+  cp -p -- "$shell_rc" "$shell_rc.before-arc-greeting"
+fi
+mv -f -- "$greeting_temp" "$config_dir/greeting.sh"
+mv -f -- "$motd_temp" "$config_dir/motd"
+mv -f -- "$rc_temp" "$shell_rc"
+chmod 600 "$shell_rc"
+cmp -s "$stage/greeting.sh" "$config_dir/greeting.sh"
+cmp -s "$stage/motd" "$config_dir/motd"
+echo "Greeting installed for the remote user's interactive Bash sessions; reconnect to view it."
+REMOTE
+  echo -e "  ${G}✓${N}  ${target_name} greeting updated; no services or instance state changed."
+)
+
 # Conflict lock -- local↔cloud mutual exclusion. GVM has no local install
 # anymore (purged 2026-08-31) so this only matters for soc-lab, but kept
 # generic/shared so it applies uniformly if local GVM is ever reinstalled.
@@ -6751,6 +6912,7 @@ case "${1:-}" in
   sagan)          cmd_sagan "${@:2}" ;;
   evebox)         cmd_evebox "${@:2}" ;;
   soc-lab)        cmd_soclab "${@:2}" ;;
+  greeting)       cmd_greeting "${@:2}" ;;
   aws-status)     cmd_aws_status ;;
   aws-guardrails) cmd_aws_guardrails ;;
   aws-ip-check)   cmd_aws_ip_check ;;

@@ -14,14 +14,51 @@ _arc_greeting_line() {
   done < <(printf '%s\n' "$_text" | fmt -w "$((_width - 2))" -s)
 }
 
+# Three calm groups; the accent dot and title follow the current circadian phase.
+_arc_greeting_section() {
+  local _title="$1" _spaced="${2:-1}"
+  (( _spaced )) && printf '\n'
+  printf '  %b●%b  %b%s%b\n' "$C" "$N" "$ART" "$_title" "$N"
+}
+
+# fmt wraps plain text before ANSI styling so escape codes never distort width.
+_arc_greeting_item() {
+  local _label="$1" _text="$2" _color="${3:-$C}"
+  local _width="${COLUMNS:-80}" _line _first=1 _content _label_prefix
+  [[ "$_width" =~ ^[0-9]+$ ]] || _width=$(tput cols 2>/dev/null || printf '80')
+  (( _width >= 24 )) || _width=24
+  _content="$_text"
+  if [[ -n "$_label" ]]; then
+    _label_prefix="$_label: "
+    _content="${_label_prefix}${_text}"
+  fi
+  while IFS= read -r _line; do
+    if (( _first )); then
+      if [[ -n "$_label" && "$_line" == "${_label}:" ]]; then
+        printf '  %b·%b  %b%s%b:\n' "$C" "$N" "$ART" "$_label" "$N"
+        _first=0
+        continue
+      fi
+      if [[ -n "$_label" ]]; then
+        _line=${_line#"$_label_prefix"}
+        printf '  %b·%b  %b%s%b: %b%s%b\n' \
+          "$C" "$N" "$ART" "$_label" "$N" "$_color" "$_line" "$N"
+      else
+        printf '  %b·%b  %b%s%b\n' "$C" "$N" "$_color" "$_line" "$N"
+      fi
+      _first=0
+    else
+      printf '     %b%s%b\n' "$_color" "$_line" "$N"
+    fi
+  done < <(printf '%s\n' "$_content" | fmt -w "$((_width - 5))" -s | fold -w "$((_width - 5))" -s)
+}
+
 _arc_greeting() {
   # ── Colors ───────────────────────────────────────────────────────────────────
   local G='\033[0;32m'
   local R='\033[0;31m'
   local Y='\033[1;33m'
   local D='\033[0;90m'
-  local M='\033[38;5;250m'
-  local B='\033[1m'
   local N='\033[0m'
   local CG='Recognize > construct > visualize > analyze > interpret'
 
@@ -56,7 +93,7 @@ _arc_greeting() {
   # Original six-line butterfly/heart/angel mark, recovered from the August
   # repository snapshot. Top wings follow the preceding phase; lower wings
   # carry the current phase accent.
-  _arc_greeting_line "$CG" "$D"
+  _arc_greeting_line "$CG" "$C"
   printf '             %b%s%b\n' "$GOLD" ')(  )(' "$N"
   printf '           %b%s%b\n' "$GOLD" '/  \  /  \' "$N"
   printf '          %b%s%b\n' "$GOLD" '| \      / |' "$N"
@@ -64,32 +101,26 @@ _arc_greeting() {
   printf '             %b%s%b\n' "$ART" '\\  //' "$N"
   printf '              %b%s%b\n\n' "$ART" '\/\/' "$N"
 
-  # Keep identity and copy in a clean, left-aligned block below the logo.
-  printf '  %blt%b %b·%b %b%s%b %b·%b %barc%b\n' \
-    "$C" "$N" "$D" "$N" "$M" "$(whoami)" "$N" "$D" "$N" "$ART" "$N"
-  printf '  %b%s%b %b·%b %b%s%b %b·%b %b%s%b\n' \
-    "$M" "$(date '+%a %d %b %Y')" "$N" "$D" "$N" \
-    "$C" "$(date '+%H:%M')" "$N" "$D" "$N" "$ART" "${_phase}" "$N"
+  _arc_greeting_section 'IDENTITY & INTENT' 0
+  _arc_greeting_item '' "lt · $(whoami) · arc" "$C"
+  _arc_greeting_item 'TIME' "$(date '+%a %d %b %Y · %H:%M') · ${_phase}" "$C"
   # Daily word comes from a small local Arc dataset. Suppress a missing/bad
   # source so it can never disrupt shell startup; no network or user data.
   local word_line
   word_line=$(command arc word --compact 2>/dev/null)
   word_line=${word_line/ · adjective · / · adj. · }
-  [[ -n "$word_line" ]] && _arc_greeting_line "WOD  $word_line" "$C"
+  [[ -n "$word_line" ]] && _arc_greeting_item 'WOD' "$word_line" "$C"
 
   # ── Motd ─────────────────────────────────────────────────────────────────────
   local MOTD_FILE="$HOME/.config/arc/motd"
   if [[ -f "$MOTD_FILE" ]]; then
-    local motd_line motd_index=0 motd_color
+    local motd_line motd_color
     while IFS= read -r motd_line || [[ -n "$motd_line" ]]; do
-      case "$motd_index" in
-        0) motd_color="$C" ;;       # current phase
-        1) motd_color="$GOLD" ;;    # preceding phase
-        2) motd_color="$ART" ;;     # current phase, emphasized
-        *) motd_color="$D" ;;       # source location stays quiet
-      esac
-      _arc_greeting_line "$motd_line" "$motd_color"
-      ((motd_index += 1))
+      if [[ "$motd_line" == MO:* ]]; then
+        _arc_greeting_item 'MO' "${motd_line#MO: }" "$C"
+      else
+        _arc_greeting_item '' "$motd_line" "$C"
+      fi
     done < "$MOTD_FILE"
   fi
 
@@ -160,24 +191,24 @@ except Exception:
     if ls /mnt/storage/ >/dev/null 2>&1; then luks_text='open'; luks_color="$G"; else luks_text='stale'; luks_color="$Y"; fi
   else luks_text='closed'; luks_color="$D"; fi
 
-  local local_ip ext_ip ext_color
+  local local_ip ext_ip ip_color
   local_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
   local_ip=${local_ip:-offline}
   ext_ip=$(curl -s --max-time 2 https://api.ipify.org 2>/dev/null)
-  if [[ -n "$ext_ip" ]]; then ext_color="$M"; else ext_ip='offline'; ext_color="$D"; fi
+  if [[ -n "$ext_ip" ]]; then ip_color="$C"; else ext_ip='offline'; ip_color="$D"; fi
 
   # Storage checks include actual mount I/O to avoid reporting a stale mount as healthy.
   local usb_text fortress_text uu uf fu ff
   if mountpoint -q /mnt/storage 2>/dev/null && ls /mnt/storage/ >/dev/null 2>&1; then
     uu=$(df -h /mnt/storage | awk 'NR==2 {print $3}')
     uf=$(df -h /mnt/storage | awk 'NR==2 {print $4}')
-    usb_text="${uu} used / ${uf} free"; usb_color="$M"
+    usb_text="${uu} used / ${uf} free"; usb_color="$C"
   elif mountpoint -q /mnt/storage 2>/dev/null; then usb_text='stale · arc mount'; usb_color="$Y"
   else usb_text='not mounted'; usb_color="$D"; fi
   if mountpoint -q /fortress 2>/dev/null && ls /fortress/ >/dev/null 2>&1; then
     fu=$(df -h /fortress | awk 'NR==2 {print $3}')
     ff=$(df -h /fortress | awk 'NR==2 {print $4}')
-    fortress_text="${fu} used / ${ff} free"; fortress_color="$M"
+    fortress_text="${fu} used / ${ff} free"; fortress_color="$C"
   elif mountpoint -q /fortress 2>/dev/null; then fortress_text='stale'; fortress_color="$Y"
   else fortress_text='not mounted'; fortress_color="$D"; fi
 
@@ -201,19 +232,25 @@ except Exception:
     [[ -n "$ts_date" ]] || ts_date='unknown'
   fi
 
-  _arc_greeting_line "RAM ${mem_used}/${mem_total} used · ${mem_free} free · focus ${focus} · todo ${tasks_text}" "$C"
+  _arc_greeting_section 'OPERATIONS'
+  _arc_greeting_item 'RAM' "${mem_used}/${mem_total} used · ${mem_free} free · focus ${focus} · todo ${tasks_text}" "$C"
   local ops_color="$snap_color"
   [[ "$sop_ack_str" == acked && "$sop_gp_str" == 'plan ✓' ]] || ops_color="$Y"
-  _arc_greeting_line "snap ${snap_text} · SOP ${sop_ack_str} · ${sop_gp_str} · TS ${ts_date} ${ts_tag}" "$ops_color"
+  _arc_greeting_item 'SNAP' "${snap_text} · SOP ${sop_ack_str} · ${sop_gp_str} · TS ${ts_date} ${ts_tag}" "$ops_color"
+
+  _arc_greeting_section 'SYSTEM'
   local network_color="$vpn_color"
   [[ "$dns_color" == "$Y" ]] && network_color="$Y"
-  _arc_greeting_line "VPN ${vpn_text} · DNS ${dns_text}" "$network_color"
+  _arc_greeting_item 'NET' "VPN ${vpn_text} · DNS ${dns_text}" "$network_color"
   local security_color="$G"
   [[ "$ufw_text$f2b_text$aa_text" == *✗* ]] && security_color="$R"
   [[ "$luks_text" == stale ]] && security_color="$R"
-  _arc_greeting_line "UFW ${ufw_text} · F2B ${f2b_text} · AA ${aa_text} · LUKS ${luks_text}" "$security_color"
-  _arc_greeting_line "IP ${local_ip} · ext ${ext_ip}" "$M"
-  _arc_greeting_line "USB ${usb_text} · Fortress ${fortress_text}" "$usb_color"
-  _arc_greeting_line "disk ${disk_used}/${disk_free} free (${disk_pct}) · swap ${sw_used}/${sw_total} · shell ${shell_name} ${shell_ver}${omz_tag}" "$M"
+  _arc_greeting_item 'SEC' "UFW ${ufw_text} · F2B ${f2b_text} · AA ${aa_text} · LUKS ${luks_text}" "$security_color"
+  _arc_greeting_item 'IP' "${local_ip} · ext ${ext_ip}" "$ip_color"
+  local storage_color="$C"
+  [[ "$usb_color" == "$Y" || "$fortress_color" == "$Y" ]] && storage_color="$Y"
+  [[ "$usb_color" == "$D" && "$fortress_color" == "$D" ]] && storage_color="$D"
+  _arc_greeting_item 'STORE' "USB ${usb_text} · Fortress ${fortress_text}" "$storage_color"
+  _arc_greeting_item 'HOST' "disk ${disk_used}/${disk_free} free (${disk_pct}) · swap ${sw_used}/${sw_total} · shell ${shell_name} ${shell_ver}${omz_tag}" "$C"
   printf '\n'
 }

@@ -215,5 +215,5 @@ except Exception:
   _arc_greeting_line "IP ${local_ip} · ext ${ext_ip}" "$M"
   _arc_greeting_line "USB ${usb_text} · Fortress ${fortress_text}" "$usb_color"
   _arc_greeting_line "disk ${disk_used}/${disk_free} free (${disk_pct}) · swap ${sw_used}/${sw_total} · shell ${shell_name} ${shell_ver}${omz_tag}" "$M"
-
+  printf '\n'
 }

@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Opt-in NextDNS recovery after a host egress path becomes available.
+# NetworkManager runs dispatcher hooks as root. This hook only reads Arc DNS
+# intent; bin/arc-dns is the sole writer of the user's mode file.
+set -u
+
+STATE_FILE="/home/architect-of-chaos/.config/arc/nextdns-autoheal-state"
+STATE_UID=1000
+LOCK="/run/nextdns-heal.lock"
+STAMP="/run/nextdns-heal.lastrun"
+DEBOUNCE_SECONDS=5
+
+IFACE="${1:-?}"
+ACTION="${2:-?}"
+
+log() {
+  logger -t arc-nextdns-heal -- "iface=$IFACE action=$ACTION $1"
+}
+
+# Avoid a restart storm for disconnects, VPN teardown, and interface churn.
+# A later host connectivity-change or interface-up event can recover DNS.
+case "$ACTION" in
+  up|connectivity-change) ;;
+  *) exit 0 ;;
+esac
+
+case "$IFACE" in
+  lo|docker0|lxcbr0|virbr*|br-*|veth*|podman*|cni*) exit 0 ;;
+esac
+
+# Fail closed unless the owner explicitly enabled auto-heal with `arc dns on`.
+# The mode file must be a regular, owner-controlled 0600 file; absence means off.
+if [[ ! -f "$STATE_FILE" || -L "$STATE_FILE" ]]; then
+  exit 0
+fi
+STATE_META="$(stat -c '%u:%a' "$STATE_FILE" 2>/dev/null || true)"
+if [[ "$STATE_META" != "$STATE_UID:600" ]] || [[ "$(cat "$STATE_FILE" 2>/dev/null)" != "on" ]]; then
+  log "auto-heal is off or mode file is not trusted; skipping"
+  exit 0
+fi
+
+systemctl is-active --quiet nextdns 2>/dev/null || {
+  log "nextdns not active; skipping"
+  exit 0
+}
+
+# Never replace a resolver-manager symlink. `arc dns on` owns this direct-file
+# mode on this machine; if another resolver manager takes ownership, fail safe.
+if [[ ! -f /etc/resolv.conf || -L /etc/resolv.conf ]]; then
+  log "resolv.conf is not a regular file; refusing to replace it"
+  exit 0
+fi
+
+exec 9>"$LOCK"
+flock -w 20 9 || {
+  log "another repair stayed active; event skipped"
+  exit 0
+}
+
+# Recheck after waiting for the lock: `arc dns off` may have changed intent
+# while another dispatcher event held it.
+STATE_META="$(stat -c '%u:%a' "$STATE_FILE" 2>/dev/null || true)"
+if [[ ! -f "$STATE_FILE" || -L "$STATE_FILE" || "$STATE_META" != "$STATE_UID:600" ]] || \
+   [[ "$(cat "$STATE_FILE" 2>/dev/null)" != "on" ]]; then
+  log "auto-heal was disabled while waiting; skipping"
+  exit 0
+fi
+
+NOW="$(date +%s)"
+LAST="$(cat "$STAMP" 2>/dev/null || echo 0)"
+[[ "$LAST" =~ ^[0-9]+$ ]] || LAST=0
+if (( NOW - LAST < DEBOUNCE_SECONDS )); then
+  exit 0
+fi
+printf '%s\n' "$NOW" > "$STAMP"
+
+if ! systemctl restart nextdns; then
+  log "NextDNS restart failed"
+  exit 1
+fi
+
+for _ in 1 2 3; do
+  sleep 1
+  if grep -q '^nameserver 127\.0\.0\.1$' /etc/resolv.conf 2>/dev/null; then
+    log "NextDNS refreshed after host network-up event"
+    exit 0
+  fi
+done
+
+# Recheck ownership immediately before the atomic write. Do not clobber a
+# resolver symlink or non-file installed while the service was restarting.
+if [[ ! -f /etc/resolv.conf || -L /etc/resolv.conf ]]; then
+  log "resolver ownership changed during recovery; refusing write"
+  exit 0
+fi
+if [[ "$(cat "$STATE_FILE" 2>/dev/null)" != "on" ]]; then
+  log "auto-heal disabled during recovery; leaving resolver untouched"
+  exit 0
+fi
+TMP="$(mktemp /etc/.resolv.conf.nextdns.XXXXXX)" || {
+  log "could not create atomic resolver update"
+  exit 1
+}
+trap 'rm -f -- "$TMP"' EXIT
+printf '# restored by opt-in arc NextDNS network recovery\nnameserver 127.0.0.1\n' > "$TMP"
+chmod 0644 "$TMP"
+chown root:root "$TMP"
+mv -f -- "$TMP" /etc/resolv.conf || {
+  log "atomic resolver restore failed"
+  exit 1
+}
+trap - EXIT
+log "NextDNS resolver stub restored after host network-up event"

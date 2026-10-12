@@ -103,9 +103,22 @@ check_dns_leak() {
   # physical interface, bypassing NextDNS) even while a basic "is nextdns
   # running" check keeps reporting healthy. Reuses arc-dns's own
   # ground-truth check rather than duplicating the logic.
+  local autoheal_state="$HOME/.config/arc/nextdns-autoheal-state" autoheal_meta
+  autoheal_meta="$(stat -c '%u:%a' "$autoheal_state" 2>/dev/null || true)"
+  if [[ ! -f "$autoheal_state" || -L "$autoheal_state" || "$autoheal_meta" != "$(id -u):600" ]] || \
+     [[ "$(cat "$autoheal_state" 2>/dev/null)" != "on" ]]; then
+    note "OK::dns-leak::NextDNS auto-heal not opted in; respecting DNS-off/default state"
+    return 0
+  fi
   local out
   out=$("$HOME/.local/bin/arc-dns" check 2>/dev/null)
   if echo "$out" | grep -q "NOT wired\|PARTIAL LEAK"; then
+    autoheal_meta="$(stat -c '%u:%a' "$autoheal_state" 2>/dev/null || true)"
+    if [[ ! -f "$autoheal_state" || -L "$autoheal_state" || "$autoheal_meta" != "$(id -u):600" ]] || \
+       [[ "$(cat "$autoheal_state" 2>/dev/null)" != "on" ]]; then
+      note "OK::dns-leak::DNS auto-heal was disabled during check; restart skipped"
+      return 0
+    fi
     sudo -n systemctl restart nextdns 2>/dev/null
     sleep 2
     out=$("$HOME/.local/bin/arc-dns" check 2>/dev/null)

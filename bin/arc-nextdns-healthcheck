@@ -1,10 +1,9 @@
 #!/bin/bash
 # arc-nextdns-healthcheck — periodic, event-independent NextDNS health
 # check. Closes a real gap flagged 2026-08-01 and never built: the
-# NetworkManager dispatcher hook (90-nextdns-heal) only fires on interface
-# up/down events, so a spontaneous hang with no interface flap (confirmed
-# to happen at least once before -- an ~8+ minute silent outage) went
-# completely uncaught. This is the complementary timer-based piece.
+# The NetworkManager dispatcher hook (90-nextdns-heal) only fires on visible
+# interface-up/connectivity-change events. A prior ~8-minute hang had no such
+# event and went uncaught; this timer provides the independent backstop.
 #
 # Notify-wired 2026-08-26 -- this ran as a root systemd service every 5min
 # with a real failure path ("restart did NOT fix it") that had *zero*
@@ -17,6 +16,15 @@ set -uo pipefail
 
 LOG="/var/log/nextdns-heal.log"
 log() { printf '%s  timer-check  %s\n' "$(date -Is)" "$1" >> "$LOG"; }
+
+# `arc dns on/off` owns this desired-state marker. A missing, malformed, or
+# off marker means the owner has not opted into automatic DNS repair.
+STATE_FILE="/home/architect-of-chaos/.config/arc/nextdns-autoheal-state"
+STATE_META="$(stat -c '%u:%a' "$STATE_FILE" 2>/dev/null || true)"
+if [[ ! -f "$STATE_FILE" || -L "$STATE_FILE" || "$STATE_META" != "1000:600" ]] || \
+   [[ "$(cat "$STATE_FILE" 2>/dev/null)" != "on" ]]; then
+  exit 0
+fi
 
 TARGET_USER="architect-of-chaos"
 TARGET_UID=1000
@@ -33,6 +41,11 @@ if dig +short +time=3 nextdns.io @127.0.0.1 2>/dev/null | grep -qE '^[0-9]+\.[0-
   exit 0
 fi
 
+STATE_META="$(stat -c '%u:%a' "$STATE_FILE" 2>/dev/null || true)"
+if [[ ! -f "$STATE_FILE" || -L "$STATE_FILE" || "$STATE_META" != "1000:600" ]] || \
+   [[ "$(cat "$STATE_FILE" 2>/dev/null)" != "on" ]]; then
+  exit 0
+fi
 log "query failed, restarting nextdns"
 systemctl restart nextdns
 sleep 1

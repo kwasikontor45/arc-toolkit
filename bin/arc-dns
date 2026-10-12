@@ -9,7 +9,31 @@
 { command -v arc-sop >/dev/null 2>&1 && arc-sop ack-auto "arc-dns" >/dev/null 2>&1; } || true
 
 PROFILE_FILE="$HOME/.config/nextdns-profile"
+AUTOHEAL_STATE_FILE="$HOME/.config/arc/nextdns-autoheal-state"
 CMD="${1:-status}"
+
+_set_autoheal_state() {
+    local state="$1" dir tmp
+    [[ "$state" == "on" || "$state" == "off" ]] || return 1
+    dir=$(dirname "$AUTOHEAL_STATE_FILE")
+    mkdir -p "$dir"
+    tmp=$(mktemp "$dir/.nextdns-autoheal-state.XXXXXX") || return 1
+    printf '%s\n' "$state" > "$tmp"
+    chmod 600 "$tmp"
+    mv -f -- "$tmp" "$AUTOHEAL_STATE_FILE"
+}
+
+_autoheal_state() {
+    local meta
+    meta="$(stat -c '%u:%a' "$AUTOHEAL_STATE_FILE" 2>/dev/null || true)"
+    if [[ -f "$AUTOHEAL_STATE_FILE" && ! -L "$AUTOHEAL_STATE_FILE" && "$meta" == "$(id -u):600" ]]; then
+        case "$(cat "$AUTOHEAL_STATE_FILE" 2>/dev/null)" in
+            on) echo "enabled"; return ;;
+            off) echo "disabled"; return ;;
+        esac
+    fi
+    echo "not opted in (disabled)"
+}
 
 _profile_id() {
     [ -f "$PROFILE_FILE" ] && cat "$PROFILE_FILE" || echo ""
@@ -51,6 +75,9 @@ case "$CMD" in
     on)
         PROFILE=$(_require_profile)
         echo "  activating NextDNS (profile: $PROFILE)..."
+        # Record explicit intent first. If activation is transiently unavailable,
+        # the opt-in dispatcher may recover it after a real network-up event.
+        _set_autoheal_state on
         sudo nextdns config set --profile="$PROFILE"
         sudo nextdns activate
         RESOLVER=$(cat /etc/resolv.conf 2>/dev/null | grep '^nameserver' | head -1 | awk '{print $2}')
@@ -59,6 +86,9 @@ case "$CMD" in
 
     off)
         echo "  deactivating NextDNS — restoring system defaults..."
+        # Close the automatic repair path before touching the live resolver, so
+        # a concurrent NetworkManager event cannot undo this explicit opt-out.
+        _set_autoheal_state off
         sudo nextdns deactivate
         RESOLVER=$(cat /etc/resolv.conf 2>/dev/null | grep '^nameserver' | head -1 | awk '{print $2}')
         # NetworkManager.conf has dns=none (2026-08-15, fixes a DNS-leak-on-reconnect
@@ -91,6 +121,7 @@ case "$CMD" in
         fi
         PROFILE=$(_profile_id)
         [ -n "$PROFILE" ] && echo "  profile:         $PROFILE" || echo "  profile:         not set"
+        echo "  auto-heal:       $(_autoheal_state)  (controlled by arc dns on/off)"
         # resolvectl (systemd-resolved) is no longer present on this machine
         # as of some point after 2026-08-02 -- nextdns manages
         # /etc/resolv.conf directly instead now, so that's the real source

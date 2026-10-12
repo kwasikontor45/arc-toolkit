@@ -58,9 +58,24 @@ _arc_greeting_line() {
   done < <(printf '%s\n' "$_text" | fmt -w "$((_width - 2))" -s | fold -w "$((_width - 2))" -s)
 }
 
-# One short studio mark replaces width-filling divider bars.
+# The divider begins under the motto's E and ends under the last visible
+# character of the wrapped LOCAL_TIME value (the phase name's final letter).
 _arc_greeting_rule() {
-  printf '  %b#---------- --------------#%b\n' "$MUTED" "$N"
+  local _time_value="$1" _width="${COLUMNS:-80}" _value_width _start_col _last_line _end_col _dash_count _dashes
+  [[ "$_width" =~ ^[0-9]+$ ]] || _width=$(tput cols 2>/dev/null || printf '80')
+  (( _width >= 24 )) || _width=24
+  if (( _width >= 52 )); then
+    _value_width=$((_width - 20)); _start_col=19
+  else
+    _value_width=$((_width - 8)); _start_col=7
+  fi
+  (( _value_width >= 12 )) || _value_width=12
+  _last_line=$(printf '%s\n' "$_time_value" | fmt -w "$_value_width" -s | fold -w "$_value_width" -s | tail -n 1)
+  _end_col=$((_start_col - 1 + ${#_last_line}))
+  _dash_count=$((_end_col - 4))
+  (( _dash_count >= 0 )) || _dash_count=0
+  _dashes=$(printf '%*s' "$_dash_count" '' | tr ' ' '-')
+  printf '  %b#%s#%b\n' "$MUTED" "$_dashes" "$N"
 }
 
 _arc_greeting_section() {
@@ -165,9 +180,10 @@ _arc_greeting() {
     _arc_greeting_item 'LOCAL_RADAR' "$session_state" "$G"
     _arc_greeting_item 'EXT_IP' "$(_arc_greeting_public_ipv4)" "$TEXT"
   fi
-  _arc_greeting_item 'LOCAL_TIME' "$now · ${_phase}" "$TEXT"
+  local time_value="$now · ${_phase}"
+  _arc_greeting_item 'LOCAL_TIME' "$time_value" "$TEXT"
   _arc_greeting_line 'E Pluribus Unum  ·  ☠  ·  In God We Trust' "$C"
-  _arc_greeting_rule
+  _arc_greeting_rule "$time_value"
 
   _arc_greeting_section 'IDENTITY & INTENT' 0
   _arc_greeting_item 'IDENTITY' "lt · $(whoami) · arc" "$TEXT"

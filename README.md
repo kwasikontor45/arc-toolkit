@@ -94,10 +94,11 @@ The command center adapts its workspace cards and status tiles from one to three
 `bin/_arc_ui.py` owns shared Tk design tokens and primitives: circadian colors, rounded
 surfaces, buttons, and pill scrollbars. Keep app state and each workspace's layout in its
 own view; add reusable visual behavior here so apps share one implementation without
-depending on one another. The edges carry a slow phase glint; set `ARC_REDUCE_MOTION=1`
-before launch to keep surfaces still. Khaos Lab workspace cards use these shared surfaces,
-while status colors remain semantic and stable. Arc Pine's independent Cairo bubble renderer
-uses the same reduced-motion switch. The optional
+depending on one another. Resting edges stay still; on hover, keyboard focus, or press,
+interactive outlines briefly swell and pick up a faint circadian tint. No highlight travels
+around the edge. Khaos Lab workspace cards use these shared surfaces, while status colors
+remain semantic and stable. Arc Pine's independent Cairo bubble renderer keeps a static rim
+and animates only its arrival, hover, pause, and dismissal states. The optional
 `config/gtk-3.0/whisker-mercury.css` removes the Whisker menu's selected-row block and visible
 scrollbar without disabling scrolling. Install it as
 `~/.config/gtk-3.0/whisker-mercury.css` and import it near the top of `gtk.css` with

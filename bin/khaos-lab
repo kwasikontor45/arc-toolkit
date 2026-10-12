@@ -3949,8 +3949,10 @@ class HelpView(View):
             for widget in (shell, card, *card.winfo_children()):
                 widget.bind("<Button-1>", lambda _e, n=name: self.app.select(n))
                 widget.configure(cursor="hand2")
-                widget.bind("<Enter>", lambda _e, c=card: self._card_hover(c, True))
-                widget.bind("<Leave>", lambda _e, c=card: self._card_hover(c, False))
+                widget.bind("<ButtonPress-1>", lambda _e, s=shell: s.set_outline_state("press"), add="+")
+                widget.bind("<ButtonRelease-1>", lambda _e, s=shell: s.set_outline_state("hover"))
+                widget.bind("<Enter>", lambda _e, c=card, s=shell: self._card_hover(c, s, True))
+                widget.bind("<Leave>", lambda _e, c=card, s=shell: self._card_hover(c, s, False))
             self._cards.append((shell, card))
         self._layout_cards(grid, 580)
         tk.Label(self.frame, text="Guarded actions ask before changing system state. Results and errors appear in the output console below.",
@@ -3972,7 +3974,28 @@ class HelpView(View):
         self.app.search_entry.icursor("end")
 
     @staticmethod
-    def _card_hover(card, on):
+    def _card_pointer_inside(card):
+        try:
+            widget = card.winfo_containing(card.winfo_pointerx(), card.winfo_pointery())
+        except tk.TclError:
+            return False
+        while widget is not None:
+            if widget is card:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
+    def _card_hover(self, card, shell, on):
+        if not on:
+            try:
+                card.after_idle(lambda: None if self._card_pointer_inside(card)
+                                else self._apply_card_hover(card, shell, False))
+            except tk.TclError:
+                pass
+            return
+        self._apply_card_hover(card, shell, True)
+
+    def _apply_card_hover(self, card, shell, on):
         bg = ui._lerp_hex(OVERLAY, ui.phase_info()[1], .08) if on else OVERLAY
         def paint(widget):
             try:
@@ -3983,6 +4006,7 @@ class HelpView(View):
             for child in widget.winfo_children():
                 paint(child)
         paint(card)
+        shell.set_outline_state("hover" if on else "rest")
 
 
 class DisplayView(View):

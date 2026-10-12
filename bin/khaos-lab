@@ -3608,33 +3608,26 @@ class SopView(View):
 
         docs = tk.Frame(self.frame, bg=SURFACE)
         docs.pack(fill="x", padx=8, pady=(0, 8))
-        ui.button(docs, "read latest GAMEPLAN", command=lambda: self._read_doc(
-            "GAMEPLAN · latest 100 lines", HOME / "dev-notes/intel-ops/GAMEPLAN.md", tail=100,
-            read_key="gameplan"),
-            font=f.small, bg=OVERLAY, fg=GOLD, hover_bg=BG, padx=12, pady=7).pack(side="left", padx=5)
-        ui.button(docs, "read SOT", command=lambda: self._read_doc(
-            "SOURCE OF TRUTH · SOT.md", HOME / "dev-notes/intel-ops/SOT.md",
-            read_key="sot"),
-            font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG, padx=12, pady=7).pack(side="left", padx=5)
-        ui.button(docs, "read all MOs", command=lambda: self._read_doc(
-            "OPERATING PRINCIPLES · all current MOs", HOME / "dev-notes/intel-ops/MO.md",
-            read_key="mo"), font=f.small, bg=OVERLAY, fg=GOLD, hover_bg=BG,
-            padx=12, pady=7).pack(side="left", padx=5)
+        ui.button(docs, "read full policy packet", command=self._read_policy_packet,
+                  font=f.small, bg=OVERLAY, fg=GOLD, hover_bg=BG,
+                  padx=12, pady=7).pack(side="left", padx=5)
         ui.button(docs, "check gate", command=self.refresh_gate, font=f.small, bg=OVERLAY, fg=FG,
                   hover_bg=BG, padx=12, pady=7).pack(side="right", padx=5)
-        self.principles_label = tk.Label(docs,
-                 text=("I WWSJD  ·  II Right & tight  ·  III Swiss cheese\n"
-                       "IV Trust but verify  ·  V Operate in the light\n"
-                       "VI Leave it cleaner  ·  VII Inevitable"),
-                 font=f.small, bg=SURFACE, fg=self.app.phase_accent,
-                 anchor="w", justify="left", wraplength=720)
-        self.principles_label.pack(fill="x", padx=10, pady=(2, 4))
-        guide = (f"Full policy: {HOME / 'dev-notes/intel-ops/GAMEPLAN.md'} · "
-                 f"{HOME / 'dev-notes/intel-ops/SOT.md'} · {HOME / 'dev-notes/intel-ops/MO.md'}\n"
-                 "Read all three before accepting · batcat or cat reads the full files")
-        tk.Label(docs, text=guide, font=f.small, bg=SURFACE, fg=FG_MUTED,
-                 anchor="w", justify="left", wraplength=720).pack(fill="x", padx=10, pady=(2, 8))
-
+        self.principles_text = tk.Text(docs, height=2, wrap="word", font=f.small,
+                                       bg=SURFACE, fg=FG, relief="flat", bd=0,
+                                       highlightthickness=0, padx=2, pady=2)
+        self.principles_text.pack(fill="x", padx=10, pady=(2, 4))
+        principles = ("I WWSJD", "II Right & tight", "III Swiss cheese", "IV Trust & verify",
+                      "V Operate in the light", "VI Leave it cleaner", "VII Inevitable")
+        mo_colors = (self.app.phase_accent, GOLD, TEAL, PINE, ROSE, FG_MUTED, GOLD)
+        for i, (label, color) in enumerate(zip(principles, mo_colors)):
+            self.principles_text.insert("end", label, f"mo{i}")
+            self.principles_text.tag_configure(f"mo{i}", foreground=color)
+            if i in (2, 4):
+                self.principles_text.insert("end", "\n")
+            elif i < 6:
+                self.principles_text.insert("end", "   ·   ")
+        self.principles_text.configure(state="disabled")
         start = tk.Frame(self.frame, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
         start.pack(fill="x", padx=8, pady=(0, 8))
         tk.Label(start, text="START A TASK", font=f.small, bg=OVERLAY, fg=FG_MUTED,
@@ -3681,6 +3674,52 @@ class SopView(View):
         self.poll("sop-gate-status", 5000, check_sop_gate, self._show_gate_status)
         self.poll("sop-violations", 1000, self._read_violations, self._show_violations)
 
+    def _read_policy_packet(self):
+        """Present the complete current plan, SOT, and MO in one readable pane."""
+        self.accept_var.set(False)
+        self.docs_read.clear()
+        self.doc_hashes.clear()
+        paths = (
+            ("gameplan", "GAMEPLAN · current work context", HOME / "dev-notes/intel-ops/GAMEPLAN.md"),
+            ("sot", "SOURCE OF TRUTH · SOT.md", HOME / "dev-notes/intel-ops/SOT.md"),
+            ("mo", "OPERATING PRINCIPLES · all current MOs", HOME / "dev-notes/intel-ops/MO.md"),
+        )
+        d = Dialog(self.app, "policy packet · read before operations", resizable=True, geometry="940x700")
+        frame = tk.Frame(d.shell, bg=SURFACE)
+        frame.pack(fill="both", expand=True, padx=14, pady=(12, 8))
+        scroll = ui.PillScrollbar(frame)
+        scroll.pack(side="right", fill="y")
+        text = tk.Text(frame, bg=SURFACE, fg=FG, font=self.app.f.mono, wrap="word",
+                       yscrollcommand=scroll.set, relief="flat", padx=12, pady=10)
+        text.pack(side="left", fill="both", expand=True)
+        scroll.configure(command=text.yview)
+        text.insert("1.0", "loading complete policy packet…")
+        text.configure(state="disabled")
+        ui.button(d.shell, "close", command=d.close, font=self.app.f.small, bg=OVERLAY,
+                  fg=FG_MUTED, hover_bg=BG, padx=14, pady=7).pack(pady=(0, 12))
+
+        def load():
+            return [(key, title, path, path.read_text(errors="replace"))
+                    for key, title, path in paths]
+
+        def show(items):
+            try:
+                text.configure(state="normal")
+                text.delete("1.0", "end")
+                for key, title, path, content in items:
+                    text.insert("end", f"{title}\n{path}\n{'─' * 64}\n", "heading")
+                    text.insert("end", content.rstrip() + "\n\n")
+                    self.docs_read.add(key)
+                    self.doc_hashes[key] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                text.tag_configure("heading", foreground=self.app.phase_accent)
+                text.configure(state="disabled")
+                text.see("1.0")
+            except (tk.TclError, OSError) as e:
+                self.docs_read.clear()
+                self.doc_hashes.clear()
+                self.app.console.log(f"policy packet did not load completely; gate stays locked: {e}", ROSE)
+        self.app.bg(load, show)
+
     def _clear_placeholder(self, _event=None):
         if self.task_text.get() == "briefly name today's work…":
             self.task_text.set("")
@@ -3702,7 +3741,7 @@ class SopView(View):
         self.identity_label.configure(
             text=f"lt · {os.environ.get('USER', 'operator')} · arc  ·  "
                  f"{stamp:%a %d %b %Y}  ·  {stamp:%H:%M}  ·  {phase}", fg=accent)
-        self.principles_label.configure(fg=accent)
+        self.principles_text.tag_configure("mo0", foreground=accent)
         self.gate_label.configure(text="OPERATIONS OPEN" if ok else "OPERATIONS LOCKED",
                                   fg=PINE if ok else ROSE)
         self.detail_label.configure(text=detail or ("This session is cleared." if ok else
@@ -3717,10 +3756,10 @@ class SopView(View):
             self.task_entry.focus_set()
             return
         if not self.accept_var.get() or not {"gameplan", "sot", "mo"}.issubset(self.docs_read):
-            self.app.console.log("read the three current sources and explicitly accept every MO before starting", ROSE)
+            self.app.console.log("read the complete policy packet and explicitly accept every MO before starting", ROSE)
             return
         try:
-            for name, key in (("SOT.md", "sot"), ("MO.md", "mo")):
+            for name, key in (("GAMEPLAN.md", "gameplan"), ("SOT.md", "sot"), ("MO.md", "mo")):
                 current = (HOME / "dev-notes/intel-ops" / name).read_bytes()
                 if hashlib.sha256(current).hexdigest() != self.doc_hashes.get(key):
                     self.app.console.log(f"{name} changed since you read it; reopen it before accepting", ROSE)
@@ -3735,6 +3774,10 @@ class SopView(View):
 
     def _confirm_policy(self, description, result):
         _ok, output = result
+        if _ok and "✓ unlocked" in (output or ""):
+            self.app.console.log("task logged · current accepted policy reused for this live session", TEAL)
+            self.refresh_gate()
+            return
         match = re.search(r"--accept-policy ([a-f0-9]{64})", output or "")
         if not match:
             self.app.console.log("could not obtain a fresh session policy digest; gate remains locked", ROSE)
@@ -4080,6 +4123,7 @@ class App:
         root.bind("<Configure>", self._on_root_configure, add="+")
         root.bind("<Control-f>", lambda _e: (self.search_entry.focus_set(), "break")[1])
         root.bind("<F1>", lambda _e: (self.select("Help"), "break")[1])
+        root.bind("<F5>", lambda _e: (self.refresh_interface(), "break")[1])
         root.bind("<F11>", self.toggle_fullscreen)
         root.bind("<Escape>", self.exit_fullscreen)
 
@@ -4128,6 +4172,11 @@ class App:
                                            fg=FG_MUTED, hover_bg=BG, hover_fg=self.phase_accent,
                                            padx=10, pady=5)
         self.fullscreen_toggle.pack(side="right", padx=(8, 0))
+        self.refresh_toggle = ui.button(header, "↻  Refresh",
+                                        command=self.refresh_interface, font=f.small, bg=OVERLAY,
+                                        fg=FG_MUTED, hover_bg=BG, hover_fg=self.phase_accent,
+                                        padx=10, pady=5)
+        self.refresh_toggle.pack(side="right", padx=(8, 0))
         tk.Label(header, text="khaos", font=f.big, bg=BG, fg=GOLD).pack(side="left")
         tk.Label(header, text="/", font=f.big, bg=BG, fg=FG_MUTED).pack(side="left")
         self.brand_accent = tk.Label(header, text="lab", font=f.big, bg=BG, fg=self.phase_accent)
@@ -4198,6 +4247,23 @@ class App:
             self.fullscreen_toggle.configure(text="Exit full screen  ·  Esc")
         else:
             self.exit_fullscreen()
+        return "break"
+
+    def refresh_interface(self):
+        """Refresh live data in the current workspace or rebuild its static view."""
+        view = self.view
+        if view is not None and view.alive():
+            refresh = getattr(view, "refresh", None)
+            if callable(refresh):
+                refresh()
+            elif not self._ph_active and self.search_var.get().strip():
+                self._do_search()
+            else:
+                self.select(self.current)
+        else:
+            self.select(self.current)
+        if hasattr(self, "status_phase"):
+            self.status_phase.configure(text=f"◐ {self.phase_name}  ·  refreshed {time.strftime('%H:%M')}")
         return "break"
 
     def exit_fullscreen(self, _event=None):

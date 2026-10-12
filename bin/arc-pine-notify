@@ -32,6 +32,9 @@ SOCK_PATH = "/run/user/{}/arc-pine-bubbles.sock".format(os.getuid())
 # 1=normal, 2=critical -- match it so entries show correctly in the
 # existing history viewer's URGENCY_COLOR mapping.
 URGENCY_INT = {"low": 0, "normal": 1, "critical": 2}
+# User-requested security alerts remain audible during scheduled DND. Explicit
+# snooze still suppresses them; it is the user's immediate quiet control.
+SECURITY_ALERT_APPS = {"arc-suricata", "arc-sagan", "arc-fail2ban"}
 
 
 def push_bubble(urgency, app, summary, body):
@@ -62,7 +65,7 @@ def main():
     pine.log_notification(app, summary, body, URGENCY_INT[urgency])
 
     snoozed = pine.is_snoozed(cfg)
-    quiet = pine.in_dnd_window(cfg) or snoozed
+    quiet = snoozed or (pine.in_dnd_window(cfg) and app not in SECURITY_ALERT_APPS)
     sound_file = cfg.get("sound_file") if cfg.get("sound_enabled", True) and not quiet else None
     speak_text = None
     if cfg.get("speak_enabled", True) and not quiet and pine.should_speak(cfg, app):

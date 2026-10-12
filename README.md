@@ -91,8 +91,9 @@ notification, or system/user-data access. The command validates the small JSON c
 nothing if it is absent or malformed. `arc sot install-autostart` installs/refreshes the catalog
 alongside the terminal greeting.
 
-The three-line butterfly/heart/angel mark in `config/greeting.sh` is fixed logo artwork. Preserve
-its glyphs and line breaks exactly; keep identity, date, method, and status copy below it.
+The six-line butterfly/heart/angel mark in `config/greeting.sh` is fixed logo artwork, restored
+from the August repository snapshot. Preserve its glyphs and line breaks exactly; keep identity,
+date, method, and status copy below it.
 
 `sudoers/arc-waydroid` grants only the exact Waydroid unit start/stop/mask/unmask commands and fixed device-mode restoration commands used by Stop. Waydroid is a shared-kernel container, not a VM; while it runs, its standard startup widens access to host device nodes. The vanilla image has no Google apps, and no shared host folders are configured.
 
@@ -101,6 +102,8 @@ GVM database exports from `arc gvm cloud-stop` are stored on the encrypted USB v
 ### Arc Pine notification audio
 
 Arc Pine keeps its notification audio under its own named PipeWire client. In Arc Pine → Settings, enable **sound on new notification**, use **test** to preview it, and adjust **Arc Pine alert level** (25–100%). Chimes do not change the system sink volume or mute other applications; speech retains its existing duck-and-restore behavior. Volume-control and power OSD notifications remain muted even when the chime is enabled.
+
+Suricata severity 1/2 alerts and Nmap/port-scan signatures also sound during scheduled DND so time-sensitive network detections are not silent overnight. Sagan and Fail2ban security alerts follow the same DND exception. Explicit Arc Pine Snooze still silences them; ordinary informational Suricata traffic stays in the IDS log without a popup.
 
 The scheduled YARA scanner uses its installed ruleset snapshot at `~/.local/share/arc-toolkit/yara-rules/`; this keeps the rule data available without retaining the upstream rules repository checkout. Refresh the data from the Yara-Rules/rules remote when you intentionally update signatures.
 

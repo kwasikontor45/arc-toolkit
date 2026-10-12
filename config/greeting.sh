@@ -53,11 +53,16 @@ _arc_greeting() {
     ART='\033[1;38;5;210m'    # bold rose
   fi
 
-  # Fixed Khaos butterfly/heart/angel logo. Preserve these three art rows;
-  # future greeting edits belong below the mark and must not reshape it.
-  printf '  %b)(  )(%b\n' "$GOLD" "$N"
-  printf '  %b/  \\ /  \\%b\n' "$GOLD" "$N"
-  printf '  %b\\  V  /%b\n\n' "$ART" "$N"
+  # Original six-line butterfly/heart/angel mark, recovered from the August
+  # repository snapshot. Top wings follow the preceding phase; lower wings
+  # carry the current phase accent.
+  _arc_greeting_line "$CG" "$D"
+  printf '             %b%s%b\n' "$GOLD" ')(  )(' "$N"
+  printf '           %b%s%b\n' "$GOLD" '/  \  /  \' "$N"
+  printf '          %b%s%b\n' "$GOLD" '| \      / |' "$N"
+  printf '           %b%s%b\n' "$ART" '\ \    / /' "$N"
+  printf '             %b%s%b\n' "$ART" '\\  //' "$N"
+  printf '              %b%s%b\n\n' "$ART" '\/\/' "$N"
 
   # Keep identity and copy in a clean, left-aligned block below the logo.
   printf '  %blt%b %b·%b %b%s%b %b·%b %barc%b\n' \
@@ -65,8 +70,6 @@ _arc_greeting() {
   printf '  %b%s%b %b·%b %b%s%b %b·%b %b%s%b\n' \
     "$M" "$(date '+%a %d %b %Y')" "$N" "$D" "$N" \
     "$C" "$(date '+%H:%M')" "$N" "$D" "$N" "$ART" "${_phase}" "$N"
-  _arc_greeting_line "$CG" "$D"
-
   # Daily word comes from a small local Arc dataset. Suppress a missing/bad
   # source so it can never disrupt shell startup; no network or user data.
   local word_line
@@ -77,9 +80,16 @@ _arc_greeting() {
   # ── Motd ─────────────────────────────────────────────────────────────────────
   local MOTD_FILE="$HOME/.config/arc/motd"
   if [[ -f "$MOTD_FILE" ]]; then
-    local motd_line
+    local motd_line motd_index=0 motd_color
     while IFS= read -r motd_line || [[ -n "$motd_line" ]]; do
-      _arc_greeting_line "$motd_line" "$D"
+      case "$motd_index" in
+        0) motd_color="$C" ;;       # current phase
+        1) motd_color="$GOLD" ;;    # preceding phase
+        2) motd_color="$ART" ;;     # current phase, emphasized
+        *) motd_color="$D" ;;       # source location stays quiet
+      esac
+      _arc_greeting_line "$motd_line" "$motd_color"
+      ((motd_index += 1))
     done < "$MOTD_FILE"
   fi
 
@@ -191,12 +201,19 @@ except Exception:
     [[ -n "$ts_date" ]] || ts_date='unknown'
   fi
 
-  _arc_greeting_line "RAM ${mem_used}/${mem_total} used · ${mem_free} free · focus ${focus} · todo ${tasks_text}" "$D"
-  _arc_greeting_line "snap ${snap_text} · SOP ${sop_ack_str} · ${sop_gp_str} · TS ${ts_date} ${ts_tag}" "$D"
-  _arc_greeting_line "VPN ${vpn_text} · DNS ${dns_text}" "$D"
-  _arc_greeting_line "UFW ${ufw_text} · F2B ${f2b_text} · AA ${aa_text} · LUKS ${luks_text}" "$D"
-  _arc_greeting_line "IP ${local_ip} · ext ${ext_ip}" "$D"
-  _arc_greeting_line "USB ${usb_text} · Fortress ${fortress_text}" "$D"
-  _arc_greeting_line "disk ${disk_used}/${disk_free} free (${disk_pct}) · swap ${sw_used}/${sw_total} · shell ${shell_name} ${shell_ver}${omz_tag}" "$D"
+  _arc_greeting_line "RAM ${mem_used}/${mem_total} used · ${mem_free} free · focus ${focus} · todo ${tasks_text}" "$C"
+  local ops_color="$snap_color"
+  [[ "$sop_ack_str" == acked && "$sop_gp_str" == 'plan ✓' ]] || ops_color="$Y"
+  _arc_greeting_line "snap ${snap_text} · SOP ${sop_ack_str} · ${sop_gp_str} · TS ${ts_date} ${ts_tag}" "$ops_color"
+  local network_color="$vpn_color"
+  [[ "$dns_color" == "$Y" ]] && network_color="$Y"
+  _arc_greeting_line "VPN ${vpn_text} · DNS ${dns_text}" "$network_color"
+  local security_color="$G"
+  [[ "$ufw_text$f2b_text$aa_text" == *✗* ]] && security_color="$R"
+  [[ "$luks_text" == stale ]] && security_color="$R"
+  _arc_greeting_line "UFW ${ufw_text} · F2B ${f2b_text} · AA ${aa_text} · LUKS ${luks_text}" "$security_color"
+  _arc_greeting_line "IP ${local_ip} · ext ${ext_ip}" "$M"
+  _arc_greeting_line "USB ${usb_text} · Fortress ${fortress_text}" "$usb_color"
+  _arc_greeting_line "disk ${disk_used}/${disk_free} free (${disk_pct}) · swap ${sw_used}/${sw_total} · shell ${shell_name} ${shell_ver}${omz_tag}" "$M"
 
 }

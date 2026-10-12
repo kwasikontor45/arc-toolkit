@@ -9,6 +9,7 @@ other script, safe to stop/delete alone.
 """
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -29,6 +30,7 @@ TARGET_UID = 1000
 # suricata`/`arc sec suricata` to review, this just stops interrupting you
 # for traffic that was never actually suspicious.
 MIN_NOTIFY_SEVERITY = 2
+SCAN_SIGNATURE = re.compile(r"\b(?:nmap|port[\s_-]*scan)\b", re.IGNORECASE)
 
 SEV_URGENCY = {1: "critical", 2: "normal", 3: "low"}
 
@@ -89,12 +91,17 @@ def main():
             if ev is not None and ev.get("event_type") == "alert":
                 alert = ev.get("alert", {})
                 sev = alert.get("severity", 3)
-                if sev <= MIN_NOTIFY_SEVERITY:
-                    sig = alert.get("signature", "unknown signature")
+                sig = alert.get("signature", "unknown signature")
+                scan_alert = bool(SCAN_SIGNATURE.search(sig))
+                if sev <= MIN_NOTIFY_SEVERITY or scan_alert:
                     src = ev.get("src_ip", "?")
                     dst = ev.get("dest_ip", "?")
                     key = (sig, src, dst)
-                    entry = pending.setdefault(key, {"count": 0, "sev": sev})
+                    # Nmap/port-scan detections can be classified informational
+                    # (severity 3); still alert, at normal urgency, rather than
+                    # leaving the event only in eve.json.
+                    notify_sev = min(sev, 2) if scan_alert else sev
+                    entry = pending.setdefault(key, {"count": 0, "sev": notify_sev})
                     entry["count"] += 1
 
         if pending and (time.time() - last_flush) >= FLUSH_INTERVAL:

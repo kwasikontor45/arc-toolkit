@@ -389,12 +389,18 @@ def current_mo_sections():
 
 def print_current_mos(sections):
     """Display the exact current MO text, in order, after fresh acceptance."""
-    print(f"\n{C}{BOLD}OPERATING PRINCIPLES · CURRENT MO SEQUENCE{N}")
-    for heading, body in sections:
-        print(f"\n  {C}{BOLD}{heading}{N}")
+    phase_inks = ("38;2;94;200;237", "38;2;246;193;119", "38;2;196;167;231",
+                  "38;2;234;154;151", "38;5;45", "38;5;220", "38;5;183")
+    color = bool(getattr(sys.stdout, "isatty", lambda: False)()) and "NO_COLOR" not in os.environ
+    def ink(value, code):
+        return f"\033[{code}m{value}{N}" if color else value
+
+    print(f"\n{ink('OPERATING PRINCIPLES · CURRENT MO SEQUENCE', '1;36')}")
+    for index, (heading, body) in enumerate(sections):
+        print(f"\n  {ink(heading, '1;' + phase_inks[index % len(phase_inks)])}")
         for line in body.splitlines():
             print(f"    {line}" if line else "")
-    print(f"\n  {D}Full source: {MO_FILE}{N}")
+    print(f"\n  {ink('Full source: ' + str(MO_FILE), '2')}")
 
 
 def cmd_ack():
@@ -409,18 +415,18 @@ def cmd_ack():
 def print_reading_guide(stream=None, reader_hint=True):
     """Point directly to the authoritative files, with an optional reader hint."""
     stream = sys.stdout if stream is None else stream
-    print("Read these full files:", file=stream)
-    print(f"  {INTEL_OPS / 'GAMEPLAN.md'}", file=stream)
-    print(f"  {SOT_FILE}", file=stream)
-    print(f"  {MO_FILE}", file=stream)
+    print("READ FULL POLICY:", file=stream)
+    print(f"  1 · {INTEL_OPS / 'GAMEPLAN.md'}", file=stream)
+    print(f"  2 · {SOT_FILE}", file=stream)
+    print(f"  3 · {MO_FILE}", file=stream)
     if not reader_hint:
         return
     if shutil.which("batcat"):
-        print("Read with: batcat <full-path>  (or less <full-path>)", file=stream)
+        print("Reader: batcat <path>  ·  less <path>", file=stream)
     elif shutil.which("bat"):
-        print("Read with: bat <full-path>  (or less <full-path>)", file=stream)
+        print("Reader: bat <path>  ·  less <path>", file=stream)
     else:
-        print("Read with: less <full-path>  (or cat <full-path>)", file=stream)
+        print("Reader: less <path>  ·  cat <path>", file=stream)
 
 
 def cmd_ack_auto(script_name: str):

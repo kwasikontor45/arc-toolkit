@@ -1,10 +1,13 @@
 # NextDNS network recovery
 
-The proposed dispatcher source is
-`system/networkmanager/dispatcher.d/90-nextdns-heal`. Its workstation copy
-would be `/etc/NetworkManager/dispatcher.d/90-nextdns-heal`, owned by
-`root:root` with mode `0755`. It is hardened but remains uninstalled; this
-change does not install it or alter the live resolver.
+The dispatcher source is `system/networkmanager/dispatcher.d/90-nextdns-heal`;
+the workstation copy is `/etc/NetworkManager/dispatcher.d/90-nextdns-heal`.
+On 2026-10-12 the previously installed, unguarded hook was preserved as
+`/var/backups/90-nextdns-heal-20261012-103236` and replaced with this guarded
+version. The installed file is mode `0755` and its SHA-256 matches the source.
+The backup hash is `70652ac5c36d7d031d72c2de1d6e7c7457f51817e821c86c08a9e17b9bd21ba9`.
+The current desired-state file is absent, so the replacement exits before
+service or resolver operations unless the owner explicitly opts in.
 
 ## Fail-closed opt-in
 
@@ -27,12 +30,13 @@ the service is already active. It refuses to replace a symlink or non-file at
 it uses an atomic same-directory replacement. Dispatcher messages go to
 journald under `arc-nextdns-heal`.
 
-## Install later
+## Deployment and verification
 
-Preserve any installed copy under `/var/backups`, install the source with root
-ownership and mode `0755`, and validate with `bash -n`. Confirm the resolver is
-still a regular file managed with NetworkManager `dns=none`; exercise a
-virtual-link event and verify it exits without restarting NextDNS. Installation
-alone remains inert until the owner explicitly opts in with `arc dns on`.
-Do not change VPN routing, the NextDNS profile, or leak-protection policy as
-part of a dispatcher update.
+The current process verified `bash -n`, matching source/installed hashes, and
+that invoking the hook with the desired-state file absent leaves
+`/etc/resolv.conf` unchanged. A system-bus restriction prevented querying the
+NextDNS unit state from this session. Verify service status on the host with
+`systemctl is-active nextdns.service`; inspect the desired-state choice with
+`arc dns status`. Installation alone remains inert until the owner explicitly
+opts in with `arc dns on`. Do not change VPN routing, the NextDNS profile, or
+leak-protection policy as part of a dispatcher update.

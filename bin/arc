@@ -4632,6 +4632,7 @@ cmd_help_full() {
   echo -e "  ${D}arc ${C}net iftop${N}              ${M}bandwidth per connection pair  (sudo, -i/-n/-N/-P/-t)${N}"
   echo -e "  ${D}arc ${C}net nethogs${N}            ${M}bandwidth per PID / process  (sudo, -d/-p/-t/-b)${N}"
   echo -e "  ${D}arc ${C}net stats${N}              ${M}quick rx/tx snapshot per interface — no TUI, no sudo${N}"
+  echo -e "  ${D}arc-cast ${W}[status|discover|open|guide]${N}   ${M}local Google Cast discovery + Chromium; no network settings changed${N}"
   echo -e "  ${D}arc ${C}dns ${W}[on|off|restart|flush|check|status|profile|blocklists]${N}   ${M}NextDNS toggle${N}"
   echo -e "  ${D}arc-dns-hot${N}                 ${M}enable NextDNS boot + activate aggressive filtering${N}"
   echo -e "  ${D}arc-dns-cold${N}                ${M}disable NextDNS boot + deactivate to system DNS${N}"

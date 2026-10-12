@@ -1197,6 +1197,7 @@ CATEGORIES = {
     "Commands": [],   # special view: complete arc + lt command catalog and safe launcher
     "Cockpit": [],    # special view: network / cloud / remote-access overview
     "Inventory": [],  # special view: register vs reality (arc inv), added 2026-09-19
+    "Display": [],    # special view: local casting readiness and receiver discovery
     "Logs": [],       # special view: review / purge curated logs
     "Find": [],       # special view: search arc-lt-cmc / dev-notes / khaos-lab / vault
     "Network": [
@@ -3883,6 +3884,7 @@ class HelpView(View):
         "Logs": "Review recent system, security, and self-heal activity",
         "Find": "Search your notes and archived references",
         "Network": "VPN, DNS, router, and network-monitoring actions",
+        "Display": "Screen-share readiness, local Google Cast discovery, and the Fire TV path",
         "Reference": "Build and open your private reference library",
         "Phone": "ADB device tools · UAD-ng package management",
         "Waydroid": "Open Android → connect ADB → manage it from Phone",
@@ -3983,6 +3985,87 @@ class HelpView(View):
         paint(card)
 
 
+class DisplayView(View):
+    """Small casting bay: separate Google Cast from the workstation's Fire TV path."""
+
+    scrollable = True
+
+    def build(self):
+        f = self.app.f
+        hero_shell, hero = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16,
+                                             border=BORDER, inset=12)
+        hero_shell.pack(fill="x", pady=(0, 10))
+        tk.Label(hero, text="screen share", font=f.label, bg=OVERLAY,
+                 fg=self.app.phase_accent, anchor="w").pack(fill="x", pady=(1, 4))
+        tk.Label(hero,
+                 text="Local readiness and receiver discovery. Nothing here changes Wi-Fi, VPN, DNS, firewall, or services.",
+                 font=f.small, bg=OVERLAY, fg=FG_MUTED, anchor="w", justify="left",
+                 wraplength=680).pack(fill="x")
+
+        status_shell, status = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=14,
+                                                 border=BORDER, inset=12)
+        status_shell.pack(fill="x", pady=(0, 10))
+        tk.Label(status, text="readiness", font=f.label, bg=OVERLAY,
+                 fg=FG, anchor="w").pack(fill="x")
+        self.status_text = tk.Label(status, text="checking local tools…", font=f.small,
+                                    bg=OVERLAY, fg=FG_MUTED, anchor="w", justify="left",
+                                    wraplength=680)
+        self.status_text.pack(fill="x", pady=(4, 6))
+        ui.button(status, "refresh readiness", command=self.refresh_status,
+                  font=f.small, bg=SURFACE, fg=TEAL, hover_bg=BORDER,
+                  padx=10, pady=5).pack(anchor="w")
+
+        cast_shell, cast = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=14,
+                                             border=BORDER, inset=12)
+        cast_shell.pack(fill="x", pady=(0, 10))
+        tk.Label(cast, text="Google Cast", font=f.label, bg=OVERLAY,
+                 fg=FG, anchor="w").pack(fill="x")
+        tk.Label(cast,
+                 text="Use a real Chromecast or Google Cast receiver on the same local Wi-Fi. Setup starts in Google Home on a phone. Chromium can open its Cast controls; Linux full-desktop support depends on the browser build.",
+                 font=f.small, bg=OVERLAY, fg=FG_MUTED, anchor="w", justify="left",
+                 wraplength=680).pack(fill="x", pady=(4, 7))
+        row = tk.Frame(cast, bg=OVERLAY)
+        row.pack(fill="x")
+        ui.button(row, "discover receivers", command=lambda: self.app.run_action(
+            Action("Discover Google Cast receivers", "arc-cast discover", timeout=12)),
+                  font=f.small, bg=SURFACE, fg=TEAL, hover_bg=BORDER,
+                  padx=10, pady=5).pack(side="left", padx=(0, 7))
+        ui.button(row, "open Chromium Cast", command=lambda: self.app.run_action(
+            Action("Open Chromium Cast controls", "arc-cast open", detach=True)),
+                  font=f.small, bg=SURFACE, fg=GOLD, hover_bg=BORDER,
+                  padx=10, pady=5).pack(side="left")
+
+        tv_shell, tv = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=14,
+                                         border=BORDER, inset=12)
+        tv_shell.pack(fill="x")
+        tk.Label(tv, text="Insignia Fire TV · NS32-FEFL26", font=f.label,
+                 bg=OVERLAY, fg=FG, anchor="w").pack(fill="x")
+        tk.Label(tv,
+                 text="Fire TV mirroring, when the TV supports it, uses Miracast rather than Google Cast. Check Settings → Display & Sounds for Enable Display Mirroring. The BCM4331 adapter has no Wi-Fi P2P support, so this PC cannot use Miracast. The reliable route is Mini DisplayPort/Thunderbolt → HDMI with an audio-capable adapter.",
+                 font=f.small, bg=OVERLAY, fg=FG_MUTED, anchor="w", justify="left",
+                 wraplength=680).pack(fill="x", pady=(4, 7))
+        ui.button(tv, "open TV connection guide", command=lambda: self.app.run_action(
+            Action("Open Insignia connection guide", "arc-cast guide", detach=True)),
+                  font=f.small, bg=SURFACE, fg=TEAL, hover_bg=BORDER,
+                  padx=10, pady=5).pack(anchor="w")
+
+        self.refresh_status()
+
+    def refresh_status(self):
+        if not self.alive():
+            return
+        self.status_text.configure(text="checking Chromium, mDNS tooling, and Avahi state…")
+        self.app.run_async("arc-cast status", timeout=6,
+                           on_result=self._apply_status)
+
+    def _apply_status(self, result):
+        if not self.alive():
+            return
+        ok, output = result
+        self.status_text.configure(text=output or ("readiness check failed" if not ok else "ready"),
+                                   fg=FG_MUTED if ok else GOLD)
+
+
 class ActionsView(View):
     """A category's button list (also used for global-search results, where
     `prefix` says which category a hit came from)."""
@@ -4077,7 +4160,7 @@ class App:
     SPECIAL_VIEWS = {"Help": HelpView, "SOP": SopView, "Status": StatusView, "Calendar": CalendarView,
                      "Audio": AudioView, "LT": LtView, "Commands": CommandsView,
                      "Cockpit": CockpitView, "Inventory": InventoryView,
-                     "Logs": LogsView, "Find": FindView}
+                     "Display": DisplayView, "Logs": LogsView, "Find": FindView}
 
     def __init__(self):
         # className explicit: WM_CLASS was generic "Tk" (never "khaos-lab" as the .desktop

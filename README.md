@@ -73,6 +73,10 @@ The **Waydroid** workspace in `khaos-lab` provides status, open, stop, installed
 
 The Status dashboard also shows Waydroid beside the notification-stack tile. It polls the read-only operator status every 15 seconds and reports the container, Android session, and Khaos-owned Weston window without starting anything.
 
+### Screen share from Khaos Lab
+
+The **Display** workspace separates Google Cast from the Insignia Fire TV's Miracast path. It can check local readiness, discover only `_googlecast._tcp` receivers through Avahi, open Chromium's Cast controls, and open the TV connection guide. `arc-cast status|discover|open|guide` also works from a terminal. Discovery is local and read-only; it never starts Avahi or changes VPN, DNS, firewall, or Wi-Fi. The existing Fire TV is not a Google Cast target, and the workstation's BCM4331 adapter lacks the Wi-Fi P2P needed for Miracast. The documented Mini DisplayPort-to-HDMI adapter remains the reliable route.
+
 ### Personal LT board
 
 The **LT** workspace is a live view of the existing `lt · architect-of-chaos` board at `~/.local/share/lt/`; it is separate from the Calendar workspace and Khaos Hub's shared events/to-dos. The panel reads the current focus, pending queue, completed count, and latest note directly from LT's local files, refreshes every five seconds, and keeps no second copy. **Add task** and **Mark focus done** call the existing `lt` command; task changes stay behind the same-session SOP gate, and completion requires an explicit confirmation. The Status dashboard has a compact LT summary and a shortcut into the board. No daemon or network connection is added.

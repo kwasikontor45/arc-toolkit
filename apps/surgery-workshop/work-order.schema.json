@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:khaos-lab:work-order:v1",
+  "title": "Khaos Lab Work Order",
+  "description": "Draft, non-executable repair record. Keep secrets and credentials out of every field.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "openedAt",
+    "title",
+    "assetRef",
+    "priority",
+    "status",
+    "owner",
+    "nextStep",
+    "approval",
+    "verification",
+    "evidenceRefs",
+    "events"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^WO-[A-Z0-9-]{3,32}$" },
+    "openedAt": { "type": "string", "format": "date-time" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "assetRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "description": "Reference an existing inventory identifier; do not copy its state here."
+    },
+    "priority": { "enum": ["p1", "p2", "p3"] },
+    "status": { "enum": ["intake", "triage", "authorized", "work", "verification", "hold", "closed"] },
+    "owner": { "type": "string", "maxLength": 100 },
+    "nextStep": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "One bounded next step; no shell commands or credentials."
+    },
+    "holdReason": { "type": "string", "maxLength": 500 },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "scope"],
+      "properties": {
+        "state": { "enum": ["not-requested", "pending", "approved", "denied"] },
+        "scope": { "type": "string", "maxLength": 500 },
+        "approvedBy": { "type": "string", "maxLength": 100 },
+        "approvedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "enum": ["not-started", "pending", "passed", "failed"] },
+        "summary": { "type": "string", "maxLength": 1000 },
+        "checkedBy": { "type": "string", "maxLength": 100 },
+        "checkedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "type": "string", "maxLength": 300 }
+    },
+    "events": {
+      "type": "array",
+      "description": "Append-only in the future store; updates add events rather than rewriting history.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["eventId", "at", "actor", "type", "summary"],
+        "properties": {
+          "eventId": { "type": "string", "maxLength": 80 },
+          "at": { "type": "string", "format": "date-time" },
+          "actor": { "type": "string", "maxLength": 100 },
+          "type": { "enum": ["opened", "triaged", "held", "approved", "started", "updated", "verified", "closed", "reopened"] },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "evidenceRefs": { "type": "array", "maxItems": 50, "items": { "type": "string", "maxLength": 300 } }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "hold" } }, "required": ["status"] },
+      "then": { "required": ["holdReason"] }
+    },
+    {
+      "if": { "properties": { "status": { "const": "work" } }, "required": ["status"] },
+      "then": { "properties": { "approval": { "properties": { "state": { "const": "approved" } } } } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "closed" } }, "required": ["status"] },
+      "then": { "properties": { "verification": { "properties": { "state": { "const": "passed" } } } } }
+    }
+  ]
+}

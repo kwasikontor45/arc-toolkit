@@ -1,0 +1,47 @@
+/* Rose-Pine-Noir / Phosphor-Noir treatment for the XFCE Whisker menu.
+   Keep selection readable by tinting its label; remove the heavy row block.
+   The menu still scrolls with wheel, touchpad, and keyboard. */
+#whiskermenu-window .sidebar row:selected,
+#whiskermenu-window .sidebar treeview.view:selected,
+#whiskermenu-window .sidebar.view:selected,
+#whiskermenu-window .sidebar row:active,
+#whiskermenu-window .sidebar row:focus,
+#whiskermenu-window .sidebar button:checked {
+  color: #68dbc8;
+  background-color: transparent;
+  background-image: none;
+  border-color: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+#whiskermenu-window .sidebar row:selected label,
+#whiskermenu-window .sidebar treeview.view:selected label,
+#whiskermenu-window .sidebar.view:selected label,
+#whiskermenu-window .sidebar row:active label,
+#whiskermenu-window .sidebar button:checked label {
+  color: #68dbc8;
+}
+
+#whiskermenu-window .sidebar row:hover:not(:selected),
+#whiskermenu-window .sidebar button:hover:not(:checked) {
+  color: #edf3f5;
+  background-color: rgba(104, 219, 200, 0.055);
+  background-image: none;
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+#whiskermenu-window scrollbar,
+#whiskermenu-window scrollbar trough,
+#whiskermenu-window scrollbar slider {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  opacity: 0;
+}

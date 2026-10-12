@@ -19,6 +19,9 @@ sent by `arc-pine-notify`. Third-party app notifications never reach this.
 Structure (no cross-coupling): Palette (colors), CardPainter (pure cairo
 drawing, testable offscreen), Bubble (one window), BubbleManager (stack /
 queue / burst-merge), SocketBridge (thread -> queue).
+
+The card edge carries a restrained moving mercury glint; ARC_REDUCE_MOTION=1
+disables it for users who prefer static surfaces.
 """
 
 import json
@@ -215,6 +218,27 @@ class CardPainter:
         cr.rectangle(x0, y0, cw, 14)
         cr.fill()
         cr.restore()
+
+        # A faint accent bead glides along the glass edge. This renderer
+        # already redraws on its 40 ms bubble tick, so this adds no timer.
+        if os.environ.get("ARC_REDUCE_MOTION", "").lower() not in ("1", "true", "yes", "on"):
+            travel = max(1.0, cw - 2 * self.radius - 14)
+            cycle = (time.monotonic() % 18.0) / 18.0
+            bead_x = x0 + self.radius + 7 + travel * (0.5 - 0.5 * math.cos(cycle * math.tau))
+            cr.save()
+            _rounded_rect(cr, x0 + 0.5, y0 + 0.5, cw - 1, ch - 1, self.radius - 0.5)
+            cr.clip()
+            sheen = cairo.LinearGradient(bead_x - 8, 0, bead_x + 8, 0)
+            sheen.add_color_stop_rgba(0, *pal.accent, 0.0)
+            sheen.add_color_stop_rgba(0.5, 1, 1, 1, 0.20 * alpha)
+            sheen.add_color_stop_rgba(1, *pal.accent, 0.0)
+            cr.set_source(sheen)
+            cr.set_line_width(1.25)
+            cr.set_line_cap(cairo.LINE_CAP_ROUND)
+            cr.move_to(bead_x - 8, y0 + 0.8)
+            cr.line_to(bead_x + 8, y0 + 0.8)
+            cr.stroke()
+            cr.restore()
 
         # accent pill (with a soft glow) down the left edge
         px, py, ph = x0 + 13, y0 + 14, ch - 28

@@ -13,15 +13,19 @@ three things that genuinely can't be symlinks (crontab isn't a file; systemd uni
 fragments live under `/etc`, root-owned) — those need an explicit `arc sot snapshot` to re-capture.
 
 `arc day` gives a short startup reminder when today's SOP acknowledgment is missing, then continues
-the readiness checks without waiting for keyboard input. Start each work session with the single
-command `arc-sop start "<task>"`; it records the daily GAMEPLAN start when needed and acknowledges
-the current agent or terminal session. Interactive Bash/zsh terminals use the shared shell guard;
+the readiness checks without waiting for keyboard input. Start each work session with
+`arc-sop start "<task>"`. If the session is new or policy changed, the gate shows the exact current
+SHA-256 acceptance command after the full GAMEPLAN, SOT, and MO have been read. Reuse that printed
+digest exactly; an older digest is explained as stale and cannot unlock the session. The accepted
+task is logged before work begins. Interactive Bash/zsh terminals use the shared shell guard;
 Codex uses its PreToolUse hook, and the Khaos Lab panel checks the same session-scoped gate.
 In Konsole, tabs in one running app instance share the same human acceptance; closing and
 reopening Konsole or restarting the workstation starts a fresh session. A locked shell prints a
 short prompt. `arc-sop start "<task>"` shows the policy file paths and a dark, paged `batcat`
 reader command; the complete GAMEPLAN, SOT, and all current MOs still need to be read before
-accepting. The gate no longer dumps policy text into terminal scrollback.
+accepting. The gate no longer dumps policy text into terminal scrollback. Its title, local time,
+and lock state are separate, color-coded lines; the full MO sequence appears automatically after
+acceptance.
 The Khaos Lab panel checks that same session-scoped gate before running action buttons, opening the
 inventory editor, or clearing logs. Read-only dashboards and document views stay available while
 locked. The SOP workspace can read the latest GAMEPLAN/SOT, run compliance checks, and use
@@ -80,6 +84,20 @@ The **Commands** workspace completes the panel's command coverage. It builds a s
 The **Studio** workspace launches the installed LMMS and Audacity Flatpaks, Mixxx DJ app, and ReText Markdown reader. Use LMMS for original beats, Audacity for recording/editing and preparing a continuous event program, and Mixxx for two-deck live mixing. ReText 8.1.0 is the default `.md` handler and Studio guides open in its rendered preview. Apostrophe was removed; its unused GNOME 49 Flatpak runtime was also removed. The beginner guide and reusable event cue sheet live in the versioned `docs/studio/` folder; the original Reborn practice project and its guide remain in `~/khaos-lab/4dev-studio18/ref/`. Mixxx can be practiced with a laptop alone, but audience sound needs speakers; headphone cueing needs a separate headphone output or suitable interface. No app can replace missing PA gear. The panel launches on demand and adds no background service.
 
 The command center adapts its workspace cards and status tiles from one to three columns as the content width changes. Its menu can be tucked away for a narrow window, and action-heavy workspaces have a local filter in addition to global quick-jump. Output remains in a user-resizable lower pane.
+
+### Shared desktop design
+
+`bin/_arc_ui.py` owns shared Tk design tokens and primitives: circadian colors, rounded
+surfaces, buttons, and pill scrollbars. Keep app state and each workspace's layout in its
+own view; add reusable visual behavior here so apps share one implementation without
+depending on one another. The edges carry a slow phase glint; set `ARC_REDUCE_MOTION=1`
+before launch to keep surfaces still. Khaos Lab workspace cards use these shared surfaces,
+while status colors remain semantic and stable. Arc Pine's independent Cairo bubble renderer
+uses the same reduced-motion switch. The optional
+`config/gtk-3.0/whisker-mercury.css` removes the Whisker menu's selected-row block and visible
+scrollbar without disabling scrolling. Install it as
+`~/.config/gtk-3.0/whisker-mercury.css` and import it near the top of `gtk.css` with
+`@import url("whisker-mercury.css");`.
 
 ### Offline word of the day
 

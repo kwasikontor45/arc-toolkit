@@ -23,19 +23,19 @@ class SopBannerTests(unittest.TestCase):
         with patch.object(arc_sop, "_circadian_phase", return_value=("choice", "#5ec8ed")):
             arc_sop.print_gate_banner(False, compact=True, stream=stream)
         output = stream.getvalue()
-        self.assertIn(")(  )(  ARC", output)
-        self.assertIn("SOP GATE: LOCKED", output)
-        self.assertIn("Next: read > accept > begin", output)
-        self.assertIn("CHOICE", output)
+        self.assertIn("arc-sop", output)
+        self.assertIn("policy gate", output)
+        self.assertIn("gate  ·  locked", output)
+        self.assertIn("choice", output)
         self.assertNotIn("\033[", output)
-        self.assertLessEqual(len(output.splitlines()), 5)
+        self.assertLessEqual(len(output.splitlines()), 3)
 
     def test_open_banner_keeps_all_seven_principles_and_source(self):
         stream = StringIO()
         with patch.object(arc_sop, "_circadian_phase", return_value=("nyx", "#ea9a97")):
             arc_sop.print_gate_banner(True, stream=stream)
         output = stream.getvalue()
-        self.assertIn("SOP GATE: READY", output)
+        self.assertIn("gate  ·  ready", output)
         self.assertIn("I WWSJD", output)
         self.assertIn("VII Inevitable", output)
         self.assertIn(str(arc_sop.MO_FILE), output)

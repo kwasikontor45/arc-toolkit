@@ -310,7 +310,7 @@ def _circadian_phase():
 
 
 def print_gate_banner(opened: bool, compact: bool = False, stream=None):
-    """Render a compact, phase-aware terminal welcome without changing policy."""
+    """Render the SOP title, session, and health as three calm terminal sections."""
     stream = sys.stdout if stream is None else stream
     now_local = datetime.now()
     phase, accent = _circadian_phase()
@@ -322,28 +322,23 @@ def print_gate_banner(opened: bool, compact: bool = False, stream=None):
     rgb = tuple(int(accent[i:i + 2], 16) for i in (1, 3, 5))
     phase_color = f"38;2;{rgb[0]};{rgb[1]};{rgb[2]}"
     state_color = "1;32" if opened else "1;33"
-    state = "READY" if opened else "LOCKED"
-    phase_label = phase.upper()
-    mark = paint(")(  )(  ARC", phase_color)
-    print(f"{mark}  {paint('· ' + phase_label, phase_color)}", file=stream)
-    print(paint(f"+-- {now_local:%a %d %b %Y} · {now_local:%H:%M} --+", "2"), file=stream)
-    print(paint(f"| SOP GATE: {state}", state_color), file=stream)
-    if not opened:
-        print(paint("| Next: read > accept > begin", phase_color), file=stream)
-    print(paint("+------------------------------+", "2"), file=stream)
+    state = "ready" if opened else "locked"
+    title = paint("arc-sop", "1;" + phase_color)
+    print(f"{title}  {paint('· policy gate', '2')}", file=stream)
+    print(f"{paint(now_local.strftime('%a %d %b %Y · %H:%M'), '2')}  ·  {paint(phase, phase_color)}", file=stream)
+    print(f"{paint('gate', '2')}  ·  {paint(state, state_color)}", file=stream)
     if compact:
         return
 
-    print(paint("Recognize · construct · visualize · analyze · interpret", "2"), file=stream)
+    print("", file=stream)
     print(paint(f"lt · {_current_username()} · arc", phase_color), file=stream)
+    print(paint("Recognize · construct · visualize · analyze · interpret", "2"), file=stream)
     if opened:
         print(paint("I WWSJD · II Right & tight · III Swiss cheese", phase_color), file=stream)
         print(paint("IV Trust but verify · V Operate in the light · VI Leave it cleaner · VII Inevitable", phase_color), file=stream)
-        print(paint(f"Full principles: {MO_FILE}", "2"), file=stream)
+        print(paint(f"MO · {MO_FILE}", "2"), file=stream)
     else:
-        print("Read the complete context and all seven principles before work.", file=stream)
-        print_reading_guide(stream=stream, reader_hint=False)
-        print('Then: arc-sop start "<short task>"', file=stream)
+        print(paint("read the full policy before work", "2"), file=stream)
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +410,7 @@ def cmd_ack():
 def print_reading_guide(stream=None, reader_hint=True):
     """Point directly to the authoritative files, with an optional reader hint."""
     stream = sys.stdout if stream is None else stream
-    print("READ FULL POLICY:", file=stream)
+    print("read · full policy", file=stream)
     print(f"  1 · {INTEL_OPS / 'GAMEPLAN.md'}", file=stream)
     print(f"  2 · {SOT_FILE}", file=stream)
     print(f"  3 · {MO_FILE}", file=stream)
@@ -542,12 +537,17 @@ def cmd_start(description: str, accepted_digest: str = ""):
             if not path.is_file():
                 print(f"{R}✗{N} required policy file missing: {path}")
                 return 1
+        stale_digest = bool(accepted_digest and accepted_digest != current_digest)
         print_gate_banner(False, compact=True)
-        print(f"{Y}Policy not yet acknowledged.{N}")
+        if stale_digest:
+            print(f"{Y}That digest is out of date for this session. Nothing was accepted.{N}")
+            print("Read the current files below, then use the refreshed command.")
+        else:
+            print("Read the current files below before accepting this session's policy.")
         print_reading_guide()
-        print("Then explicitly accept them for this session with this exact command:")
+        print("\naccept · copy the current fingerprint exactly:")
         print(f"  arc-sop start {shlex.quote(description)} --accept-policy {current_digest}")
-        print("The digest is session-bound and changes when SOT.md or MO.md changes; stale acknowledgments fail closed.")
+        print("Fingerprint changes with SOT/MO or session; old acceptance stays closed.")
         return 2
     print(f"{G}✓{N}  current SOT + all MOs accepted for this exact session ({current_digest})")
 

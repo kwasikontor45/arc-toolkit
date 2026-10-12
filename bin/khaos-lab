@@ -1948,15 +1948,20 @@ class AudioView(View):
 
     def _layout_audio_tools(self, event):
         buttons = getattr(self, "_audio_action_buttons", [])
-        if not buttons:
+        if not buttons or not self.alive():
             return
         columns = 1 if getattr(event, "width", 520) < 560 else 2
-        for index, button in enumerate(buttons):
-            button.grid(row=index // columns, column=index % columns,
-                        sticky="ew", padx=4, pady=3)
-        for column in range(2):
-            self._audio_action_buttons[0].master.grid_columnconfigure(
-                column, weight=1 if column < columns else 0)
+        try:
+            for index, button in enumerate(buttons):
+                if button.winfo_exists():
+                    button.grid(row=index // columns, column=index % columns,
+                                sticky="ew", padx=4, pady=3)
+            for column in range(2):
+                buttons[0].master.grid_columnconfigure(
+                    column, weight=1 if column < columns else 0)
+        except tk.TclError:
+            # A queued <Configure> can arrive after its Audio view is replaced.
+            return
 
     def _preview_level(self, raw_value):
         if self._loading_scale:
@@ -3927,24 +3932,24 @@ class HelpView(View):
             actions = CATEGORIES[name]
             count = len(actions)
             subtitle = self.DESCRIPTIONS.get(name, "Open this workspace")
-            card = tk.Frame(grid, bg=BG, padx=10, pady=7, cursor="hand2")
-            top = tk.Frame(card, bg=BG)
-            top.pack(fill="x")
-            tk.Label(top, text=name.upper(), font=f.small, bg=BG, fg=self.app.phase_accent,
+            shell, card = ui.rounded_frame(grid, SURFACE, bg=OVERLAY, radius=12, border=BORDER, inset=4)
+            card.configure(cursor="hand2")
+            top = tk.Frame(card, bg=OVERLAY)
+            top.pack(fill="x", padx=8, pady=(3, 0))
+            tk.Label(top, text=name.lower(), font=f.label, bg=OVERLAY, fg=self.app.phase_accent,
                      anchor="w").pack(side="left")
-            tk.Label(top, text=(f"{count} actions  →" if count else "overview  →"), font=f.small,
-                     bg=BG, fg=TEAL, anchor="e").pack(side="right")
-            desc = tk.Label(card, text=subtitle, font=f.small, bg=BG, fg=FG_MUTED, anchor="w",
+            tk.Label(top, text=(f"{count} tools" if count else "overview"), font=f.small,
+                     bg=OVERLAY, fg=TEAL, anchor="e").pack(side="right")
+            desc = tk.Label(card, text=subtitle, font=f.small, bg=OVERLAY, fg=FG_MUTED, anchor="w",
                             justify="left", wraplength=240)
-            desc.pack(fill="x", pady=(3, 0))
-            card.bind("<Configure>", lambda e, d=desc: d.configure(wraplength=max(e.width - 22, 150)))
-            tk.Frame(card, bg=BORDER, height=1).pack(fill="x", pady=(6, 0))
-            for widget in (card, *card.winfo_children()):
+            desc.pack(fill="x", padx=8, pady=(1, 3))
+            card.bind("<Configure>", lambda e, d=desc: d.configure(wraplength=max(e.width - 18, 150)))
+            for widget in (shell, card, *card.winfo_children()):
                 widget.bind("<Button-1>", lambda _e, n=name: self.app.select(n))
                 widget.configure(cursor="hand2")
                 widget.bind("<Enter>", lambda _e, c=card: self._card_hover(c, True))
                 widget.bind("<Leave>", lambda _e, c=card: self._card_hover(c, False))
-            self._cards.append(card)
+            self._cards.append((shell, card))
         self._layout_cards(grid, 580)
         tk.Label(self.frame, text="Guarded actions ask before changing system state. Results and errors appear in the output console below.",
                  font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", wraplength=580,
@@ -3954,8 +3959,8 @@ class HelpView(View):
         if not hasattr(self, "_cards"):
             return
         columns = 1 if width < 430 else 2 if width < 820 else 3
-        for index, card in enumerate(self._cards):
-            card.grid(row=index // columns, column=index % columns, sticky="nsew", padx=(0, 7), pady=(0, 7))
+        for index, (shell, _card) in enumerate(self._cards):
+            shell.grid(row=index // columns, column=index % columns, sticky="nsew", padx=(0, 7), pady=(0, 7))
         for col in range(3):
             grid.grid_columnconfigure(col, weight=1 if col < columns else 0,
                                       uniform="help-card" if col < columns else "")
@@ -3966,7 +3971,7 @@ class HelpView(View):
 
     @staticmethod
     def _card_hover(card, on):
-        bg = OVERLAY if on else BG
+        bg = ui._lerp_hex(OVERLAY, ui.phase_info()[1], .08) if on else OVERLAY
         def paint(widget):
             try:
                 if widget.winfo_class() in ("Frame", "Label"):

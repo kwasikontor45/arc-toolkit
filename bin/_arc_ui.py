@@ -29,6 +29,10 @@ its own layout/logic; this owns *what it looks like*.
 import tkinter as tk
 from datetime import datetime
 from tkinter import font as tkfont
+import math
+import os
+import time
+import weakref
 
 # ── Palette -- Phosphor Noir. Mineral graphite and verdigris, with warm
 # circadian accents; Rose Pine remains a color influence, not the whole UI. ──
@@ -112,6 +116,70 @@ def _lerp_hex(c1, c2, t):
     r1, g1, b1 = _hex_to_rgb(c1)
     r2, g2, b2 = _hex_to_rgb(c2)
     return _rgb_to_hex((r1 + (r2 - r1) * t, g1 + (g2 - g1) * t, b1 + (b2 - b1) * t))
+
+
+_METAL_WIDGETS = weakref.WeakKeyDictionary()
+_METAL_ROOTS = weakref.WeakSet()
+_MOTION_TICK_MS = 420
+_MOTION_PERIOD = 18.0
+
+
+def _register_metal_edge(widget, state):
+    """Register a quiet, shared edge-light animation for this Tk root.
+
+    One timer serves every visible rounded surface in the process. The accent
+    drifts along each top edge over 18 seconds; setting ARC_REDUCE_MOTION=1
+    disables it for users who prefer a static interface.
+    """
+    if os.environ.get("ARC_REDUCE_MOTION", "").lower() in ("1", "true", "yes", "on"):
+        return
+    try:
+        root = widget._root()
+        _METAL_WIDGETS[widget] = state
+        if root in _METAL_ROOTS:
+            return
+        _METAL_ROOTS.add(root)
+        root.after(_MOTION_TICK_MS, lambda target=weakref.ref(root): _tick_metal_edges(target))
+    except (tk.TclError, TypeError):
+        return
+
+
+def _tick_metal_edges(root_ref):
+    root = root_ref()
+    if root is None:
+        return
+    try:
+        if not root.winfo_exists():
+            _METAL_ROOTS.discard(root)
+            return
+    except tk.TclError:
+        _METAL_ROOTS.discard(root)
+        return
+
+    now = time.monotonic()
+    phase = phase_name()
+    accent = PHASE_ACCENT[phase]
+    for widget, state in tuple(_METAL_WIDGETS.items()):
+        try:
+            if widget._root() is not root or not widget.winfo_ismapped():
+                continue
+            width = max(1, widget.winfo_width())
+            left = min(state.get("left", 10), width / 2)
+            right = min(state.get("right", 10), width / 2)
+            span = max(0, width - left - right - 10)
+            offset = (math.sin((now / _MOTION_PERIOD) * math.tau + state["phase"]) + 1) / 2
+            x = left + span * offset
+            edge = _lerp_hex(state["base"], accent, 0.075 + 0.045 * offset)
+            bead = _lerp_hex(state["base"], accent, 0.28)
+            widget.itemconfigure(state["face"], outline=edge)
+            widget.coords(state["bead"], x, state.get("y", 2), x + 10, state.get("y", 2))
+            widget.itemconfigure(state["bead"], fill=bead)
+        except (tk.TclError, KeyError, TypeError):
+            _METAL_WIDGETS.pop(widget, None)
+    try:
+        root.after(_MOTION_TICK_MS, lambda target=weakref.ref(root): _tick_metal_edges(target))
+    except tk.TclError:
+        _METAL_ROOTS.discard(root)
 
 
 ANIM_STEPS = 6
@@ -240,7 +308,7 @@ def _rounded_points(x1, y1, x2, y2, r):
     ]
 
 
-def rounded_frame(parent, parent_bg, bg=SURFACE, radius=8, border=None, border_width=1):
+def rounded_frame(parent, parent_bg, bg=SURFACE, radius=8, border=None, border_width=1, inset=8):
     """A restrained grouped surface. Returns (outer, inner):
     pack/grid `outer` into your real layout, then pack/grid your content
     into `inner`. `parent_bg` must match whatever's actually behind this
@@ -260,7 +328,6 @@ def rounded_frame(parent, parent_bg, bg=SURFACE, radius=8, border=None, border_w
     # once immediately (even at its pre-content size), THEN <Configure>
     # correctly fires on every real resize from here on -- same fix shape
     # as arc-pine-bubbles' bubble-placement bug earlier this project.
-    inset = 8
     outer.create_window(inset, inset, window=inner, anchor="nw", tags="win")
     # Reuse the same canvas shapes while a card is resized. Deleting and
     # recreating a polygon for every Configure used to cause visible redraw
@@ -269,6 +336,13 @@ def rounded_frame(parent, parent_bg, bg=SURFACE, radius=8, border=None, border_w
     face = outer.create_polygon(0, 0, 0, 0, smooth=True, fill=bg,
                                 outline=border or _lerp_hex(bg, "#ffffff", 0.09),
                                 width=max(1, border_width))
+    bead = outer.create_line(0, 0, 0, 0, fill="#ffffff", width=1.4,
+                             capstyle="round", tags="mercury-edge")
+    metal = {"face": face, "bead": bead, "base": border or _lerp_hex(bg, "#ffffff", 0.09),
+             "left": min(radius, 8) + 2, "right": min(radius, 8) + 12,
+             "y": 2, "phase": (id(outer) % 628) / 100}
+    outer._arc_metal_edge = metal
+    _register_metal_edge(outer, metal)
 
     def redraw(event=None):
         w = max(outer.winfo_width(), inner.winfo_reqwidth() + inset * 2, 1)
@@ -280,7 +354,13 @@ def rounded_frame(parent, parent_bg, bg=SURFACE, radius=8, border=None, border_w
         outer.coords(face, *pts)
         outer.itemconfigure(face, fill=state["bg"],
                             outline=border or _lerp_hex(state["bg"], "#ffffff", 0.09))
+        metal["base"] = border or _lerp_hex(state["bg"], "#ffffff", 0.09)
+        metal["left"] = min(radius, 8) + 2
+        metal["right"] = min(radius, 8) + 12
+        metal["phase"] = (id(outer) % 628) / 100
+        outer.coords(bead, metal["left"], 2, metal["left"] + 10, 2)
         outer.tag_lower(face, "win")
+        outer.tag_raise(bead)
 
     def retheme(new_bg=None, new_parent_bg=None):
         """Live re-color for the circadian engine -- changes the card's
@@ -312,6 +392,13 @@ def rounded_pane(parent, parent_bg, bg=SURFACE, radius=8):
     window = outer.create_window(8, 8, window=inner, anchor='nw')
     face = outer.create_polygon(0, 0, 0, 0, smooth=True, fill=bg,
                                 outline=_lerp_hex(bg, "#ffffff", 0.09), width=1)
+    bead = outer.create_line(0, 0, 0, 0, fill="#ffffff", width=1.4,
+                             capstyle="round", tags="mercury-edge")
+    metal = {"face": face, "bead": bead, "base": _lerp_hex(bg, "#ffffff", 0.09),
+             "left": min(radius, 8) + 2, "right": min(radius, 8) + 12,
+             "y": 2, "phase": (id(outer) % 628) / 100}
+    outer._arc_metal_edge = metal
+    _register_metal_edge(outer, metal)
     last_size = [0, 0]
     last_bg = [bg]
     def resize(event):
@@ -326,7 +413,13 @@ def rounded_pane(parent, parent_bg, bg=SURFACE, radius=8):
         outer.coords(face, *pts)
         outer.itemconfigure(face, fill=face_bg,
                             outline=_lerp_hex(face_bg, "#ffffff", 0.09))
+        metal["base"] = _lerp_hex(face_bg, "#ffffff", 0.09)
+        metal["left"] = min(radius, 8) + 2
+        metal["right"] = min(radius, 8) + 12
+        metal["phase"] = (id(outer) % 628) / 100
+        outer.coords(bead, metal["left"], 2, metal["left"] + 10, 2)
         outer.tag_lower(face, window)
+        outer.tag_raise(bead)
     outer.bind('<Configure>', resize)
     outer.bind('<Expose>', resize)
     return outer, inner
@@ -444,6 +537,11 @@ class RoundedLabel(tk.Canvas):
         self._sheen = self.create_line(0, 0, 0, 0, width=1, capstyle='round', tags='sheen')
         self._label_shadow = self.create_text(0, 0, tags='label-shadow')
         self._label = self.create_text(0, 0, tags='label')
+        self._arc_metal_edge = {"face": self._face, "bead": self._sheen,
+                                 "base": _lerp_hex(bg, "#ffffff", .12),
+                                 "left": 9, "right": 19, "y": 2,
+                                 "phase": (id(self) % 628) / 100}
+        _register_metal_edge(self, self._arc_metal_edge)
         self.resize_to_text()
         self.bind('<Configure>', lambda _event: self.redraw())
 
@@ -478,11 +576,16 @@ class RoundedLabel(tk.Canvas):
         points = _rounded_points(1, 1, width - 2, height - 2, radius)
         bg = self.look['bg']
         edge = _lerp_hex(bg, '#ffffff', .12)
+        self._arc_metal_edge["base"] = edge
+        self._arc_metal_edge["left"] = radius + 1
+        self._arc_metal_edge["right"] = radius + 11
+        self._arc_metal_edge["phase"] = (id(self) % 628) / 100
         low_edge = self.look['fg']
         self.itemconfigure(self._shadow, state='hidden')
         self.coords(self._face, *points)
         self.itemconfigure(self._face, fill=bg, outline=edge)
-        self.itemconfigure(self._sheen, state='hidden')
+        self.coords(self._sheen, radius + 1, 2, radius + 11, 2)
+        self.itemconfigure(self._sheen, state='normal', fill=_lerp_hex(edge, phase_info()[1], .28))
         left = self.look['anchor'] in ('w', 'nw', 'sw')
         x = self.look['padx'] if left else width / 2
         anchor = 'w' if left else 'center'

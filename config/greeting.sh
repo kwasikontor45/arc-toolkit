@@ -3,6 +3,17 @@
 # Sourced by .bashrc and .zshrc on shell start
 # No sudo calls — process checks only for security stack
 
+# Shared, width-aware one-line renderer for greeting copy and status rows.
+# Keep it local and dependency-light; fmt wraps at spaces and never breaks words.
+_arc_greeting_line() {
+  local _text="$1" _color="$2" _width="${COLUMNS:-80}" _part
+  [[ "$_width" =~ ^[0-9]+$ ]] || _width=$(tput cols 2>/dev/null || printf '80')
+  (( _width >= 24 )) || _width=24
+  while IFS= read -r _part; do
+    printf '  %b%s\033[0m\n' "$_color" "$_part"
+  done < <(printf '%s\n' "$_text" | fmt -w "$((_width - 2))" -s)
+}
+
 _arc_greeting() {
   # ── Colors ───────────────────────────────────────────────────────────────────
   local G='\033[0;32m'
@@ -42,27 +53,33 @@ _arc_greeting() {
     ART='\033[1;38;5;210m'    # bold rose
   fi
 
-  # ── Compact mark, identity, method, and clock ────────────────────────────────
-  printf '  %b)(  )(%b  %blt%b %b·%b %b%s%b %b·%b %barc%b\n' \
-    "$GOLD" "$N" "$C" "$N" "$D" "$N" "$M" "$(whoami)" "$N" "$D" "$N" "$ART" "$N"
-  printf '  %b/  \\ /  \\%b  %b%s%b %b·%b %b%s%b %b·%b %b%s%b\n' \
-    "$GOLD" "$N" "$M" "$(date '+%a %d %b %Y')" "$N" "$D" "$N" \
+  # Fixed Khaos butterfly/heart/angel logo. Preserve these three art rows;
+  # future greeting edits belong below the mark and must not reshape it.
+  printf '  %b)(  )(%b\n' "$GOLD" "$N"
+  printf '  %b/  \\ /  \\%b\n' "$GOLD" "$N"
+  printf '  %b\\  V  /%b\n\n' "$ART" "$N"
+
+  # Keep identity and copy in a clean, left-aligned block below the logo.
+  printf '  %blt%b %b·%b %b%s%b %b·%b %barc%b\n' \
+    "$C" "$N" "$D" "$N" "$M" "$(whoami)" "$N" "$D" "$N" "$ART" "$N"
+  printf '  %b%s%b %b·%b %b%s%b %b·%b %b%s%b\n' \
+    "$M" "$(date '+%a %d %b %Y')" "$N" "$D" "$N" \
     "$C" "$(date '+%H:%M')" "$N" "$D" "$N" "$ART" "${_phase}" "$N"
-  printf '  %b\\  V  /%b  %b%s%b\n' "$ART" "$N" "$D" "$CG" "$N"
+  _arc_greeting_line "$CG" "$D"
 
   # Daily word comes from a small local Arc dataset. Suppress a missing/bad
   # source so it can never disrupt shell startup; no network or user data.
   local word_line
   word_line=$(command arc word --compact 2>/dev/null)
   word_line=${word_line/ · adjective · / · adj. · }
-  [[ -n "$word_line" ]] && printf '  %bWOD%b  %s\n' "$C" "$N" "$word_line"
+  [[ -n "$word_line" ]] && _arc_greeting_line "WOD  $word_line" "$C"
 
   # ── Motd ─────────────────────────────────────────────────────────────────────
   local MOTD_FILE="$HOME/.config/arc/motd"
   if [[ -f "$MOTD_FILE" ]]; then
     local motd_line
     while IFS= read -r motd_line || [[ -n "$motd_line" ]]; do
-      printf '  %b%s%b\n' "$D" "$motd_line" "$N"
+      _arc_greeting_line "$motd_line" "$D"
     done < "$MOTD_FILE"
   fi
 
@@ -174,25 +191,12 @@ except Exception:
     [[ -n "$ts_date" ]] || ts_date='unknown'
   fi
 
-  printf '  %bRAM%b %b%s/%s used%b · %b%s free%b  %bfocus%b %b%s%b · %btodo%b %b%s%b\n' \
-    "$C" "$N" "$M" "$mem_used" "$mem_total" "$N" "$M" "$mem_free" "$N" \
-    "$C" "$N" "$M" "$focus" "$N" "$C" "$N" "$tasks_color" "$tasks_text" "$N"
-  printf '  %bsnap%b %b%s%b · %bSOP%b %b%s%b %b%s%b · %bTS%b %s %s\n' \
-    "$C" "$N" "$snap_color" "$snap_text" "$N" "$C" "$N" \
-    "$sop_ack_color" "$sop_ack_str" "$N" "$sop_gp_color" "$sop_gp_str" "$N" \
-    "$C" "$N" "$ts_date" "$ts_tag"
-  printf '  %bVPN%b %b%s%b · %bDNS%b %b%s%b\n' \
-    "$C" "$N" "$vpn_color" "$vpn_text" "$N" "$C" "$N" "$dns_color" "$dns_text" "$N"
-  printf '  %bUFW%b %b%s%b · %bF2B%b %b%s%b · %bAA%b %b%s%b · %bLUKS%b %b%s%b\n' \
-    "$C" "$N" "$ufw_color" "$ufw_text" "$N" "$C" "$N" "$f2b_color" "$f2b_text" "$N" \
-    "$C" "$N" "$aa_color" "$aa_text" "$N" "$C" "$N" "$luks_color" "$luks_text" "$N"
-  printf '  %bIP%b %b%s%b · %bext%b %b%s%b\n' \
-    "$C" "$N" "$M" "$local_ip" "$N" "$C" "$N" "$ext_color" "$ext_ip" "$N"
-  printf '  %bUSB%b %b%s%b · %bFortress%b %b%s%b\n' \
-    "$C" "$N" "$usb_color" "$usb_text" "$N" "$C" "$N" "$fortress_color" "$fortress_text" "$N"
-  printf '  %bdisk%b %b%s/%s free (%s)%b · %bswap%b %b%s/%s%b · %bshell%b %b%s %s%s%b\n' \
-    "$C" "$N" "$M" "$disk_used" "$disk_free" "$disk_pct" "$N" \
-    "$C" "$N" "$M" "$sw_used" "$sw_total" "$N" \
-    "$C" "$N" "$M" "$shell_name" "$shell_ver" "$omz_tag" "$N"
+  _arc_greeting_line "RAM ${mem_used}/${mem_total} used · ${mem_free} free · focus ${focus} · todo ${tasks_text}" "$D"
+  _arc_greeting_line "snap ${snap_text} · SOP ${sop_ack_str} · ${sop_gp_str} · TS ${ts_date} ${ts_tag}" "$D"
+  _arc_greeting_line "VPN ${vpn_text} · DNS ${dns_text}" "$D"
+  _arc_greeting_line "UFW ${ufw_text} · F2B ${f2b_text} · AA ${aa_text} · LUKS ${luks_text}" "$D"
+  _arc_greeting_line "IP ${local_ip} · ext ${ext_ip}" "$D"
+  _arc_greeting_line "USB ${usb_text} · Fortress ${fortress_text}" "$D"
+  _arc_greeting_line "disk ${disk_used}/${disk_free} free (${disk_pct}) · swap ${sw_used}/${sw_total} · shell ${shell_name} ${shell_ver}${omz_tag}" "$D"
 
 }

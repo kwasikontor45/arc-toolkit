@@ -91,6 +91,9 @@ notification, or system/user-data access. The command validates the small JSON c
 nothing if it is absent or malformed. `arc sot install-autostart` installs/refreshes the catalog
 alongside the terminal greeting.
 
+The three-line butterfly/heart/angel mark in `config/greeting.sh` is fixed logo artwork. Preserve
+its glyphs and line breaks exactly; keep identity, date, method, and status copy below it.
+
 `sudoers/arc-waydroid` grants only the exact Waydroid unit start/stop/mask/unmask commands and fixed device-mode restoration commands used by Stop. Waydroid is a shared-kernel container, not a VM; while it runs, its standard startup widens access to host device nodes. The vanilla image has no Google apps, and no shared host folders are configured.
 
 GVM database exports from `arc gvm cloud-stop` are stored on the encrypted USB vault at `/mnt/storage/Persistent/khaos-lab/gvm-lab/backups/`. The command refuses to stop the cloud lab when that backup destination is unavailable, so large cloud dumps do not accumulate on the workstation disk.

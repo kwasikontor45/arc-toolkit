@@ -24,6 +24,7 @@ import json
 import fcntl
 import logging
 import os
+import signal
 import subprocess
 import sqlite3
 import tempfile
@@ -76,6 +77,58 @@ DEFAULT_CONFIG = {
 # per-stream mute/volume state cannot stick to the generic `paplay` client.
 PAPLAY_CLIENT = "ArcPine"
 _AUDIO_LOCK = threading.Lock()
+_AUDIO_THREADS = set()
+_AUDIO_THREADS_LOCK = threading.Lock()
+_ACTIVE_DUCKED = set()
+_ACTIVE_DUCKED_LOCK = threading.Lock()
+_AUDIO_SHUTDOWN_HANDLERS = {}
+
+
+def install_audio_shutdown_guard():
+    """Restore any temporarily muted streams before SIGTERM/SIGINT exits.
+
+    Arc Pine speech runs on worker threads. A normal finally block restores
+    playback, but the default process signal action can terminate the process
+    while a background worker is speaking. The two long-lived/one-shot notification
+    entry points install this guard before they start audio work.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        previous = signal.getsignal(signum)
+        if previous is signal.SIG_IGN:
+            continue
+        if previous is _audio_shutdown_handler:
+            continue
+        _AUDIO_SHUTDOWN_HANDLERS[signum] = previous
+        signal.signal(signum, _audio_shutdown_handler)
+
+
+def _audio_shutdown_handler(signum, frame):
+    """Let bounded audio jobs finish, retry restoration, then honor the signal."""
+    deadline = time.monotonic() + 85
+    while True:
+        with _AUDIO_THREADS_LOCK:
+            workers = [thread for thread in _AUDIO_THREADS
+                       if thread is not threading.current_thread() and thread.is_alive()]
+        if not workers:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        for worker in workers:
+            worker.join(timeout=min(remaining, 1.0))
+
+    with _ACTIVE_DUCKED_LOCK:
+        pending = tuple(_ACTIVE_DUCKED)
+    _restore_ducked(pending)
+
+    previous = _AUDIO_SHUTDOWN_HANDLERS.get(signum, signal.SIG_DFL)
+    if callable(previous):
+        previous(signum, frame)
+    elif previous is not signal.SIG_IGN:
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
 
 
 def _migrate_app_rules(cfg, file_data):
@@ -248,8 +301,14 @@ def _duck_other_streams():
         if idx is None or s.get("mute"):
             continue
         try:
-            subprocess.run(["pactl", "set-sink-input-mute", str(idx), "1"], capture_output=True, timeout=2)
-            muted.append(idx)
+            result = subprocess.run(
+                ["pactl", "set-sink-input-mute", str(idx), "1"],
+                capture_output=True, timeout=2,
+            )
+            if result.returncode == 0:
+                muted.append(idx)
+                with _ACTIVE_DUCKED_LOCK:
+                    _ACTIVE_DUCKED.add(idx)
         except Exception:
             pass
     return muted
@@ -258,7 +317,13 @@ def _duck_other_streams():
 def _restore_ducked(muted):
     for idx in muted:
         try:
-            subprocess.run(["pactl", "set-sink-input-mute", str(idx), "0"], capture_output=True, timeout=2)
+            result = subprocess.run(
+                ["pactl", "set-sink-input-mute", str(idx), "0"],
+                capture_output=True, timeout=2,
+            )
+            if result.returncode == 0:
+                with _ACTIVE_DUCKED_LOCK:
+                    _ACTIVE_DUCKED.discard(idx)
         except Exception:
             pass
 
@@ -432,6 +497,17 @@ def emit_audio_async(sound_file, speak_text, audio_volume_percent=50):
     there's nothing to play."""
     if not (sound_file or speak_text):
         return None
-    t = threading.Thread(target=emit_audio, args=(sound_file, speak_text, audio_volume_percent))
+    install_audio_shutdown_guard()
+
+    def run_audio_job():
+        try:
+            emit_audio(sound_file, speak_text, audio_volume_percent)
+        finally:
+            with _AUDIO_THREADS_LOCK:
+                _AUDIO_THREADS.discard(threading.current_thread())
+
+    t = threading.Thread(target=run_audio_job)
+    with _AUDIO_THREADS_LOCK:
+        _AUDIO_THREADS.add(t)
     t.start()
     return t

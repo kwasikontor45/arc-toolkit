@@ -26,6 +26,7 @@ notification once one arrives.
 """
 
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -38,6 +39,20 @@ import _arc_pine_common as pine
 
 DATA_DIR = pine.DATA_DIR
 PID_PATH = DATA_DIR / "arc-pined.pid"
+
+
+def _pid_belongs_to_arc_pined(pid):
+    """Distinguish our daemon from an unrelated process reusing its PID."""
+    try:
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    return any(
+        Path(arg.decode(errors="replace")).name == "arc-pined"
+        for arg in command if arg
+    )
 
 
 def handle_notify(args):
@@ -79,19 +94,53 @@ def _refuse_if_already_running():
     live arc-pined processes were found running. Guard against a repeat."""
     if PID_PATH.exists():
         try:
-            os.kill(int(PID_PATH.read_text().strip()), 0)
-            print("arc-pined: already running (see " + str(PID_PATH) + ") -- refusing to start a second copy", file=sys.stderr)
-            sys.exit(1)
-        except ProcessLookupError:
-            pass  # stale PID file, previous instance is actually dead -- fine to proceed
-        except Exception:
+            pid_text = PID_PATH.read_text().strip()
+            pid = int(pid_text)
+        except (OSError, ValueError):
+            pid_text = None
+            pid = None
+        if pid is not None:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                pid = None
+            except PermissionError:
+                # We cannot safely decide whether this is a stale lock.
+                print("arc-pined: cannot verify PID in " + str(PID_PATH), file=sys.stderr)
+                sys.exit(1)
+        if pid is not None:
+            belongs_to_daemon = _pid_belongs_to_arc_pined(pid)
+            if belongs_to_daemon is None:
+                print("arc-pined: cannot verify PID in " + str(PID_PATH), file=sys.stderr)
+                sys.exit(1)
+            if belongs_to_daemon:
+                print("arc-pined: already running (see " + str(PID_PATH) + ") -- refusing to start a second copy", file=sys.stderr)
+                sys.exit(1)
+        # A stale PID or a PID reused by another program is not our daemon.
+        try:
+            if pid_text is not None and PID_PATH.read_text().strip() == pid_text:
+                PID_PATH.unlink()
+        except OSError:
             pass
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PID_PATH.write_text(str(os.getpid()))
 
 
+def _shutdown(signum, _frame):
+    """Remove our PID marker before systemd restarts/stops the daemon."""
+    try:
+        if PID_PATH.read_text().strip() == str(os.getpid()):
+            PID_PATH.unlink()
+    except OSError:
+        pass
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
 def main():
     _refuse_if_already_running()
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
     pine.write_default_config_if_missing()
 
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)

@@ -2341,6 +2341,7 @@ cmd_vpn() {
 cmd_remote() {
   local sub="${1:-status}"
   local unit="arc-remote-backup-tunnel.service"
+  local self_line service_state answer
   case "$sub" in
     status)
       echo -e "$HR"
@@ -2412,6 +2413,7 @@ print(f"{name} · {ip} · {state}")
         echo -e "  ${D}·${N}  stop with: arc remote backup-stop"
       else
         echo -e "  ${R}✗${N}  failed to start — check: systemctl --user status $unit"
+        return 1
       fi
       ;;
     backup-stop)
@@ -2425,7 +2427,6 @@ print(f"{name} · {ip} · {state}")
       echo -e "  ${R}unknown:${N} remote $sub  —  try ${C}status${N} / ${C}backup-start${N} / ${C}backup-stop${N}"
       return 1
       ;;
-  local self_line service_state answer
   esac
 }
 

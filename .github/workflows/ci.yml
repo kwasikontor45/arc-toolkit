@@ -33,5 +33,20 @@ jobs:
             fi
           done < <(git ls-files -z -- '*.sh' '*.bash' bin)
 
-      - name: run unit checks
-        run: python3 -m unittest discover -s tests -v
+      - name: report Python version
+        run: python3 --version
+
+      - name: test calendar state
+        run: python3 -m unittest discover -s tests -p 'test_hub_calendar.py' -v
+
+      - name: test notification audio
+        run: python3 -m unittest discover -s tests -p 'test_notification_audio.py' -v
+
+      - name: test SOP banner
+        run: python3 -m unittest discover -s tests -p 'test_sop_banner.py' -v
+
+      - name: test timer recovery
+        run: python3 -m unittest discover -s tests -p 'test_timer_recovery.py' -v
+
+      - name: test word of day
+        run: python3 -m unittest discover -s tests -p 'test_word_of_day.py' -v

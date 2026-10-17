@@ -2328,9 +2328,9 @@ cmd_vpn() {
 # /etc/ssh/sshd_config.d/10-remote-access-hardening.conf). Deliberately
 # manual-start (feedback_manual_start_tools.md) — the whole point of this
 # path is that it stays fully dormant (no running tunnel process) until you
-# deliberately need it. Public DNS route + Cloudflare Access policy are a
-# separate, deliberate user action (not wired here) — see
-# ~/.cloudflared/config.yml's own comment and GAMEPLAN.md 2026-09-11.
+# deliberately need it. Public DNS route + Cloudflare Access policy are
+# separate provider-side controls and are not verified by this command.
+# Start therefore requires an interactive typed acknowledgment after review.
 #
 # Real gap found+fixed 2026-09-11: this command didn't exist at all despite
 # config.yml's own comment referencing "arc remote backup-start" by name —
@@ -2348,7 +2348,23 @@ cmd_remote() {
       echo -e "$HR\n"
       echo -e "  ${B}Primary — Tailscale${N}"
       if command -v tailscale >/dev/null 2>&1; then
-        tailscale status 2>/dev/null | grep "100\.98\.103\.120" | sed 's/^/    /' || echo -e "    ${D}·${N}  status unavailable"
+        self_line=$(tailscale status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    node = json.load(sys.stdin).get("Self") or {}
+except (json.JSONDecodeError, TypeError):
+    raise SystemExit(1)
+name = node.get("HostName") or node.get("DNSName") or "local device"
+ips = node.get("TailscaleIPs") or []
+ip = next((value for value in ips if value.startswith("100.")), "address unavailable")
+state = "online" if node.get("Online") else "offline / status unknown"
+print(f"{name} · {ip} · {state}")
+' 2>/dev/null) || self_line=""
+        if [[ -n "$self_line" ]]; then
+          echo -e "    ${G}●${N}  $self_line"
+        else
+          echo -e "    ${Y}!${N}  local device status unavailable"
+        fi
       else
         echo -e "    ${R}✗${N}  tailscale not installed"
       fi
@@ -2357,31 +2373,59 @@ cmd_remote() {
       if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
         echo -e "    ${G}●${N}  running — ssh-backup.kontor.studio → 127.0.0.1:22"
       else
-        echo -e "    ${D}○${N}  down — dormant (expected default state, no public DNS route exists yet)"
+        service_state=$?
+        if [[ "$service_state" -eq 3 ]]; then
+          echo -e "    ${D}○${N}  stopped — on-demand"
+        else
+          echo -e "    ${Y}!${N}  state unavailable — user service manager could not be queried"
+        fi
       fi
-      echo -e "    ${D}·${N}  sshd: $(systemctl is-active ssh 2>/dev/null || echo unknown)  ·  bound to $(sudo -n ss -tlnp 2>/dev/null | awk '$4 ~ /:22$/{print $4; exit}')"
+      echo -e "    ${D}·${N}  starts only after Cloudflare DNS and Access are reviewed; no app data is routed${N}"
       echo -e "\n$HR"
       ;;
     backup-start)
-      echo -e "  ${C}starting backup tunnel...${N}"
-      systemctl --user start "$unit"
+      if [[ ! -t 0 || ! -t 1 ]]; then
+        echo -e "  ${R}refusing:${N} backup start requires an interactive terminal and typed review."
+        return 2
+      fi
+      if ! systemctl --user cat "$unit" >/dev/null 2>&1; then
+        echo -e "  ${R}refusing:${N} backup service definition is unavailable."
+        return 1
+      fi
+      echo -e "  ${Y}This starts the SSH-only Cloudflare tunnel.${N}"
+      echo -e "  Confirm you reviewed the provider-side DNS route and Cloudflare Access policy,"
+      echo -e "  and verified they allow only your approved identity to reach SSH."
+      read -r -p 'Type START REVIEWED SSH BACKUP to continue: ' answer
+      if [[ "$answer" != 'START REVIEWED SSH BACKUP' ]]; then
+        echo -e "  ${D}No change made.${N}"
+        return 1
+      fi
+      echo -e "  ${C}starting on-demand backup tunnel...${N}"
+      systemctl --user start "$unit" || {
+        echo -e "  ${R}✗${N}  service manager refused to start the tunnel"
+        return 1
+      }
       sleep 1
       if systemctl --user is-active --quiet "$unit"; then
         echo -e "  ${G}✓${N}  tunnel process up"
-        echo -e "  ${D}·${N}  needs a public DNS route + Access policy before it's reachable from outside — see GAMEPLAN.md"
+        echo -e "  ${D}·${N}  provider-side DNS/Access state is not checked by this command${N}"
         echo -e "  ${D}·${N}  stop with: arc remote backup-stop"
       else
         echo -e "  ${R}✗${N}  failed to start — check: systemctl --user status $unit"
       fi
       ;;
     backup-stop)
-      systemctl --user stop "$unit"
-      echo -e "  ${G}✓${N}  backup tunnel stopped"
+      systemctl --user stop "$unit" || {
+        echo -e "  ${R}✗${N}  could not stop the backup tunnel; check the user service manager"
+        return 1
+      }
+      echo -e "  ${G}✓${N}  backup tunnel stop requested"
       ;;
     *)
       echo -e "  ${R}unknown:${N} remote $sub  —  try ${C}status${N} / ${C}backup-start${N} / ${C}backup-stop${N}"
       return 1
       ;;
+  local self_line service_state answer
   esac
 }
 

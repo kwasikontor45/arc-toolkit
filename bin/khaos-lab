@@ -1406,9 +1406,10 @@ CATEGORIES = {
         Action("Private site: audit every guard layer", "arc site audit", timeout=60),
         Action("Private site: expose to my tailnet", "arc site expose", timeout=30),
         Action("Private site: stop exposing", "arc site unexpose", timeout=30),
-        # confirm=False: a pure read -- the verb rule only tripped on "backup" inside the unit's name.
-        Action("Backup tunnel unit: state (inert by design)",
-               "bash -c 'systemctl --user is-active arc-remote-backup-tunnel; exit 0'", confirm=False),
+        Action("SSH backup: state and primary Tailnet identity", "arc remote status"),
+        Action("SSH backup: start after Cloudflare Access/DNS review",
+               "konsole --hold -e arc remote backup-start", confirm=True, detach=True),
+        Action("SSH backup: stop tunnel", "arc remote backup-stop", confirm=True),
         # Never wired: `arc site url` (secret address -- terminal only) and `arc site rotate`.
     ],
     "Maintenance": [
@@ -4980,7 +4981,16 @@ class App:
         print(f"  hidden-menu workspace jump {'ok' if route_picker_ok else 'FAILED'}")
         print(f"  full-screen enter/restore  {'ok' if fullscreen_ok else 'FAILED'}")
         wired = {category: {a.label for a in CATEGORIES.get(category, [])}
-                 for category in ("Phone", "Waydroid", "Studio")}
+                 for category in ("Phone", "Waydroid", "Studio", "Remote Access")}
+        remote_actions = {a.label: a for a in CATEGORIES.get("Remote Access", [])}
+        remote_access_ok = (
+            {"SSH backup: state and primary Tailnet identity",
+             "SSH backup: start after Cloudflare Access/DNS review",
+             "SSH backup: stop tunnel"} <= wired["Remote Access"]
+            and ConfirmPolicy.required(remote_actions[
+                "SSH backup: start after Cloudflare Access/DNS review"])
+            and ConfirmPolicy.required(remote_actions["SSH backup: stop tunnel"])
+        )
         waydroid_launcher = shutil.which("arc-waydroid")
         waydroid_source = Path(waydroid_launcher).read_text(errors="replace") if waydroid_launcher else ""
         waydroid_manual_lock = (
@@ -5081,3 +5091,4 @@ def main(argv):
 
 if __name__ == "__main__":
     main(sys.argv[1:])
+            and remote_access_ok

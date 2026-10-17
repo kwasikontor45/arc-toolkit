@@ -2,25 +2,30 @@
 """Focused regression checks for the local-only Arc word-of-day provider."""
 
 import copy
-import importlib.machinery
-import importlib.util
+import ast
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
-import sys
 import tempfile
 import unittest
+from datetime import datetime
 
 
 ROOT = Path(__file__).resolve().parents[1]
 ARC = ROOT / "bin" / "arc"
 CATALOG = ROOT / "config" / "word-of-day.json"
-LOADER = importlib.machinery.SourceFileLoader("khaos_lab_test", str(ROOT / "bin" / "khaos-lab"))
-SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
-KHAOS_LAB = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = KHAOS_LAB
-SPEC.loader.exec_module(KHAOS_LAB)
+SOURCE = ast.parse((ROOT / "bin" / "khaos-lab").read_text(encoding="utf-8"))
+STATUS_VIEW = next(node for node in SOURCE.body
+                   if isinstance(node, ast.ClassDef) and node.name == "StatusView")
+PARSER = next(node for node in STATUS_VIEW.body
+              if isinstance(node, ast.FunctionDef) and node.name == "parse_word_payload")
+PARSER.decorator_list = []
+TEST_MODULE = ast.Module(body=[PARSER], type_ignores=[])
+NAMESPACE = {"json": json, "re": re, "datetime": datetime}
+exec(compile(TEST_MODULE, str(ROOT / "bin" / "khaos-lab"), "exec"), NAMESPACE)
+parse_word_payload = NAMESPACE["parse_word_payload"]
 
 
 class WordOfDayTests(unittest.TestCase):
@@ -72,12 +77,12 @@ class WordOfDayTests(unittest.TestCase):
     def test_panel_payload_rejects_terminal_markup_and_unexpected_fields(self):
         safe = {"date": "2026-10-10", "word": "algid", "pronunciation": "al-jid",
                 "part_of_speech": "adjective", "definition": "cold or chilly"}
-        self.assertEqual(KHAOS_LAB.StatusView.parse_word_payload(json.dumps(safe)), safe)
+        self.assertEqual(parse_word_payload(json.dumps(safe)), safe)
         poisoned = {**safe, "word": "algid\u001b[31m"}
-        self.assertIsNone(KHAOS_LAB.StatusView.parse_word_payload(json.dumps(poisoned)))
+        self.assertIsNone(parse_word_payload(json.dumps(poisoned)))
         extra = {**safe, "private": "must never be rendered"}
-        self.assertIsNone(KHAOS_LAB.StatusView.parse_word_payload(json.dumps(extra)))
-        self.assertIsNone(KHAOS_LAB.StatusView.parse_word_payload("x" * 513))
+        self.assertIsNone(parse_word_payload(json.dumps(extra)))
+        self.assertIsNone(parse_word_payload("x" * 513))
 
 
 if __name__ == "__main__":

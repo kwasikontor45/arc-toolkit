@@ -5021,6 +5021,7 @@ class App:
             and (STUDIO_DOC_DIR / "youtube-listening-exercises.md").is_file()
             and (STUDIO_DOC_DIR / "event-cue-sheet-template.md").is_file()
             and all(shutil.which(cmd) for cmd in ("mixxx", "retext"))
+            and remote_access_ok
         )
         print(f"  program/project wiring   {'ok' if integration_ok else 'FAILED'} "
               "(Arc SOP · Waydroid manual-start lock/ADB/UAD · LMMS/Audacity/Mixxx/ReText + studio assets)")
@@ -5091,4 +5092,3 @@ def main(argv):
 
 if __name__ == "__main__":
     main(sys.argv[1:])
-            and remote_access_ok

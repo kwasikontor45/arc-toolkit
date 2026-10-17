@@ -7,6 +7,9 @@ Type=simple
 ExecStart=%h/.local/bin/arc-pined
 Restart=on-failure
 RestartSec=3
+# Audio notifications may temporarily duck other streams. Give arc-pined's
+# bounded shutdown restore path time to unmute them before systemd escalates.
+TimeoutStopSec=120s
 
 [Install]
 WantedBy=default.target

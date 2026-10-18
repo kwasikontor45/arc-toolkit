@@ -8,7 +8,7 @@ A lightweight GUI front-end over the `arc` CLI you already have. Every button
 shells out to the same `arc <subcommand>` (or a small handful of raw commands
 for live status) already built and running on this machine -- this does not
 reimplement logic, it's a dashboard/launcher over what already works. The one
-exception is reading generated JSON (khaos-lab/inventory/inventory.json) for
+exception is reading generated JSON (local-cloud-hub/operations/current/inventory/inventory.json) for
 the Inventory view.
 
 Manual-start only, same principle as arc-break/arc-pine/darkstat/zap -- no
@@ -74,23 +74,28 @@ from tkinter import font as tkfont
 
 HOME = Path.home()
 STUDIO_DOC_DIR = Path(__file__).resolve().parent.parent / "docs" / "studio"
+MOBILE_ACCESS_DIR = HOME / "khaos-lab/android-mobile-ios/projects/iphone-cloud-local"
+MOBILE_PREVIEW_SCRIPT = MOBILE_ACCESS_DIR / "automators" / "serve-preview.sh"
+MOBILE_ACCESS_GUIDE = MOBILE_ACCESS_DIR / "md-s" / "mobile-access-operator-2026-10-17.md"
+WORKBENCH_DRILL_DIR = HOME / "khaos-lab/local-cloud-hub/operations/workbench/17oct2026-drills"
+WORKBENCH_DRILL_INDEX = WORKBENCH_DRILL_DIR / "README.md"
 HEADER_ICON_PATH = HOME / ".local/share/khaos-lab/header-icon.png"
 HEADER_BG_PATH   = HOME / ".local/share/khaos-lab/header-bg.png"
 SIDEBAR_BG_PATH  = HOME / ".local/share/khaos-lab/sidebar-bg.png"
 SIDEBAR_ICON_PATH = HOME / ".local/share/khaos-lab/sidebar-icon.png"
 CONTENT_BG_PATH  = HOME / ".local/share/khaos-lab/content-bg.png"
 TASKBAR_ICON_PATH = HOME / ".local/share/khaos-lab/taskbar-icon.png"
-HEAL_LOG_PATH    = HOME / "khaos-lab/arc-heal-log/latest-status.md"
+HEAL_LOG_PATH    = HOME / "khaos-lab/local-cloud-hub/operations/current/arc-heal-log/latest-status.md"
 ORAGE_ICS_PATH   = HOME / ".local/share/orage/orage.ics"
 AUDIO_EQ_CONFIG  = HOME / ".config/pipewire/pipewire.conf.d/60-speaker-studio-eq.conf"
 AUDIO_EQ_BASELINE = HOME / ".local/state/khaos-lab/eq/speaker-studio-eq-original.conf"
-INVENTORY_JSON   = HOME / "khaos-lab/inventory/inventory.json"
+INVENTORY_JSON   = HOME / "khaos-lab/local-cloud-hub/operations/current/inventory/inventory.json"
 INVENTORY_REGISTRY = HOME / "dev-notes/intel-ops/inventory/registry.toml"
 LT_DATA_DIR      = HOME / ".local/share/lt"
 LT_TASKS_PATH    = LT_DATA_DIR / "tasks"
 LT_FOCUS_PATH    = LT_DATA_DIR / "focus"
 LT_NOTES_PATH    = LT_DATA_DIR / "notes"
-LT_COMMAND       = shutil.which("lt") or str(HOME / "khaos-lab/arc-toolkit/bin/lt")
+LT_COMMAND       = shutil.which("lt") or str(HOME / "khaos-lab/local-cloud-hub/apps/arc-toolkit/bin/lt")
 
 # Logs view -- a curated set, not "every log on the machine": what self-heal
 # did, what got noticed/notified, and the security logs `arc logs` already
@@ -101,7 +106,7 @@ LT_COMMAND       = shutil.which("lt") or str(HOME / "khaos-lab/arc-toolkit/bin/l
 # rule simply reports "purge failed" instead of clearing.
 LOG_SOURCES = [
     {"key": "arc-heal", "name": "Self-heal (arc-heal)", "kind": "text",
-     "path": HOME / "khaos-lab/arc-heal-log/history.log", "sudo": False},
+     "path": HOME / "khaos-lab/local-cloud-hub/operations/current/arc-heal-log/history.log", "sudo": False},
     {"key": "notify", "name": "Notifications (arc-pine)", "kind": "sqlite",
      "path": HOME / ".local/share/arc-pine/history.db", "sudo": False},
     {"key": "nextdns-heal", "name": "DNS self-heal (nextdns-heal)", "kind": "text",
@@ -1007,7 +1012,10 @@ class Runner:
         timed_out = False
         try:
             with tempfile.TemporaryFile() as tf:
-                p = subprocess.Popen(cmd, shell=True, stdin=subprocess.DEVNULL, stdout=tf,
+                # Approved preflight arguments are data, never shell expansions.
+                preflight = panel_preflight_command(cmd)
+                p = subprocess.Popen(shlex.split(cmd) if preflight else cmd,
+                                     shell=not preflight, stdin=subprocess.DEVNULL, stdout=tf,
                                      stderr=subprocess.STDOUT, process_group=0)
                 try:
                     rc = p.wait(timeout=timeout)
@@ -1031,11 +1039,14 @@ class Runner:
         try:
             p.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(p.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            p.wait()
+            pass
+        # The shell can exit on TERM while a descendant ignores it. Always
+        # finish the timed-out process group, even after the shell was reaped.
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        p.wait()
 
     def detach(self, cmd):
         try:
@@ -1050,6 +1061,64 @@ class Runner:
     def reap(self):
         with self._lock:
             self._detached = [p for p in self._detached if p.poll() is None]
+
+
+class UiVariables:
+    """Keep Tcl variables alive until their owning widget releases them on Tk.
+
+    Worker-held view references can otherwise make Python's last-reference or
+    cyclic cleanup run Variable.__del__ on a worker. Destroy schedules cleanup
+    after the current UI callback (dialog buttons may still read their values).
+    Root destruction drains everything immediately, including pending cleanup.
+    """
+
+    def __init__(self, root):
+        self.root = root
+        self.threadId = threading.get_ident()
+        self.variables = {}
+        self.pending = {}
+        root.bind("<Destroy>", self._rootDestroyed, add="+")
+
+    def create(self, owner, kind, **kwargs):
+        variable = kind(master=owner, **kwargs)
+        key = id(variable)
+        self.variables[key] = variable
+        owner.bind("<Destroy>", lambda event: self._ownerDestroyed(event, owner, key), add="+")
+        return variable
+
+    def _ownerDestroyed(self, event, owner, key):
+        if event.widget is owner and key in self.variables and key not in self.pending:
+            self.pending[key] = self.root.after_idle(lambda: self.release(key))
+
+    def release(self, key):
+        if threading.get_ident() != self.threadId:
+            raise RuntimeError("Tcl variable cleanup must run on the UI thread")
+        timer = self.pending.pop(key, None)
+        if timer is not None:
+            self.root.after_cancel(timer)
+        variable = self.variables.get(key)
+        if variable is None:
+            return
+        # Run Tk's real variable/trace cleanup exactly once while Tcl is alive.
+        # Its own finalizer treats _tk=None as already released. Drop the root
+        # reference too, so retired variables cannot retain the interpreter.
+        tk.Variable.__del__(variable)
+        variable._tk = None
+        variable._root = None
+        del self.variables[key]
+
+    def _rootDestroyed(self, event):
+        if event.widget is self.root:
+            for key in list(self.variables):
+                self.release(key)
+
+
+def owned_variable(owner, kind=tk.StringVar, **kwargs):
+    root = owner._root()
+    manager = getattr(root, "_panelVariables", None)
+    if manager is None:
+        manager = root._panelVariables = UiVariables(root)
+    return manager.create(owner, kind, **kwargs)
 
 
 class UiBridge:
@@ -1174,7 +1243,8 @@ class ConfirmPolicy:
 
     @classmethod
     def required(cls, action):
-        return action.confirm if action.confirm is not None else cls.inferred(action)
+        return (action.confirm if action.confirm is not None else
+                not action.detach and cls.inferred(action))
 
     @classmethod
     def overrides(cls, categories):
@@ -1275,12 +1345,12 @@ CATEGORIES = {
     "Studio": [
         Action("LMMS: launch music studio", "flatpak run io.lmms.LMMS", detach=True),
         Action("LMMS: open Reborn practice beat", "flatpak run io.lmms.LMMS "
-               "~/khaos-lab/4dev-studio18/ref/Reborn_Practice_Beat.mmp", detach=True),
+               "~/khaos-lab/studio-khaos/projects/studio/projects/Reborn_Practice_Beat.mmp", detach=True),
         Action("Audacity: launch audio editor", "flatpak run org.audacityteam.Audacity", detach=True),
         Action("Mixxx: launch DJ decks", "mixxx", detach=True),
         Action("Markdown: launch ReText", "retext", detach=True),
         Action("Guide: Reborn beat baby steps", "retext --preview "
-               "~/khaos-lab/4dev-studio18/ref/Reborn_LMMS_Baby_Steps.md", detach=True),
+               "~/khaos-lab/studio-khaos/projects/studio/library/guides/Reborn_LMMS_Baby_Steps.md", detach=True),
         Action("Guide: studio quick start", "retext --preview "
                + shlex.quote(str(STUDIO_DOC_DIR / "quick-start.md")), detach=True),
         Action("Guide: YouTube listening exercises", "retext --preview "
@@ -1303,6 +1373,21 @@ CATEGORIES = {
                "https://youtu.be/b2wQtu9YnWk", detach=True),
     ],
     "Security": [
+        Action("AppArmor: live profile status (terminal)",
+               "konsole --hold -e sudo aa-status", detach=True),
+        # AppArmor's installed unit defines a safe ExecReload; never offer stop/restart,
+        # which can drop confinement from already-running processes.
+        Action("AppArmor: reload reviewed profiles", "sudo -n systemctl reload apparmor",
+               confirm=True, timeout=30),
+        Action("Fail2ban: live status and control console (terminal)",
+               "konsole --hold -e /usr/bin/bash -lc '/home/architect-of-chaos/.local/bin/arc sec f2b; exec /usr/bin/bash -i'",
+               confirm=True, detach=True),
+        Action("Guide: AppArmor, Fail2ban, and SOC daily checks",
+               "retext --preview " + shlex.quote(str(STUDIO_DOC_DIR.parent / "ops" / "security-daily-card.md")),
+               detach=True),
+        *([Action("Guide: Open workbench drills",
+                  "retext --preview " + shlex.quote(str(WORKBENCH_DRILL_INDEX)), detach=True)]
+          if WORKBENCH_DRILL_INDEX.is_file() else []),
         Action("SOP status", "arc sop status"),
         Action("SOP violations", "arc sop violations"),
         Action("SOP compliance check", "arc sop check"),
@@ -1397,9 +1482,9 @@ CATEGORIES = {
         Action("Kali container: recent logs", "arc kali logs", timeout=15),
         Action("Mirror sync: status (sync-mirrors)", "arc mirrors", timeout=15),
     ],
-    # Remote Access -- how this machine is reached from outside: Tailscale SSH (primary) and
-    # the private notes site over `tailscale serve`. (The old Cloudflare-Tunnel + VNC bundle,
-    # `arc desktop`, no longer exists -- "not installed" -- so its buttons are gone.)
+    # Remote Access -- private Tailnet preview controls plus the separate, on-demand
+    # SSH-only Cloudflare fallback. Cloudflare DNS/Access policy must be reviewed in its
+    # provider console; the local tunnel command cannot verify those provider-side rules.
     "Remote Access": [
         Action("Tailscale: status", "tailscale status"),
         Action("Tailscale: what is exposed (serve)", "tailscale serve status"),
@@ -1412,6 +1497,7 @@ CATEGORIES = {
         Action("SSH backup: stop tunnel", "arc remote backup-stop", confirm=True),
         # Never wired: `arc site url` (secret address -- terminal only) and `arc site rotate`.
     ],
+    "Mobile Access": [],  # special view: iPhone fixture, Waydroid test, and denied standby slot
     "Maintenance": [
         Action("Disk overview", "arc disk"),
         Action("System health", "arc health"),
@@ -1819,7 +1905,7 @@ class AudioView(View):
         control_shell.pack(fill="x", pady=6)
         tk.Label(controls, text="LEVEL  ·  panel limit 100%", font=self.app.f.small,
                  bg=OVERLAY, fg=FG_MUTED, anchor="w").pack(fill="x", padx=12, pady=(10, 0))
-        self.level_var = tk.IntVar(master=self.frame, value=50)
+        self.level_var = owned_variable(self.frame, tk.IntVar, value=50)
         self.level_scale = tk.Scale(
             controls, from_=0, to=100, resolution=1, orient="horizontal", showvalue=False,
             variable=self.level_var, command=self._preview_level, bg=OVERLAY, fg=FG,
@@ -2279,6 +2365,8 @@ class StatusView(TileView):
     def calendar_status(self):
         try:
             data = CalendarView.request('/api/calendar')
+            if not isinstance(data, dict) or 'error' in data or not isinstance(data.get('items'), list):
+                return 'calendar unavailable · local Hub not responding'
             rows = calendar_status_lines(data.get('items', []))
             return '\n'.join(rows) if rows else 'nothing scheduled'
         except Exception:
@@ -2319,8 +2407,10 @@ class StatusView(TileView):
             return lines[-1].strip() if len(lines) > 1 else "unavailable"
 
         def services():
-            _, a = r("systemctl --failed --no-legend", timeout=8)
-            _, b = r("systemctl --user --failed --no-legend", timeout=8)
+            system_ok, a = r("systemctl --failed --no-legend", timeout=8)
+            user_ok, b = r("systemctl --user --failed --no-legend", timeout=8)
+            if not system_ok or not user_ok:
+                return "service status unavailable"
             n = len([l for l in (a + "\n" + b).splitlines() if l.strip()])
             return f"{n} failed" if n else "all healthy"
 
@@ -2450,7 +2540,7 @@ class CalendarView(View):
         self.message.pack(anchor='w', padx=16)
         self.rows = tk.Frame(self.frame, bg=SURFACE)
         self.rows.pack(fill='both', expand=True, padx=16, pady=8)
-        self.show_completed = tk.BooleanVar(value=False)
+        self.show_completed = owned_variable(self.frame, tk.BooleanVar, value=False)
         self.expanded_groups = {'To-dos'}
         self.expanded_rows = set()
         self.poll('calendar-live', 2000, self.read_calendar, self.apply_calendar)
@@ -2566,8 +2656,8 @@ class CalendarView(View):
         self.apply_calendar(data)
 
     def _calendar_row(self, item):
-            value = tk.BooleanVar(value=item['done'])
             body = tk.Frame(self.rows, bg=SURFACE)
+            value = owned_variable(body, tk.BooleanVar, value=item['done'])
             body.pack(fill='x', anchor='w', pady=(2, 0), padx=2)
             line = tk.Frame(body, bg=SURFACE)
             line.pack(fill='x', padx=3, pady=(4, 0))
@@ -2589,6 +2679,9 @@ class CalendarView(View):
             self.checks.append(check)
 
     def toggle(self, item, value):
+        if not self.app.require_ops_gate("calendar completion change"):
+            value.set(item['done'])
+            return
         if self.busy:
             value.set(item['done'])
             return
@@ -2670,7 +2763,7 @@ class LtView(View):
 
         add_row = tk.Frame(self.frame, bg=SURFACE)
         add_row.pack(fill="x", pady=(0, 8))
-        self.add_var = tk.StringVar()
+        self.add_var = owned_variable(self.frame)
         self.add_entry = tk.Entry(add_row, textvariable=self.add_var, font=f.label,
                                   bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat",
                                   highlightthickness=1, highlightbackground=BORDER,
@@ -2825,7 +2918,7 @@ class CommandsView(View):
 
         tk.Label(self.frame, text="Find a documented command", font=f.small, bg=SURFACE,
                  fg=FG_MUTED, anchor="w").pack(fill="x", padx=3, pady=(4, 3))
-        self.filter_var = tk.StringVar()
+        self.filter_var = owned_variable(self.frame)
         self.filter_entry = tk.Entry(self.frame, textvariable=self.filter_var, font=f.small,
                                       bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat",
                                       highlightthickness=1, highlightbackground=BORDER,
@@ -2850,7 +2943,7 @@ class CommandsView(View):
 
         tk.Label(self.frame, text="Command line  ·  shell operators are never evaluated",
                  font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w").pack(fill="x", padx=3, pady=(2, 3))
-        self.command_var = tk.StringVar()
+        self.command_var = owned_variable(self.frame)
         self.command_entry = tk.Entry(self.frame, textvariable=self.command_var, font=f.label,
                                       bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat",
                                       highlightthickness=1, highlightbackground=BORDER,
@@ -3106,6 +3199,197 @@ class CockpitView(TileView):
         return FG
 
 
+class MobileAccessView(View):
+    """A compact, fail-closed map of the three mobile lanes. The iPhone lane can
+    only serve the synthetic fixture; Waydroid remains a local test guest, and
+    the reserved spare has no implicit Tailnet access."""
+
+    scrollable = True
+
+    def build(self):
+        f = self.app.f
+        header = tk.Frame(self.frame, bg=SURFACE)
+        header.pack(fill="x", padx=6, pady=(4, 8))
+        tk.Label(header, text="MOBILE ACCESS", font=f.small, bg=SURFACE,
+                 fg=self.app.phase_accent, anchor="w").pack(fill="x")
+        tk.Label(header, text="One preview · three device roles", font=f.big, bg=SURFACE,
+                 fg=FG, anchor="w").pack(fill="x", pady=(2, 2))
+        tk.Label(header, text="Only synthetic Hub fixtures are eligible. Host controls and live data stay local.",
+                 font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left",
+                 wraplength=700).pack(fill="x")
+
+        self.status_labels = {}
+        self._row("Workstation", "Tailnet host", "checking…")
+        self._row("iPhone SE", "primary · TCP 443 only after policy approval", "checking…")
+        self._row("Waydroid", "Android test · local sandbox", "checking…")
+        self._row("Spare device", "standby · no access until enrolled and reviewed", "reserved")
+        self._row("Hub preview", "loopback fixture · 127.0.0.1:8765", "checking…")
+        self._row("Tailnet route", "HTTPS 443 · Funnel must remain off", "checking…")
+
+        actions = tk.Frame(self.frame, bg=SURFACE)
+        actions.pack(fill="x", padx=4, pady=(10, 3))
+        buttons = [
+            ("Check fixture", Action("Check synthetic Hub fixture", f"bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} check", timeout=30)),
+            ("Start locally", Action("Start loopback-only Hub fixture", f"bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} start", confirm=True, timeout=12)),
+            ("Stop locally", Action("Stop loopback-only Hub fixture", f"bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} stop", confirm=True, timeout=8)),
+            ("Open setup guide", Action("Open mobile access guide", f"xdg-open {shlex.quote(str(MOBILE_ACCESS_GUIDE))}", detach=True)),
+        ]
+        row_a = tk.Frame(actions, bg=SURFACE)
+        row_a.pack(fill="x")
+        for label, action in buttons:
+            ui.button(row_a, label, command=lambda a=action: self.app.run_action(a),
+                      font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                      padx=9, pady=5).pack(side="left", padx=3, pady=3)
+        row_b = tk.Frame(actions, bg=SURFACE)
+        row_b.pack(fill="x")
+        exposure = [
+            ("Enable iPhone route", Action("Enable private fixture route after policy tests",
+                f"konsole --hold -e bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} expose",
+                confirm=True, timeout=20, detach=True)),
+            ("Close iPhone route", Action("Close private fixture route",
+                f"konsole --hold -e bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} close-route",
+                confirm=True, timeout=20, detach=True)),
+        ]
+        for label, action in exposure:
+            ui.button(row_b, label, command=lambda a=action: self.app.run_action(a),
+                      font=f.small, bg=OVERLAY, fg=ROSE if "Enable" in label else GOLD,
+                      hover_bg=BG, padx=9, pady=5).pack(side="left", padx=3, pady=3)
+        ui.button(row_b, "Android tools", command=lambda: self.app.select("Waydroid"),
+                  font=f.small, bg=OVERLAY, fg=self.app.phase_accent, hover_bg=BG,
+                  padx=9, pady=5).pack(side="left", padx=3, pady=3)
+
+        self.refresh_button = ui.button(actions, "Refresh", command=self.refresh,
+                                        font=f.small, bg=OVERLAY, fg=FG_MUTED,
+                                        hover_bg=BG, padx=10, pady=5)
+        self.refresh_button.pack(side="right", padx=3, pady=3)
+        self.refresh()
+
+    def _row(self, title, detail, initial):
+        f = self.app.f
+        row = tk.Frame(self.frame, bg=OVERLAY, highlightthickness=1,
+                       highlightbackground=BORDER)
+        row.pack(fill="x", padx=6, pady=3)
+        body = tk.Frame(row, bg=OVERLAY)
+        body.pack(fill="x", padx=10, pady=7)
+        left = tk.Frame(body, bg=OVERLAY)
+        left.pack(side="left", fill="x", expand=True)
+        tk.Label(left, text=title, font=f.label, bg=OVERLAY, fg=FG,
+                 anchor="w").pack(fill="x")
+        tk.Label(left, text=detail, font=f.small, bg=OVERLAY, fg=FG_MUTED,
+                 anchor="w", justify="left", wraplength=600).pack(fill="x")
+        value = tk.Label(body, text=initial, font=f.small, bg=OVERLAY,
+                         fg=FG_MUTED, anchor="e", justify="right", wraplength=260)
+        value.pack(side="right", padx=(8, 0))
+        self.status_labels[title] = value
+
+    @staticmethod
+    def _peer_map(text):
+        try:
+            data = json.loads(text)
+            if not isinstance(data, dict) or not isinstance(data.get("Self"), dict):
+                return None, None
+            self_node = data["Self"]
+            peer_data = data.get("Peer") or {}
+            if not isinstance(peer_data, dict) or not all(isinstance(p, dict) for p in peer_data.values()):
+                return None, None
+            peers = list(peer_data.values())
+            return self_node, {str(p.get("HostName", "")).strip().casefold(): p for p in peers}
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            return None, None
+
+    def refresh(self):
+        if not self.alive() or getattr(self, "_busy", False):
+            return
+        self._busy = True
+        self.refresh_button.configure(state="disabled", text="Checking…")
+
+        def collect():
+            r = self.app.runner.run
+            t_ok, t_out = r("tailscale status --json", timeout=10)
+            w_ok, w_out = r("arc-waydroid status", timeout=15)
+            p_ok, p_out = r(f"bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} status", timeout=5)
+            s_ok, s_out = r("tailscale serve status", timeout=8)
+            f_ok, f_out = r("tailscale funnel status", timeout=8)
+            return (t_ok, t_out, w_ok, w_out, p_ok, p_out, s_ok, s_out, f_ok, f_out)
+
+        self.app.bg(collect, self._apply_status)
+
+    def _apply_status(self, result):
+        if not self.alive():
+            return
+        self._busy = False
+        self.refresh_button.configure(state="normal", text="Refresh")
+        (t_ok, t_out, w_ok, w_out, p_ok, p_out,
+         s_ok, s_out, f_ok, f_out) = result
+
+        self_node, peers = self._peer_map(t_out) if t_ok else (None, None)
+        android_peer = None
+        if self_node is None:
+            self._set("Workstation", "unavailable", ROSE)
+            self._set("iPhone SE", "Tailnet status unavailable", ROSE)
+            self._set("Spare device", "reserved · access not granted here", GOLD)
+        else:
+            self._set("Workstation", "online" if self_node.get("Online") else "offline",
+                      TEAL if self_node.get("Online") else ROSE)
+            phone = (peers or {}).get("iphone-se-gen-3")
+            if phone is None:
+                self._set("iPhone SE", "not enrolled / not visible", GOLD)
+            else:
+                online = bool(phone.get("Online"))
+                self._set("iPhone SE", "online" if online else "offline · reconnect in Tailscale",
+                          TEAL if online else GOLD)
+            android_peer = next((p for name, p in (peers or {}).items()
+                                 if name.startswith("waydroid")), None)
+            known = {"iphone-se-gen-3"} | ({name for name in peers if name.startswith("waydroid")})
+            extras = sorted(name for name in (peers or {}) if name not in known)
+            if extras:
+                self._set("Spare device", f"unassigned peer(s): {', '.join(extras)} · review policy",
+                          GOLD)
+            else:
+                self._set("Spare device", "reserved · not enrolled · no automatic grant", FG_MUTED)
+
+        if not w_ok:
+            android = "status unavailable"
+            android_color = FG_MUTED
+        else:
+            service = re.search(r"^Container service: (.+)$", w_out, re.MULTILINE)
+            android = f"container {service.group(1)}" if service else "status unavailable"
+            if android_peer:
+                android += " · Tailnet online" if android_peer.get("Online") else " · Tailnet offline"
+            else:
+                android += " · local only"
+            if not service:
+                android = "status unavailable"
+            android_color = (TEAL if service and service.group(1) == "running" else
+                             GOLD if service and service.group(1) == "stopped" else FG_MUTED)
+        self._set("Waydroid", android, android_color)
+
+        if p_ok:
+            preview = strip_banner(p_out) or "status unavailable"
+            preview_color = TEAL if preview.startswith("running") else FG_MUTED
+        else:
+            preview, preview_color = "status unavailable", GOLD
+        self._set("Hub preview", preview, preview_color)
+
+        if not s_ok or not f_ok:
+            self._set("Tailnet route", "status unavailable · no route change made", FG_MUTED)
+        else:
+            route_open = "127.0.0.1:8765" in s_out
+            funnel_on = "funnel on" in f_out.casefold()
+            if funnel_on:
+                state, color = "Funnel ON · close immediately", ROSE
+            elif route_open:
+                state, color = "fixture route present · verify policy + iPhone", GOLD
+            else:
+                state, color = "closed · policy tests required before opening", FG_MUTED
+            self._set("Tailnet route", state, color)
+
+    def _set(self, key, value, color):
+        label = self.status_labels.get(key)
+        if label and self.alive():
+            label.configure(text=value, fg=color)
+
+
 class InventoryView(View):
     """register vs reality (arc inv): counts, what needs attention, the
     unregistered queue, scan freshness, and a Scan button. Reads the generated
@@ -3185,7 +3469,7 @@ class InventoryView(View):
         dialog.label(f"{item.get('detail', '')}\n\nIgnoring records this discovery as intentionally unmanaged."
                      " Give a short reason; the choice is written to the inventory ledger.",
                      font=self.app.f.small, wrap=520)
-        reason = tk.StringVar(value="")
+        reason = owned_variable(dialog.shell, value="")
         entry = tk.Entry(dialog.shell, textvariable=reason, font=self.app.f.small, width=54,
                          bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat")
         entry.pack(padx=20, pady=(2, 12), fill="x")
@@ -3286,7 +3570,7 @@ class InventoryView(View):
             edit.label(f"{aid} · current goal: {desired} · observed: {observed}", fg=TEAL, wrap=520)
             edit.label("Choose the intended lifecycle. This changes inventory only; it will not start, stop, or delete anything.",
                        fg=FG_MUTED, font=self.app.f.small, wrap=520)
-            reason = tk.StringVar(value="")
+            reason = owned_variable(edit.shell, value="")
             entry = tk.Entry(edit.win, textvariable=reason, font=self.app.f.small, width=54,
                              bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat")
             entry.pack(padx=20, pady=(2, 12), fill="x")
@@ -3426,6 +3710,8 @@ class LogsView(View):
     not just the display) or keep. Built after a real complaint: a heal
     notification said "1 thing healed... see the log" with zero detail."""
 
+    scrollable = True
+
     def build(self):
         f = self.app.f
         for src in LOG_SOURCES:
@@ -3464,7 +3750,7 @@ class LogsView(View):
     def _tail(self, src):
         run, p = self.app.runner.run, shlex.quote(str(src["path"]))
         if src["kind"] == "sqlite":
-            ok, out = run(f'sqlite3 -separator " | " {p} "SELECT timestamp, app_name, summary, body '
+            ok, out = run(f'sqlite3 -readonly -separator " | " {p} "SELECT timestamp, app_name, summary, body '
                           f'FROM notifications ORDER BY id DESC LIMIT 50;"', timeout=10)
         else:
             ok, out = run(f"tail -n 200 {p}", timeout=10)
@@ -3544,7 +3830,7 @@ class FindView(View):
                  fg=FG_MUTED, anchor="w").pack(fill="x", pady=(0, 6))
         er = tk.Frame(top, bg=SURFACE)
         er.pack(fill="x")
-        self.q = tk.StringVar()
+        self.q = owned_variable(self.frame)
         entry = tk.Entry(er, textvariable=self.q, font=f.label, bg=OVERLAY, fg=FG, insertbackground=FG, relief="flat")
         entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 8))
         entry.bind("<Return>", lambda _e: self._search())
@@ -3587,7 +3873,7 @@ class FindView(View):
 
 
 class SopView(View):
-    """The panel's compliance checkpoint and the safe path to unlock operations."""
+    """A short, fail-closed route from policy review to an audited work session."""
 
     scrollable = True
 
@@ -3595,74 +3881,73 @@ class SopView(View):
         f = self.app.f
         card = tk.Frame(self.frame, bg=BG, highlightthickness=1, highlightbackground=BORDER)
         card.pack(fill="x", padx=8, pady=8)
-        self.method_label = tk.Label(card,
-                 text="Recognize · construct · visualize · analyze · interpret",
-                 font=f.small, bg=BG, fg=self.app.phase_accent,
-                 anchor="w")
-        self.method_label.pack(fill="x", padx=14, pady=(12, 4))
-        self.signature_label = tk.Label(card, text=")(  )(  ·  SOP ACCESS", font=f.big,
-                     bg=BG, fg=self.app.phase_accent, anchor="w")
-        self.signature_label.pack(fill="x", padx=14, pady=(0, 2))
+        tk.Label(card, text="OPERATIONS ACCESS", font=f.label, bg=BG,
+                 fg=self.app.phase_accent, anchor="w").pack(fill="x", padx=14, pady=(12, 4))
         self.identity_label = tk.Label(card, text="", font=f.small, bg=BG, fg=FG_MUTED,
                                        anchor="w")
-        self.identity_label.pack(fill="x", padx=14, pady=(0, 6))
+        self.identity_label.pack(fill="x", padx=14, pady=(0, 4))
         self.gate_label = tk.Label(card, text="checking gate…", font=f.big, bg=BG, fg=GOLD,
                                    anchor="w")
-        self.gate_label.pack(fill="x", padx=14, pady=(0, 3))
+        self.gate_label.pack(fill="x", padx=14, pady=(0, 2))
         self.detail_label = tk.Label(card, text="", font=f.small, bg=BG, fg=FG_MUTED,
                                      anchor="w", justify="left", wraplength=680)
         self.detail_label.pack(fill="x", padx=14, pady=(0, 12))
 
         docs = tk.Frame(self.frame, bg=SURFACE)
         docs.pack(fill="x", padx=8, pady=(0, 8))
-        ui.button(docs, "read full policy packet", command=self._read_policy_packet,
+        tk.Label(docs, text="1  ·  REVIEW THE CURRENT POLICY", font=f.small, bg=SURFACE,
+                 fg=self.app.phase_accent, anchor="w").pack(fill="x", padx=12, pady=(9, 2))
+        tk.Label(docs, text="GAMEPLAN · SOT · all current MOs · read-only",
+                 font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w").pack(fill="x", padx=12)
+        ui.button(docs, "open policy packet", command=self._read_policy_packet,
                   font=f.small, bg=OVERLAY, fg=GOLD, hover_bg=BG,
-                  padx=12, pady=7).pack(side="left", padx=5)
-        ui.button(docs, "check gate", command=self.refresh_gate, font=f.small, bg=OVERLAY, fg=FG,
-                  hover_bg=BG, padx=12, pady=7).pack(side="right", padx=5)
-        self.principles_text = tk.Text(docs, height=2, wrap="word", font=f.small,
+                  padx=12, pady=6).pack(side="left", padx=10, pady=6)
+        ui.button(docs, "refresh status", command=self.refresh_gate, font=f.small, bg=OVERLAY, fg=FG,
+                  hover_bg=BG, padx=12, pady=6).pack(side="right", padx=10, pady=6)
+        self.principles_text = tk.Text(docs, height=3, wrap="word", font=f.small,
                                        bg=SURFACE, fg=FG, relief="flat", bd=0,
-                                       highlightthickness=0, padx=2, pady=2)
-        self.principles_text.pack(fill="x", padx=10, pady=(2, 4))
-        principles = ("I WWSJD", "II Right & tight", "III Swiss cheese", "IV Trust & verify",
-                      "V Operate in the light", "VI Leave it cleaner", "VII Inevitable")
-        mo_colors = (self.app.phase_accent, GOLD, TEAL, PINE, ROSE, FG_MUTED, GOLD)
+                                       highlightthickness=0, padx=4, pady=4)
+        self.principles_text.pack(fill="x", padx=10, pady=(0, 4))
+        principles = ("I WWSJD", "II Right & tight", "III Swiss cheese",
+                      "IV Trust but verify", "V Operate in the light", "VI Leave it cleaner",
+                      "VII Inevitable", "VIII Accessibility", "IX Security governance")
+        mo_colors = (self.app.phase_accent, GOLD, TEAL, PINE, ROSE, FG_MUTED, GOLD, TEAL, ROSE)
         for i, (label, color) in enumerate(zip(principles, mo_colors)):
             self.principles_text.insert("end", label, f"mo{i}")
             self.principles_text.tag_configure(f"mo{i}", foreground=color)
-            if i in (2, 4):
+            if i in (2, 5):
                 self.principles_text.insert("end", "\n")
-            elif i < 6:
+            elif i < len(principles) - 1:
                 self.principles_text.insert("end", "   ·   ")
         self.principles_text.configure(state="disabled")
         start = tk.Frame(self.frame, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
         start.pack(fill="x", padx=8, pady=(0, 8))
-        tk.Label(start, text="START A TASK", font=f.small, bg=OVERLAY, fg=FG_MUTED,
-                 anchor="w").pack(fill="x", padx=12, pady=(10, 4))
+        tk.Label(start, text="2  ·  NAME TODAY'S WORK", font=f.small, bg=OVERLAY,
+                 fg=self.app.phase_accent, anchor="w").pack(fill="x", padx=12, pady=(9, 4))
         row = tk.Frame(start, bg=OVERLAY)
-        row.pack(fill="x", padx=12, pady=(0, 10))
-        self.task_text = tk.StringVar()
+        row.pack(fill="x", padx=12, pady=(0, 6))
+        self.task_text = owned_variable(self.frame)
         self.task_entry = tk.Entry(row, textvariable=self.task_text, font=f.label, bg=BG, fg=FG,
                                    insertbackground=FG, relief="flat")
         self.task_entry.pack(side="left", fill="x", expand=True, ipady=7, padx=(0, 8))
-        self.task_entry.insert(0, "briefly name today's work…")
+        self.task_entry.insert(0, "Short task name (required)")
         self.task_entry.bind("<FocusIn>", self._clear_placeholder)
         self.task_entry.bind("<Return>", lambda _e: self.start_task())
-        ui.button(row, "accept all MOs · log task", command=self.start_task, font=f.small, bg=OVERLAY,
+        ui.button(row, "confirm & log task", command=self.start_task, font=f.small, bg=OVERLAY,
                   fg=TEAL, hover_bg=BG, padx=12, pady=7).pack(side="right")
 
         self.docs_read = set()
         self.doc_hashes = {}
-        self.accept_var = tk.BooleanVar(value=False)
+        self.accept_var = owned_variable(self.frame, tk.BooleanVar, value=False)
         tk.Checkbutton(self.frame,
-                       text="I read GAMEPLAN context, all of SOT.md, and every current MO in MO.md; I accept them for this session.",
+                       text="3  ·  I reviewed the packet and accept the current policy for this session.",
                        variable=self.accept_var, font=f.small, bg=BG, fg=FG,
                        activebackground=BG, activeforeground=TEAL, selectcolor=OVERLAY,
                        anchor="w", justify="left", wraplength=720).pack(fill="x", padx=14, pady=(0, 8))
 
         violations = tk.Frame(self.frame, bg=OVERLAY, highlightthickness=1, highlightbackground=BORDER)
         violations.pack(fill="x", padx=8, pady=(0, 8))
-        tk.Label(violations, text="LIVE COMPLIANCE EVENTS", font=f.small, bg=OVERLAY, fg=TEAL,
+        tk.Label(violations, text="GATE ATTENTION", font=f.small, bg=OVERLAY, fg=TEAL,
                  anchor="w").pack(fill="x", padx=12, pady=(9, 3))
         self.violations_label = tk.Label(violations, text="loading…", font=f.small, bg=OVERLAY,
                                          fg=FG_MUTED, anchor="w", justify="left", wraplength=700)
@@ -3671,10 +3956,10 @@ class SopView(View):
             "arc sop violations", timeout=10), font=f.small, bg=OVERLAY, fg=FG,
             hover_bg=BG, padx=10, pady=6).pack(anchor="e", padx=10, pady=(0, 8))
 
-        ui.button(self.frame, "run full SOP compliance check", command=lambda: self.app.run_async(
+        ui.button(self.frame, "run compliance check", command=lambda: self.app.run_async(
             "arc sop check", timeout=20, on_done=self.refresh_gate), font=f.small, bg=SURFACE,
             fg=FG, hover_bg=OVERLAY, padx=12, pady=7).pack(anchor="w", padx=12, pady=(0, 8))
-        tk.Label(self.frame, text="If the gate is locked, panel operations are blocked. Reading these documents and starting this task remain available.",
+        tk.Label(self.frame, text="A locked gate blocks work actions. Policy review and recovery remain available.",
                  font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left",
                  wraplength=720).pack(fill="x", padx=12, pady=(0, 10))
         self.refresh_gate()
@@ -3728,7 +4013,7 @@ class SopView(View):
         self.app.bg(load, show)
 
     def _clear_placeholder(self, _event=None):
-        if self.task_text.get() == "briefly name today's work…":
+        if self.task_text.get() == "Short task name (required)":
             self.task_text.set("")
 
     def refresh_gate(self):
@@ -3743,8 +4028,6 @@ class SopView(View):
         phase = self.app.phase_name
         accent = self.app.phase_accent
         stamp = datetime.now()
-        self.method_label.configure(fg=accent)
-        self.signature_label.configure(fg=accent)
         self.identity_label.configure(
             text=f"lt · {os.environ.get('USER', 'operator')} · arc  ·  "
                  f"{stamp:%a %d %b %Y}  ·  {stamp:%H:%M}  ·  {phase}", fg=accent)
@@ -3756,42 +4039,42 @@ class SopView(View):
 
     def start_task(self):
         description = self.task_text.get().strip()
-        if description == "briefly name today's work…":
+        if description == "Short task name (required)":
             description = ""
         if not description:
-            self.app.console.log("enter a short task name before unlocking operations", GOLD)
+            self.app.console.log("SOP access · enter a short task name to continue.", GOLD)
             self.task_entry.focus_set()
             return
         if not self.accept_var.get() or not {"gameplan", "sot", "mo"}.issubset(self.docs_read):
-            self.app.console.log("read the complete policy packet and explicitly accept every MO before starting", ROSE)
+            self.app.console.log("SOP access · open the full policy packet, review it, then confirm the checkbox.", ROSE)
             return
         try:
             for name, key in (("GAMEPLAN.md", "gameplan"), ("SOT.md", "sot"), ("MO.md", "mo")):
                 current = (HOME / "dev-notes/intel-ops" / name).read_bytes()
                 if hashlib.sha256(current).hexdigest() != self.doc_hashes.get(key):
-                    self.app.console.log(f"{name} changed since you read it; reopen it before accepting", ROSE)
+                    self.app.console.log(f"SOP access · {name} changed; reopen the packet before confirming.", ROSE)
                     self.docs_read.discard(key)
                     self.accept_var.set(False)
                     return
         except OSError as e:
-            self.app.console.log(f"policy unavailable; gate stays locked: {e}", ROSE)
+            self.app.console.log(f"SOP access · policy unavailable; work actions stay locked: {e}", ROSE)
             return
         self.app.run_async(f"arc sop start {shlex.quote(description)}", timeout=20,
                            on_result=lambda result: self._confirm_policy(description, result))
 
     def _confirm_policy(self, description, result):
         _ok, output = result
-        if _ok and "✓ unlocked" in (output or ""):
-            self.app.console.log("task logged · current accepted policy reused for this live session", TEAL)
+        if _ok and "✓ ready for today's work" in (output or ""):
+            self.app.console.log("SOP access · ready. Today's task is logged.", TEAL)
             self.refresh_gate()
             return
         match = re.search(r"--accept-policy ([a-f0-9]{64})", output or "")
         if not match:
             self.app.console.log("could not obtain a fresh session policy digest; gate remains locked", ROSE)
             return
-        if messagebox.askyesno("Accept all current MOs?",
-                               "I read the current GAMEPLAN context, all of SOT.md, and every MO in MO.md.\n\n"
-                               "Accept them for this session and log the task?", parent=self.app.root):
+        if messagebox.askyesno("Confirm SOP access",
+                               "I reviewed the current GAMEPLAN, SOT, and all MOs.\n\n"
+                               "Accept this policy for the session and log today's task?", parent=self.app.root):
             command = f"arc sop start {shlex.quote(description)} --accept-policy {match.group(1)}"
             self.app.run_async(command, timeout=20, on_done=self.refresh_gate)
 
@@ -3895,6 +4178,7 @@ class HelpView(View):
         "Cloud": "AWS guardrails and stop controls · Cloudflare · Git release lanes · SSH references",
         "Dev": "Git health, Arc Toolkit source-of-truth, mirrors, and development workflows",
         "Remote Access": "Tailscale, private notes site, and backup tunnel",
+        "Mobile Access": "iPhone fixture, local Waydroid test, and denied standby slot",
         "Maintenance": "Backups, cleanup, updates, and system repair",
         "Personal": "Personal utilities and daily workflow actions",
     }
@@ -4103,7 +4387,7 @@ class ActionsView(View):
 
     def build(self):
         self.rows = []
-        self.filter_var = tk.StringVar()
+        self.filter_var = owned_variable(self.frame)
         if self.actions and len(self.actions) >= 5:
             head = tk.Frame(self.frame, bg=SURFACE)
             head.pack(fill="x", pady=(2, 10))
@@ -4158,7 +4442,10 @@ class ActionsView(View):
         item.pack(fill="x", pady=2)
         row = tk.Frame(item, bg=SURFACE)
         row.pack(fill="x")
-        gated = ConfirmPolicy.required(action) and not action.detach
+        # A detached window normally needs no confirm because only the launcher
+        # runs here. Honor explicit confirmation anyway for consoles that expose
+        # privileged controls after opening (for example, the Fail2ban console).
+        gated = ConfirmPolicy.required(action)
         label = tk.Label(row, text=f"{prefix}{action.label}", font=f.label, bg=SURFACE, fg=FG, anchor="w",
                          padx=9, pady=5)
         label.pack(side="left", fill="x", expand=True)
@@ -4185,7 +4472,8 @@ class App:
     SPECIAL_VIEWS = {"Help": HelpView, "SOP": SopView, "Status": StatusView, "Calendar": CalendarView,
                      "Audio": AudioView, "LT": LtView, "Commands": CommandsView,
                      "Cockpit": CockpitView, "Inventory": InventoryView,
-                     "Display": DisplayView, "Logs": LogsView, "Find": FindView}
+                     "Display": DisplayView, "Logs": LogsView, "Find": FindView,
+                     "Mobile Access": MobileAccessView}
 
     def __init__(self):
         # className explicit: WM_CLASS was generic "Tk" (never "khaos-lab" as the .desktop
@@ -4307,7 +4595,7 @@ class App:
         self.phase_lbl = tk.Label(header, text="", font=f.small, bg=BG, fg=FG_MUTED)
         self.phase_lbl.pack(side="right", padx=(0, 14))
         # The quick-jump gets its own full-width row, leaving the brand and window controls clear.
-        self.search_var = tk.StringVar()
+        self.search_var = owned_variable(root)
         quickbar_shell, quickbar = ui.rounded_frame(root, BG, bg=OVERLAY, radius=20, border=BORDER)
         quickbar_shell.pack(fill="x", padx=18, pady=(0, 9))
         self.search_entry = tk.Entry(quickbar, textvariable=self.search_var, font=f.small, bg=OVERLAY,
@@ -4736,17 +5024,25 @@ class App:
     def run_action(self, a):
         if not self.require_ops_gate(a.cmd):
             return
+        if ConfirmPolicy.required(a):
+            d = Dialog(self, "confirm")
+            d.label(f"run: {a.label}?")
+            d.label(a.cmd, fg=FG_MUTED, font=self.f.small, wrap=420, pady=(0, 14))
+            d.win.bind("<y>", lambda _e: (d.close(), self._launch_action(a)))
+            d.buttons([("yes, run it", ROSE, lambda: self._launch_action(a)),
+                       ("cancel", FG_MUTED, None)])
+        else:
+            self._launch_action(a)
+
+    def _launch_action(self, a):
+        # Recheck after the confirmation dialog: policy may have changed.
         if a.detach:
+            if not self.require_ops_gate(a.cmd):
+                return
             self.ensure_console_room()
             self.console.log(f"$ {a.cmd}  (opens its own window)", TEAL)
             ok, msg = self.runner.detach(a.cmd)
             self.console.log(f"[{'ok' if ok else 'failed'}] {msg}", PINE if ok else ROSE)
-        elif ConfirmPolicy.required(a):
-            d = Dialog(self, "confirm")
-            d.label(f"run: {a.label}?")
-            d.label(a.cmd, fg=FG_MUTED, font=self.f.small, wrap=420, pady=(0, 14))
-            d.win.bind("<y>", lambda _e: (d.close(), self.run_async(a.cmd, a.timeout)))
-            d.buttons([("yes, run it", ROSE, lambda: self.run_async(a.cmd, a.timeout)), ("cancel", FG_MUTED, None)])
         else:
             self.run_async(a.cmd, a.timeout)
 
@@ -4765,7 +5061,7 @@ class App:
             return True
         if hasattr(self, "status_gate"):
             self.status_gate.configure(text="SOP GATE  ·  LOCKED", fg=ROSE)
-        self.console.log("⛔ BLOCKED — operations are locked until this session satisfies the SOP gate.", ROSE)
+        self.console.log("SOP ACCESS · LOCKED — work actions are unavailable until policy review is complete.", ROSE)
         try:
             words = shlex.split(cmd)
             tool = os.path.basename(words[0]) if words else "unknown"
@@ -4775,7 +5071,7 @@ class App:
             pass
         if detail:
             self.console.log(detail, GOLD)
-        self.console.log("Read GAMEPLAN.md, all of SOT.md, and every MO in MO.md under ~/dev-notes/intel-ops. Use batcat or cat with each full path; then explicitly accept before operating.", FG_MUTED)
+        self.console.log("Next: open SOP → review GAMEPLAN, SOT, and all MOs → name the task and confirm.", FG_MUTED)
         if self.current != "SOP":
             self.select("SOP")
         return False
@@ -4789,6 +5085,7 @@ class App:
             threading.Thread(target=self._refresh_gate_worker, daemon=True).start()
         try:
             self.clock_lbl.configure(text=time.strftime("%H:%M:%S"))
+            self.status_phase.configure(text=f"{self.phase_name.upper()}  ·  {time.strftime('%H:%M')}")
             name, color = ui.phase_info()
             minute = int(time.time() // 60)
             if minute != self._last_ambient:
@@ -4981,7 +5278,7 @@ class App:
         print(f"  hidden-menu workspace jump {'ok' if route_picker_ok else 'FAILED'}")
         print(f"  full-screen enter/restore  {'ok' if fullscreen_ok else 'FAILED'}")
         wired = {category: {a.label for a in CATEGORIES.get(category, [])}
-                 for category in ("Phone", "Waydroid", "Studio", "Remote Access")}
+                 for category in ("Phone", "Waydroid", "Studio", "Remote Access", "Security")}
         remote_actions = {a.label: a for a in CATEGORIES.get("Remote Access", [])}
         remote_access_ok = (
             {"SSH backup: state and primary Tailnet identity",
@@ -5015,8 +5312,8 @@ class App:
                  "Reference: Libianca — People",
                  "Reference: Becky G + Peso Pluma — CHANEL"} <= wired["Studio"]
             and all(shutil.which(cmd) for cmd in ("arc", "arc-sop", "arc-waydroid", "adb", "uad-ng", "flatpak"))
-            and (HOME / "khaos-lab/4dev-studio18/ref/Reborn_Practice_Beat.mmp").is_file()
-            and (HOME / "khaos-lab/4dev-studio18/ref/Reborn_LMMS_Baby_Steps.md").is_file()
+            and (HOME / "khaos-lab/studio-khaos/projects/studio/projects/Reborn_Practice_Beat.mmp").is_file()
+            and (HOME / "khaos-lab/studio-khaos/projects/studio/library/guides/Reborn_LMMS_Baby_Steps.md").is_file()
             and (STUDIO_DOC_DIR / "quick-start.md").is_file()
             and (STUDIO_DOC_DIR / "youtube-listening-exercises.md").is_file()
             and (STUDIO_DOC_DIR / "event-cue-sheet-template.md").is_file()
@@ -5025,6 +5322,10 @@ class App:
         )
         print(f"  program/project wiring   {'ok' if integration_ok else 'FAILED'} "
               "(Arc SOP · Waydroid manual-start lock/ADB/UAD · LMMS/Audacity/Mixxx/ReText + studio assets)")
+        drill_guide_ok = (("Guide: Open workbench drills" in wired["Security"])
+                          == WORKBENCH_DRILL_INDEX.is_file())
+        print(f"  workbench guide wiring   {'ok' if drill_guide_ok else 'FAILED'} "
+              "(optional local link; guide only, no checker execution)")
         self.select("Personal")
         self._pump(0.3)
         leaked = self.poller.active()
@@ -5075,7 +5376,7 @@ class App:
         print(f"  SOP operation gate        {'ok' if gate_ok else 'FAILED'} (locked ops denied; setup retained)")
         bad = (self.errors or leaked or not gate_ok or not filter_ok or not all(layouts)
                or not word_ui_ok or not route_picker_ok or not fullscreen_ok
-               or not (nav_narrow and nav_wide) or not integration_ok)
+               or not (nav_narrow and nav_wide) or not integration_ok or not drill_guide_ok)
         print("  " + ("FAILED" if bad else "all views built with no callback errors"))
         for e in self.errors:
             print(e)

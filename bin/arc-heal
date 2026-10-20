@@ -28,6 +28,7 @@ export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 LOG_DIR="$HOME/khaos-lab/arc-heal-log"
 LATEST="$LOG_DIR/latest-status.md"
 HISTORY="$LOG_DIR/history.log"
+GARAGE_REPORT="$LOG_DIR/garage-health.json"
 mkdir -p "$LOG_DIR"
 
 # Keep the network-only timer's status/history distinct from the complete
@@ -35,6 +36,7 @@ mkdir -p "$LOG_DIR"
 if [[ "${1:-}" == "--ip-only" ]]; then
   LATEST="$LOG_DIR/home-ip-latest.md"
   HISTORY="$LOG_DIR/home-ip-history.log"
+  GARAGE_REPORT=""
 fi
 
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
@@ -787,6 +789,41 @@ _heal_detail() {
   fi
 }
 
+# Publish only bounded identifiers and result states for Garage. Human-readable
+# details stay in the existing private Markdown/history logs; no IPs, URLs,
+# service arguments, credentials, or arbitrary probe text enter this contract.
+_write_garage_report() {
+  [[ -n "$GARAGE_REPORT" ]] || return 0
+  local tmp f level rest comp state safe_comp comma=""
+  tmp=$(mktemp "${GARAGE_REPORT}.tmp.XXXXXX") || return 1
+  if ! {
+    printf '{\n  "schema_version": 1,\n  "generated_at": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '  "counts": {"ok": %s, "healed": %s, "flag": %s},\n' "$OK" "$HEALED" "$FLAGGED"
+    printf '  "findings": [\n'
+    for f in "${FINDINGS[@]}"; do
+      level="${f%%::*}"; rest="${f#*::}"; comp="${rest%%::*}"
+      case "$level" in
+        OK) state="ok" ;;
+        HEALED) state="healed" ;;
+        FLAG) state="flag" ;;
+        *) continue ;;
+      esac
+      safe_comp=$(printf '%s' "$comp" | LC_ALL=C sed 's/[^A-Za-z0-9_.:-]/_/g' | cut -c1-120)
+      [[ -n "$safe_comp" ]] || safe_comp="unknown"
+      printf '    %s{"component":"%s","state":"%s"}\n' "$comma" "$safe_comp" "$state"
+      comma=","
+    done
+    printf '  ]\n}\n'
+  } > "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  chmod 600 -- "$tmp" && mv -f -- "$tmp" "$GARAGE_REPORT" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+}
+
 {
   echo "# arc-heal — ${RUN_ID}"
   echo "Run took ${DURATION}s · ${OK} ok · ${HEALED} healed · ${FLAGGED} flagged"
@@ -811,6 +848,10 @@ _heal_detail() {
     _heal_detail FLAG | sed 's/^/    flagged: /'
   fi
 } >> "$HISTORY"
+
+if ! _write_garage_report >/dev/null 2>&1; then
+  printf 'Warning: Garage health report was not updated.\n' >&2
+fi
 
 if [[ "$FLAGGED" -gt 0 ]]; then
   _notify critical dialog-warning "${FLAGGED} thing(s) need attention" "$(_heal_detail FLAG 3)"

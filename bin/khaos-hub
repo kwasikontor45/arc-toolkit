@@ -19,6 +19,7 @@ HOME = Path.home()
 SOURCE = HOME / '.local/share/orage/orage.ics'
 STATE = HOME / '.local/share/khaos-hub'
 WEB = Path(__file__).resolve().parent.parent / 'apps/khaos-hub/web'
+GARAGE_APP = Path(__file__).resolve().parent.parent / 'apps/surgery-workshop/garage.html'
 PORT = 8766
 ORIGIN = f'http://127.0.0.1:{PORT}'
 TOKEN = secrets.token_urlsafe(32)
@@ -169,6 +170,21 @@ def set_checked(data):
         return snapshot()
 
 
+def static_assets():
+    """Return the exact static routes served by the local Hub."""
+    return {
+        '/': (WEB, 'index.html', 'text/html; charset=utf-8'),
+        '/app.js': (WEB, 'app.js', 'text/javascript'),
+        '/app.css': (WEB, 'app.css', 'text/css'),
+        '/icon.svg': (WEB, 'icon.svg', 'image/svg+xml'),
+        '/favicon.ico': (WEB, 'icon.svg', 'image/svg+xml'),
+        '/manifest.webmanifest': (WEB, 'manifest.webmanifest', 'application/manifest+json'),
+        '/garage': (GARAGE_APP.parent, GARAGE_APP.name, 'text/html; charset=utf-8'),
+        '/garage/': (GARAGE_APP.parent, GARAGE_APP.name, 'text/html; charset=utf-8'),
+        '/garage/index.html': (GARAGE_APP.parent, GARAGE_APP.name, 'text/html; charset=utf-8'),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def setup(self):
         super().setup()
@@ -181,7 +197,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(payload)))
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Content-Security-Policy', "default-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+        if urlsplit(self.path).path.startswith('/garage'):
+            csp = ("default-src 'none'; script-src 'sha256-/oRCxbi/Ujf/NupQ1h5Ap+XFEtuH10cmDTjKqLeYPUA='; "
+                   "style-src 'sha256-dT2AXhJjY9T4uHDevLUEnBkJFKGzH2Ih84XnwIiyQpU='; "
+                   "img-src 'none'; connect-src 'none'; font-src 'none'; object-src 'none'; "
+                   "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+        else:
+            csp = "default-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+        self.send_header('Content-Security-Policy', csp)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -199,12 +222,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, snapshot())
             if path == '/api/session':
                 return self.reply(200, {'token': TOKEN})
-            assets = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript'),
-                      '/app.css': ('app.css', 'text/css'), '/icon.svg': ('icon.svg', 'image/svg+xml'),
-                      '/manifest.webmanifest': ('manifest.webmanifest', 'application/manifest+json')}
+            assets = static_assets()
             if path in assets:
-                name, mime = assets[path]
-                return self.reply(200, (WEB / name).read_bytes(), mime)
+                root, name, mime = assets[path]
+                return self.reply(200, (root / name).read_bytes(), mime)
             self.reply(404, {'error': 'Not found'})
         except (OSError, sqlite3.Error):
             self.reply(503, {'error': 'Calendar unavailable; retry shortly.'})

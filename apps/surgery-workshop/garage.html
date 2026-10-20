@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en" data-phase="choice">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-/oRCxbi/Ujf/NupQ1h5Ap+XFEtuH10cmDTjKqLeYPUA='; style-src 'sha256-dT2AXhJjY9T4uHDevLUEnBkJFKGzH2Ih84XnwIiyQpU='; img-src 'none'; connect-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none';">
+  <meta name="referrer" content="no-referrer">
+  <title>Garage · Khaos Lab</title>
+  <style>
+    :root{color-scheme:dark;--bg:#111714;--surface:#19211d;--raised:#202b25;--ink:#edf2ed;--muted:#b3c0b7;--line:#435249;--phase:#5ec8ed;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink);font-synthesis:none;text-rendering:optimizeLegibility}
+    *{box-sizing:border-box}body{min-width:320px;margin:0;background:radial-gradient(ellipse at 82% 0%,color-mix(in srgb,var(--phase) 8%,transparent),transparent 32rem),var(--bg)}
+    a{color:inherit}button,input{font:inherit}.skip{position:absolute;left:12px;top:8px;z-index:2;padding:8px 12px;transform:translateY(-160%);border-radius:999px;background:var(--ink);color:var(--bg)}.skip:focus{transform:none}
+    :focus-visible{outline:3px solid var(--phase);outline-offset:3px}.bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px max(18px,calc((100vw - 900px)/2));border-bottom:1px solid var(--line)}
+    .brand{font-size:13px;font-weight:750;letter-spacing:.08em}.brand b{color:var(--phase)}.scope{padding:5px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:11px}
+    main{width:min(900px,100%);margin:auto;padding:clamp(22px,5vw,50px) 22px 32px}.eyebrow{margin:0 0 8px;color:var(--phase);font-size:11px;font-weight:760;letter-spacing:.12em;text-transform:uppercase}
+    h1{margin:0;font-size:clamp(30px,5.2vw,46px);font-weight:620;letter-spacing:-.045em;line-height:1.08} .intro{max-width:62ch;margin:10px 0 24px;color:var(--muted);font-size:15px}
+    fieldset{min-width:0;margin:0;padding:0;border:0}.legend{margin:0 0 9px;color:var(--muted);font-size:12px}.choices{display:flex;flex-wrap:wrap;gap:8px}.choice{display:inline-flex;min-height:42px;align-items:center;padding:8px 14px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--ink);cursor:pointer;font-size:13px;font-weight:620;transition:background .16s,border-color .16s,transform .16s}
+    .choice:hover{transform:translateY(-1px);border-color:var(--phase)}input:checked+.choice{border-color:var(--phase);background:color-mix(in srgb,var(--phase) 14%,var(--surface));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--phase) 30%,transparent)}
+    .trace{margin-top:18px;padding:clamp(16px,3vw,24px);border:1px solid var(--line);border-radius:20px;background:linear-gradient(145deg,var(--raised),var(--surface))}.trace h2{margin:0;font-size:clamp(20px,3vw,25px);font-weight:650;letter-spacing:-.025em}.trace-intro{margin:6px 0 16px;color:var(--muted);font-size:13px}
+    .path{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:0;padding:0;list-style:none}.path li{min-width:0;padding:12px;border:1px solid var(--line);border-radius:14px;background:color-mix(in srgb,var(--bg) 30%,transparent)}.path strong{display:block;margin-bottom:4px;font-size:12px}.path span{display:block;color:var(--muted);font-size:12px;line-height:1.45}
+    details{margin-top:14px;border-top:1px solid var(--line);padding-top:11px}summary{width:max-content;max-width:100%;min-height:36px;display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--phase);font-size:12px;font-weight:700}summary::marker{color:var(--phase)}.sources{display:grid;gap:6px;margin:10px 0 0;padding-left:18px;color:var(--muted);font-size:12px}.sources code{color:var(--ink);font:11px/1.45 ui-monospace,"SFMono-Regular",Consolas,monospace;overflow-wrap:anywhere}
+    .boundary{display:flex;align-items:flex-start;gap:10px;margin:14px 0 0;padding:11px 13px;border-left:2px solid var(--phase);border-radius:0 12px 12px 0;background:color-mix(in srgb,var(--phase) 7%,var(--surface));color:var(--muted);font-size:12px}.boundary strong{color:var(--ink)}
+    .foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;margin-top:18px;color:var(--muted);font-size:11px}.foot a{color:var(--phase);text-decoration-thickness:1px;text-underline-offset:3px}
+    .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);clip-path:inset(50%);white-space:nowrap}.sr:focus-visible+.choice{outline:3px solid var(--phase);outline-offset:3px}
+    html[data-phase="nyx"]{--phase:#ea9a97}html[data-phase="choice"]{--phase:#5ec8ed}html[data-phase="desire"]{--phase:#f6c177}html[data-phase="still-pine"]{--phase:#c4a7e7}
+    @media(max-width:620px){main{padding-inline:16px}.path{grid-template-columns:1fr}.path li{padding:10px 12px}.bar{padding-inline:14px}.scope{font-size:10px}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important}.choice:hover{transform:none}}
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to guide</a>
+  <header class="bar"><div class="brand">KHAOS LAB <b>/</b> GARAGE</div><span class="scope">Offline guide · no host access</span></header>
+  <main id="main">
+    <p class="eyebrow">SYSTEMS · BEHAVIOR · BOUNDARIES</p>
+    <h1>What are you trying to understand?</h1>
+    <p class="intro">Choose the thing you saw. Garage follows its path and points to the code that owns it. This guide never runs that code.</p>
+    <fieldset>
+      <legend class="legend">Pick a Hub behavior</legend>
+      <div class="choices">
+        <input class="sr" type="radio" name="context" id="ctx-refresh" checked>
+        <label class="choice" for="ctx-refresh">Calendar looks stale</label>
+        <input class="sr" type="radio" name="context" id="ctx-checkmark">
+        <label class="choice" for="ctx-checkmark">A task was checked</label>
+        <input class="sr" type="radio" name="context" id="ctx-tile">
+        <label class="choice" for="ctx-tile">A status tile looks wrong</label>
+      </div>
+    </fieldset>
+
+    <section class="trace trace-refresh" aria-labelledby="refresh-title">
+      <h2 id="refresh-title">Calendar refresh</h2>
+      <p class="trace-intro">Read path · Orage stays the source of calendar events and to-dos.</p>
+      <ol class="path"><li><strong>1 · Browser</strong><span>While Khaos Hub is open, its page requests a fresh snapshot on a short interval.</span></li><li><strong>2 · Local Hub</strong><span>The loopback service reads Orage and joins Hub-owned completion marks.</span></li><li><strong>3 · Verify</strong><span>Compare the rendered list with Orage. This guide makes no request and reads no calendar data.</span></li></ol>
+      <details><summary>Where this lives</summary><ul class="sources"><li><code>apps/khaos-hub/web/app.js</code> · refreshCalendar()</li><li><code>bin/khaos-hub</code> · calendar_items() / snapshot()</li><li><code>~/.local/share/orage/orage.ics</code> · source calendar</li></ul></details>
+      <p class="boundary"><span aria-hidden="true">◇</span><span><strong>Boundary:</strong> refresh reads calendar state; it does not modify Orage or completion marks.</span></p>
+    </section>
+    <section class="trace trace-checkmark" aria-labelledby="checkmark-title">
+      <h2 id="checkmark-title">Mark an item complete</h2>
+      <p class="trace-intro">Narrow write · only the Hub’s completion state changes.</p>
+      <ol class="path"><li><strong>1 · Browser</strong><span>A deliberate check sends the item ID, desired state, and revision.</span></li><li><strong>2 · Local Hub</strong><span>The loopback service checks origin, token, content type, and revision before saving.</span></li><li><strong>3 · Verify</strong><span>SQLite stores the mark and next revision. Orage text, status, and alarms stay unchanged.</span></li></ol>
+      <details><summary>Where this lives</summary><ul class="sources"><li><code>apps/khaos-hub/web/app.js</code> · makeRow()</li><li><code>bin/khaos-hub</code> · Handler.allowed() / set_checked()</li><li><code>~/.local/share/khaos-hub/checks.db</code> · Hub-owned marks</li></ul></details>
+      <p class="boundary"><span aria-hidden="true">◇</span><span><strong>Boundary:</strong> checking an item does not edit the Orage calendar.</span></p>
+    </section>
+    <section class="trace trace-tile" aria-labelledby="tile-title">
+      <h2 id="tile-title">Inspect a status tile</h2>
+      <p class="trace-intro">Fixture path · the overview’s sample tiles are not live telemetry.</p>
+      <ol class="path"><li><strong>1 · Browser</strong><span>A selected sample scenario changes local presentation.</span></li><li><strong>2 · Fixture</strong><span>Labels and values come from a fixed array in the page bundle.</span></li><li><strong>3 · Verify</strong><span>There is no host, network, inventory, service, or cloud request behind these tiles.</span></li></ol>
+      <details><summary>Where this lives</summary><ul class="sources"><li><code>apps/khaos-hub/web/index.html</code> · scenario controls</li><li><code>apps/khaos-hub/web/app.js</code> · cards[] / renderCards()</li></ul></details>
+      <p class="boundary"><span aria-hidden="true">◇</span><span><strong>Boundary:</strong> sample values must not be treated as current system state.</span></p>
+    </section>
+    <footer class="foot"><span id="phase-label">Circadian guide · Choice</span><span>Single file · no network · no actions</span></footer>
+  </main>
+  <script>
+    "use strict";
+    const choices = [...document.querySelectorAll('input[name="context"]')];
+    const traces = [...document.querySelectorAll('.trace')];
+    function showContext() {
+      const selected = choices.find(choice => choice.checked);
+      const suffix = selected.id.replace('ctx-', '');
+      traces.forEach(trace => { trace.hidden = !trace.classList.contains(`trace-${suffix}`); });
+    }
+    function setPhase() {
+      const hour = new Date().getHours();
+      const phase = hour < 6 || hour >= 21 ? 'nyx' : hour < 11 ? 'choice' : hour < 17 ? 'desire' : 'still-pine';
+      document.documentElement.dataset.phase = phase;
+      document.querySelector('#phase-label').textContent = `Circadian guide · ${phase.replace('-', ' ').replace(/\b\w/g, letter => letter.toUpperCase())}`;
+    }
+    choices.forEach(choice => choice.addEventListener('change', showContext));
+    showContext(); setPhase(); setInterval(setPhase, 60000);
+  </script>
+</body>
+</html>

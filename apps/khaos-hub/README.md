@@ -13,8 +13,13 @@ state in `~/.local/share/khaos-hub/checks.db`; they do not change Orage STATUS,
 appointments, native task completion or reminder alarms. Descriptions are not exposed.
 
 Only the calendar is live. The seven system tiles remain clearly labeled samples.
+The Garage link serves the same single-file offline guide as Khaos Lab → Garage.
+It explains calendar refresh, check-mark boundaries, and fixture-only system
+tiles. The file has no external assets, network calls, host reads, or actions;
+the Hub route is just another way to open it. Its portable source is
+`../surgery-workshop/garage.html`.
 This local browser app is separate from the permission-free Android fixture
-preview in `~/khaos-lab/khaos-hub-mobile`. It does not enable phone or Waydroid
+preview in `~/khaos-lab/android-mobile-ios/apps/khaos-hub-mobile`. It does not enable phone or Waydroid
 network access or change Tailscale policy.
 
 Install: link `bin/khaos-hub` into `~/.local/bin`, copy

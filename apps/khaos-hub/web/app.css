@@ -86,6 +86,8 @@ h1 { max-width: 650px; margin-bottom: 6px; font-size: clamp(25px,7vw,38px); line
 .mobile-link { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 39px; border: 1px solid transparent; border-radius: 12px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 650; cursor: pointer; }
 .mobile-link span { color: currentColor; font-size: 14px; }
 .mobile-link.is-active { border-color: rgba(169,203,222,.12); background: linear-gradient(140deg,rgba(145,191,255,.13),rgba(141,226,189,.07)); color: var(--paper); }
+.garage-link,.garage-mobile-link { color: var(--muted); text-decoration: none; }
+.garage-link:hover,.garage-link:focus-visible,.garage-mobile-link:hover,.garage-mobile-link:focus-visible { border-color: var(--line-bright); color: var(--paper); }
 .detail-dialog { width: min(440px,calc(100% - 28px)); max-width: none; padding: 0; border: 1px solid var(--line-bright); border-radius: 22px; background: var(--glass-strong); color: var(--paper); box-shadow: 0 24px 100px rgba(0,0,0,.68),inset 0 1px rgba(255,255,255,.07); backdrop-filter: blur(20px); }
 .detail-dialog::backdrop { background: rgba(2,5,9,.72); backdrop-filter: blur(8px); }
 .dialog-surface { position: relative; padding: 24px; }
@@ -386,3 +388,4 @@ body { background:radial-gradient(ellipse at 72% 2%,rgba(var(--phase-rgb),.07),t
 .calendar-row.calendar-completed { opacity:.68; }
 .detail-dialog { border-radius:14px;background:rgba(var(--surface-rgb),.98); }
 .mobile-nav { border-radius:13px;background:rgba(var(--ink-rgb),.94);box-shadow:0 8px 24px rgba(0,0,0,.25); }
+.mobile-nav { grid-template-columns:repeat(3,minmax(0,1fr)); }

@@ -74,6 +74,7 @@ from tkinter import font as tkfont
 
 HOME = Path.home()
 STUDIO_DOC_DIR = Path(__file__).resolve().parent.parent / "docs" / "studio"
+GARAGE_APP_PATH = Path(__file__).resolve().parent.parent / "apps" / "surgery-workshop" / "garage.html"
 MOBILE_ACCESS_DIR = HOME / "khaos-lab/android-mobile-ios/projects/iphone-cloud-local"
 MOBILE_PREVIEW_SCRIPT = MOBILE_ACCESS_DIR / "automators" / "serve-preview.sh"
 MOBILE_ACCESS_GUIDE = MOBILE_ACCESS_DIR / "md-s" / "mobile-access-operator-2026-10-17.md"
@@ -1266,6 +1267,9 @@ CATEGORIES = {
     "LT": [],         # special view: the owner's existing personal lt board
     "Commands": [],   # special view: complete arc + lt command catalog and safe launcher
     "Cockpit": [],    # special view: network / cloud / remote-access overview
+    "Garage": [       # standalone offline behavior guide; no Hub server or host access
+        Action("Open offline Garage guide", "xdg-open " + shlex.quote(str(GARAGE_APP_PATH)), detach=True),
+    ],
     "Inventory": [],  # special view: register vs reality (arc inv), added 2026-09-19
     "Display": [],    # special view: local casting readiness and receiver discovery
     "Logs": [],       # special view: review / purge curated logs
@@ -4164,6 +4168,7 @@ class HelpView(View):
         "LT": "Personal focus and tasks from the existing lt board",
         "Commands": "Browse and run every arc or lt command safely",
         "Cockpit": "At-a-glance network, cloud, and remote-access controls",
+        "Garage": "Follow a Hub behavior offline · read-only guide, no host actions",
         "Inventory": "Track registered assets and find drift or untracked items",
         "Logs": "Review recent system, security, and self-heal activity",
         "Find": "Search your notes and archived references",
@@ -5322,6 +5327,13 @@ class App:
         )
         print(f"  program/project wiring   {'ok' if integration_ok else 'FAILED'} "
               "(Arc SOP · Waydroid manual-start lock/ADB/UAD · LMMS/Audacity/Mixxx/ReText + studio assets)")
+        garage_actions = CATEGORIES.get("Garage", [])
+        garage_app_ok = (GARAGE_APP_PATH.is_file() and len(garage_actions) == 1
+                         and garage_actions[0].detach and not ConfirmPolicy.required(garage_actions[0])
+                         and str(GARAGE_APP_PATH) in garage_actions[0].cmd
+                         and "khaos-hub" not in garage_actions[0].cmd)
+        print(f"  standalone Garage launch {'ok' if garage_app_ok else 'FAILED'} "
+              "(one portable file · no Khaos Hub dependency)")
         drill_guide_ok = (("Guide: Open workbench drills" in wired["Security"])
                           == WORKBENCH_DRILL_INDEX.is_file())
         print(f"  workbench guide wiring   {'ok' if drill_guide_ok else 'FAILED'} "

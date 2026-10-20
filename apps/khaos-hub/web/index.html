@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#080b10">
   <meta name="color-scheme" content="dark">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none';">
-  <title>Khaos Hub · Local calendar</title>
+  <title>Khaos Hub · Local command view</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="app.css">
@@ -19,6 +19,7 @@
       <nav class="rail-nav" aria-label="Sections">
         <button class="rail-link is-active" type="button" data-page="overview" aria-label="Overview" aria-current="page"><span class="rail-glyph">◫</span><span>Overview</span></button>
         <button class="rail-link" type="button" data-page="guide" aria-label="Guide"><span class="rail-glyph">⌘</span><span>Guide</span></button>
+        <a class="rail-link garage-link" href="/garage/" aria-label="Garage system map"><span class="rail-glyph" aria-hidden="true">◈</span><span>Garage</span></a>
       </nav>
       <div class="rail-foot"><span class="rail-led"></span><span>LOCAL</span></div>
     </aside>
@@ -26,7 +27,7 @@
     <main class="main-shell">
       <header class="topbar">
         <div class="topbar-brand"><span class="brand-mark small" aria-hidden="true">K<span>✳</span></span><span>KHAOS <b>HUB</b></span></div>
-        <div class="topbar-state"><span class="state-led"></span><span>LOCAL CALENDAR</span></div>
+        <div class="topbar-state"><span class="state-led"></span><span>LOCAL HUB</span></div>
       </header>
 
       <section class="page page-overview" data-view="overview" aria-labelledby="page-title">
@@ -55,7 +56,6 @@
           </div>
         </div>
 
-        
         <div class="status-grid" id="status-grid" aria-label="Sample status cards"></div>
         <footer class="page-foot"><span>LIVE CALENDAR · SAMPLE SYSTEM TILES</span><span>Tap any tile to inspect its planned source</span></footer>
       </section>
@@ -77,6 +77,7 @@
       <nav class="mobile-nav" aria-label="Primary navigation">
         <button class="mobile-link is-active" type="button" data-page="overview" aria-current="page"><span aria-hidden="true">◫</span>Overview</button>
         <button class="mobile-link" type="button" data-page="guide"><span aria-hidden="true">⌘</span>Guide</button>
+        <a class="mobile-link garage-mobile-link" href="/garage/" aria-label="Garage system map"><span aria-hidden="true">◈</span>Garage</a>
       </nav>
     </main>
   </div>

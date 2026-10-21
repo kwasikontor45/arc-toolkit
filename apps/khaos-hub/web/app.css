@@ -410,8 +410,8 @@ body { background:radial-gradient(ellipse at 72% 2%,rgba(var(--phase-rgb),.07),t
 .hero-signals i { width:6px;height:6px;border-radius:50%;background:var(--mint);box-shadow:0 0 10px rgba(var(--phase-rgb),.7); }
 .hero-signals span:nth-child(2) i { background:var(--amber);box-shadow:0 0 10px rgba(219,183,125,.55); }
 .hero-signals span:nth-child(3) i { background:var(--blue);box-shadow:0 0 10px rgba(145,200,191,.55); }
-.hero-art { position:relative;z-index:1;justify-self:end;width:min(100%,170px);margin:0;padding:5px;overflow:hidden;border:1px solid rgba(var(--phase-rgb),.32);border-radius:17px;background:rgba(var(--ink-rgb),.66);box-shadow:0 12px 32px rgba(0,0,0,.32);transform:rotate(2deg); }
-.hero-art img { display:block;width:100%;aspect-ratio:1;border-radius:12px;object-fit:cover; }
+.hero-art { position:relative;z-index:1;justify-self:end;width:min(100%,145px);margin:0;padding:5px;overflow:hidden;border:1px solid rgba(var(--phase-rgb),.32);border-radius:17px;background:rgba(var(--ink-rgb),.66);box-shadow:0 12px 32px rgba(0,0,0,.32);transform:rotate(2deg); }
+.hero-art img { display:block;width:100%;aspect-ratio:150/266;border-radius:12px;object-fit:cover; }
 .hero-art figcaption { display:flex;justify-content:space-between;gap:5px;padding:8px 4px 3px;color:var(--muted);font-size:7px;font-weight:750;letter-spacing:.1em; }
 .hero-art figcaption span:first-child { color:var(--paper); }
 .hero-index { position:absolute;right:20px;bottom:14px;color:rgba(var(--phase-rgb),.3);font-size:9px;font-weight:800;letter-spacing:.16em; }
@@ -433,7 +433,7 @@ body { background:radial-gradient(ellipse at 72% 2%,rgba(var(--phase-rgb),.07),t
  .workbench-hero { grid-template-columns:minmax(0,1fr) 68px;gap:6px;padding:14px 11px; }
  .workbench-hero h1 { font-size:22px; } .hero-art { width:68px; } .hero-signals span { font-size:6px; }
 }
-@media (min-width:900px) { .workbench-hero { min-height:292px;margin-top:0;padding:36px 38px;border-radius:24px; } .hero-art { width:min(100%,205px);margin-right:22px; } }
+@media (min-width:900px) { .workbench-hero { min-height:292px;margin-top:0;padding:36px 38px;border-radius:24px; } .hero-art { width:min(100%,145px);margin-right:22px; } }
 @media (prefers-reduced-motion:no-preference) { .hero-art { animation:hero-arrive .8s cubic-bezier(.2,.75,.25,1) both; } @keyframes hero-arrive { from { opacity:0;transform:translateY(8px) rotate(2deg); } to { opacity:1;transform:translateY(0) rotate(2deg); } } }
 
 /* Flight deck identity */

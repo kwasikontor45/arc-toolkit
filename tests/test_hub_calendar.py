@@ -47,6 +47,7 @@ END:VCALENDAR
         expected = {
             '/icon-kimi-512.png': 'image/png',
             '/kimi-khaos-hub.png': 'image/png',
+            '/kimi-wallpaper.jpg': 'image/jpeg',
             '/favicon.ico': 'image/png',
         }
         for route, mime in expected.items():

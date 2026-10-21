@@ -42,8 +42,11 @@ class GarageRouteChecks(unittest.TestCase):
         for remote in ("http://", "https://", "<iframe", "<link"):
             self.assertNotIn(remote, self.body)
         self.assertIn("img-src data:", self.body)
-        self.assertEqual(self.body.count("<img "), 1)
+        self.assertEqual(self.body.count("<img "), 2)
         self.assertIn("data:image/png;base64,", self.body)
+        self.assertIn("data:image/jpeg;base64,", self.body)
+        wallpaper = self.root / "apps/khaos-hub/web/kimi-wallpaper.jpg"
+        self.assertIn(base64.b64encode(wallpaper.read_bytes()).decode(), self.body)
         self.assertIn("connect-src 'none'", self.body)
         self.assertIn("default-src 'none'", self.body)
         self.assertIn("frame-ancestors 'none'", self.body)

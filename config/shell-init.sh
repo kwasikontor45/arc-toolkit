@@ -71,11 +71,16 @@ if [ -n "${BASH_VERSION:-}" ] && [[ $- == *i* ]]; then
     *";_arc_sop_refresh_gate;"*) ;;
     *) PROMPT_COMMAND="${PROMPT_COMMAND:+${PROMPT_COMMAND};}_arc_sop_refresh_gate" ;;
   esac
+  case ";${PROMPT_COMMAND:-};" in
+    *";_arc_greeting_phase_watch;"*) ;;
+    *) PROMPT_COMMAND="${PROMPT_COMMAND:+${PROMPT_COMMAND};}_arc_greeting_phase_watch" ;;
+  esac
   trap '_arc_sop_debug_guard' DEBUG
 elif [ -n "${ZSH_VERSION:-}" ]; then
   _arc_sop_refresh_gate
   autoload -Uz add-zsh-hook
   add-zsh-hook precmd _arc_sop_refresh_gate
+  add-zsh-hook precmd _arc_greeting_phase_watch
   _arc_sop_accept_line() {
     if [ "${_ARC_SOP_GATE_OPEN:-0}" = 1 ] || command "$HOME/.local/bin/arc-sop-shell-guard" "$BUFFER"; then
       zle .accept-line

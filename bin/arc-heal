@@ -42,6 +42,9 @@ fi
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
 RUN_START=$(date +%s)
 FINDINGS=()   # each: "OK|HEALED|FLAG::component::message"
+ALERT_STATE_DIR="$HOME/.local/state/arc"
+ALERT_STATE_FILE="$ALERT_STATE_DIR/heal-alert-fingerprint"
+ALERT_REPEAT_SECONDS=$((24 * 60 * 60))
 
 note() { FINDINGS+=("$1"); }
 
@@ -55,7 +58,39 @@ note() { FINDINGS+=("$1"); }
 # Unix socket, not an X connection) -- only sound/voice inside
 # arc-pine-notify need DISPLAY indirectly via paplay, and XDG_RUNTIME_DIR
 # (already exported at the top of this file) is what those actually need.
-_notify() { /home/architect-of-chaos/.local/bin/arc-pine-notify "$1" arc-heal "$3" "${4:-}" 2>/dev/null || true; }
+_notify() { /home/architect-of-chaos/.local/bin/arc-pine-notify "$1" arc-heal "$3" "${4:-}" "${5:-}" 2>/dev/null || true; }
+
+# Repeated unchanged flags remain visible in latest-status.md and history.log,
+# but one unresolved condition should not speak every three-hour health run.
+# Notify immediately when the set/message changes, then at most once per day.
+# A cleared run drops the fingerprint so a later recurrence alerts immediately.
+_alert_flags_changed_or_due() {
+  local details fingerprint now old_fingerprint="" old_at="" tmp
+  details="$(_heal_detail FLAG 0)"
+  fingerprint=$(printf '%s\n' "$details" | sha256sum | awk '{print $1}')
+  now=$(date +%s)
+  if [[ -r "$ALERT_STATE_FILE" ]]; then
+    read -r old_fingerprint old_at < "$ALERT_STATE_FILE" || true
+  fi
+  if [[ "$fingerprint" == "$old_fingerprint" && "$old_at" =~ ^[0-9]+$ ]] &&
+     (( now >= old_at && now - old_at < ALERT_REPEAT_SECONDS )); then
+    return 1
+  fi
+  if mkdir -p "$ALERT_STATE_DIR"; then
+    tmp="$ALERT_STATE_FILE.tmp.$$"
+    if (umask 077; printf '%s %s\n' "$fingerprint" "$now" > "$tmp") &&
+       mv -f -- "$tmp" "$ALERT_STATE_FILE"; then
+      :
+    else
+      rm -f -- "$tmp"
+    fi
+  fi
+  return 0
+}
+
+_clear_alert_fingerprint() {
+  rm -f -- "$ALERT_STATE_FILE"
+}
 
 # ── py-bite: now a fully-managed PythonAnywhere app, not our EC2 box ───────
 # AWS instance i-0555e364aad4b6296 terminated 2026-08-17 (migrated off AWS
@@ -706,7 +741,7 @@ check_cron_health() {
 }
 
 check_arc_sot_drift() {
-  # Self-heal (2026-08-29): the canonical-SOT repo (~/khaos-lab/arc-toolkit)
+  # Self-heal (2026-08-29): the canonical-SOT repo (~/khaos-lab/local-cloud-hub/apps/arc-toolkit)
   # symlinks every personal script from ~/.local/bin -- the one real risk
   # in that design is something replacing a symlink with a real file via
   # an atomic overwrite (mv, not a normal edit-in-place save), silently
@@ -854,9 +889,14 @@ if ! _write_garage_report >/dev/null 2>&1; then
 fi
 
 if [[ "$FLAGGED" -gt 0 ]]; then
-  _notify critical dialog-warning "${FLAGGED} thing(s) need attention" "$(_heal_detail FLAG 3)"
+  if _alert_flags_changed_or_due; then
+    _notify critical dialog-warning "${FLAGGED} thing(s) need attention · $(date +%H:%M)" "$(_heal_detail FLAG 3)" 120
+  fi
 elif [[ "$HEALED" -gt 0 ]]; then
+  _clear_alert_fingerprint
   _notify normal dialog-information "${HEALED} thing(s) self-healed automatically" "$(_heal_detail HEALED 3)"
+else
+  _clear_alert_fingerprint
 fi
 
 cat "$LATEST"

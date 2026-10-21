@@ -409,18 +409,22 @@ class BubbleManager:
         self.by_app = {}
         self.pending = []
 
-    def push(self, urgency, app, summary, body):
+    def push(self, urgency, app, summary, body, expires_at=None):
+        if expires_at is not None and time.time() >= expires_at:
+            return
         existing = self.by_app.get(app)
         if existing is not None and not existing.dismissed:
             existing.bump(urgency, summary, body)
             return
-        self.pending.append((urgency, app, summary, body))
+        self.pending.append((urgency, app, summary, body, expires_at))
         self._drain()
 
     def _drain(self):
         cap = int(self.cfg.get("bubble_max_visible", 4))
         while self.pending and len(self.active) < cap:
-            urgency, app, summary, body = self.pending.pop(0)
+            urgency, app, summary, body, expires_at = self.pending.pop(0)
+            if expires_at is not None and time.time() >= expires_at:
+                continue
             existing = self.by_app.get(app)
             if existing is not None and not existing.dismissed:
                 existing.bump(urgency, summary, body)
@@ -511,7 +515,7 @@ def main():
             while True:
                 m = q.get_nowait()
                 mgr.push(m.get("urgency", "normal"), m.get("app", "arc-pine"),
-                         m.get("summary", ""), m.get("body", ""))
+                         m.get("summary", ""), m.get("body", ""), m.get("expires_at"))
         except queue.Empty:
             pass
         return True

@@ -37,12 +37,15 @@ URGENCY_INT = {"low": 0, "normal": 1, "critical": 2}
 SECURITY_ALERT_APPS = {"arc-suricata", "arc-sagan", "arc-fail2ban"}
 
 
-def push_bubble(urgency, app, summary, body):
+def push_bubble(urgency, app, summary, body, expires_at=None):
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(1.0)
         s.connect(SOCK_PATH)
-        s.sendall(json.dumps({"urgency": urgency, "app": app, "summary": summary, "body": body}).encode())
+        message = {"urgency": urgency, "app": app, "summary": summary, "body": body}
+        if expires_at is not None:
+            message["expires_at"] = expires_at
+        s.sendall(json.dumps(message).encode())
         s.close()
     except Exception:
         pass  # bubble renderer not running -- log/sound/speak above still happened
@@ -57,6 +60,15 @@ def main():
     app = sys.argv[2]
     summary = sys.argv[3]
     body = sys.argv[4] if len(sys.argv) > 4 else ""
+    expires_at = None
+    if len(sys.argv) > 5:
+        try:
+            max_age = max(0, min(3600, int(sys.argv[5])))
+            if max_age:
+                import time
+                expires_at = time.time() + max_age
+        except ValueError:
+            pass
 
     cfg = pine.load_config()
     if pine.is_muted(cfg, app):
@@ -81,7 +93,7 @@ def main():
     # shows a silent bubble; see in_dnd_window's docstring). Logging above
     # already happened either way.
     if not snoozed:
-        push_bubble(urgency, app, summary, body)
+        push_bubble(urgency, app, summary, body, expires_at)
 
     # This is a one-shot CLI script, not a persistent daemon -- if it exits
     # while emit_audio is still mid-duck, the mute-restore in its `finally`

@@ -39,8 +39,11 @@ class GarageRouteChecks(unittest.TestCase):
 
         for unsafe in ("fetch(", "XMLHttpRequest", "WebSocket(", "localStorage", "sessionStorage", "eval("):
             self.assertNotIn(unsafe, self.body)
-        for remote in ("http://", "https://", "<img", "<iframe", "<link"):
+        for remote in ("http://", "https://", "<iframe", "<link"):
             self.assertNotIn(remote, self.body)
+        self.assertIn("img-src data:", self.body)
+        self.assertEqual(self.body.count("<img "), 1)
+        self.assertIn("data:image/png;base64,", self.body)
         self.assertIn("connect-src 'none'", self.body)
         self.assertIn("default-src 'none'", self.body)
         self.assertIn("frame-ancestors 'none'", self.body)
@@ -60,6 +63,7 @@ class GarageRouteChecks(unittest.TestCase):
 
         self.assertEqual(headers["status"], 200)
         self.assertIn("default-src 'none'", headers["Content-Security-Policy"])
+        self.assertIn("img-src data:", headers["Content-Security-Policy"])
         self.assertIn("connect-src 'none'", headers["Content-Security-Policy"])
         for tag in ("style", "script"):
             inline = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", self.body, re.S).group(1)

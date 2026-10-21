@@ -17,8 +17,9 @@ appointments, native task completion or reminder alarms. Descriptions are not ex
 Only the calendar is live. The seven system tiles remain clearly labeled samples.
 The Garage link serves the same single-file offline guide as Khaos Lab → Garage.
 It explains calendar refresh, check-mark boundaries, and fixture-only system
-tiles. The file has no external assets, network calls, host reads, or actions;
-the Hub route is just another way to open it. Its portable source is
+tiles, with a searchable day-one source-tracing bench. The guide is static and
+offline: it does not inspect binaries, execute code, make network calls, or read
+host data. Its portable source is
 `../surgery-workshop/garage.html`.
 This local browser app is separate from the permission-free Android fixture
 preview in `~/khaos-lab/android-mobile-ios/apps/khaos-hub-mobile`. It does not enable phone or Waydroid
@@ -32,6 +33,12 @@ python-dateutil. The service binds only 127.0.0.1:8766. Exact Host, Origin,
 Fetch Metadata and a random per-process write token prevent cross-origin writes.
 The service's data files use owner-only permissions.
 
+The Library stores references you explicitly save in
+~/.local/share/khaos-hub/library.sqlite3, separate from calendar check marks.
+It supports search, type filters, notes, JSON export/import, and runs locally
+without a browser account. It does not scrape browser history, fetch page
+contents, or provide offline copies. Review imported JSON before importing it.
+
 Stop/remove: disable `khaos-hub.service`, remove the unit and command link.
 Khaos Lab then shows an unavailable calendar message; its other views and Orage
-continue working. Preserve checks.db to retain marks.
+continue working. Preserve checks.db to retain marks and library.sqlite3 to retain saved references.

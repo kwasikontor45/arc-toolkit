@@ -1,4 +1,6 @@
-# Local Khaos Hub calendar
+# Khaos Hub · Source Workbench
+
+Local calendar and systems preview for Khaos Lab.
 
 Open http://127.0.0.1:8766/ or Khaos Lab → Calendar → Open Khaos Hub.
 The browser and desktop control panel share events, to-dos and persistent check

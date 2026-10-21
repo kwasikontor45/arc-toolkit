@@ -1,7 +1,7 @@
 {
-  "name": "Khaos Hub Local",
+  "name": "Khaos Hub \u00b7 Source Workbench",
   "short_name": "Khaos Hub",
-  "description": "Live local calendar and shared Khaos Lab check marks.",
+  "description": "Private local calendar and Khaos Lab Source Workbench, with clearly labeled sample system tiles.",
   "start_url": "/",
   "scope": "./",
   "display": "standalone",
@@ -9,10 +9,10 @@
   "theme_color": "#080b10",
   "icons": [
     {
-      "src": "icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "src": "icon-kimi-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
     }
   ]
 }

@@ -6,16 +6,16 @@
   <meta name="theme-color" content="#080b10">
   <meta name="color-scheme" content="dark">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none';">
-  <title>Khaos Hub · Local command view</title>
+  <title>Khaos Hub · Source Workbench</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="icon" href="icon-kimi-512.png" type="image/png">
   <link rel="stylesheet" href="app.css">
   <script src="app.js" defer></script>
 </head>
 <body>
   <div class="app-shell">
     <aside class="side-rail" aria-label="Primary navigation">
-      <a class="brand-mark" href="#overview" aria-label="Khaos Hub overview">K<span>✳</span></a>
+      <a class="brand-mark" href="#overview" aria-label="Khaos Hub overview"><img class="brand-icon" src="kimi-khaos-hub.png" alt=""></a>
       <nav class="rail-nav" aria-label="Sections">
         <button class="rail-link is-active" type="button" data-page="overview" aria-label="Overview" aria-current="page"><span class="rail-glyph">◫</span><span>Overview</span></button>
         <button class="rail-link" type="button" data-page="guide" aria-label="Guide"><span class="rail-glyph">⌘</span><span>Guide</span></button>
@@ -26,19 +26,28 @@
 
     <main class="main-shell">
       <header class="topbar">
-        <div class="topbar-brand"><span class="brand-mark small" aria-hidden="true">K<span>✳</span></span><span>KHAOS <b>HUB</b></span></div>
-        <div class="topbar-state"><span class="state-led"></span><span>LOCAL HUB</span></div>
+        <div class="topbar-brand"><span class="brand-mark small" aria-hidden="true"><img class="brand-icon" src="kimi-khaos-hub.png" alt=""></span><span>KHAOS <b>HUB</b></span></div>
+        <div class="topbar-state"><span class="state-led"></span><span>SOURCE WORKBENCH</span></div>
       </header>
 
       <section class="page page-overview" data-view="overview" aria-labelledby="page-title">
-        <div class="page-heading">
-          <div>
-            <p class="eyebrow">KHAOS LAB <span>/</span> PRIVATE HUB</p>
-            <h1 id="page-title">Systems, at a glance.</h1>
-            <p class="lede">A quiet command view for the things you run.</p>
+        <section class="workbench-hero" aria-labelledby="page-title">
+          <div class="hero-copy">
+            <p class="eyebrow">KHAOS LAB <span>/</span> SOURCE WORKBENCH</p>
+            <h1 id="page-title">Know the state.<br>See the source.</h1>
+            <p class="lede">A clear operating view for the work behind Khaos Lab.</p>
+            <div class="hero-signals" aria-label="Hub status">
+              <span><i aria-hidden="true"></i> LOCAL ONLY</span>
+              <span><i aria-hidden="true"></i> CALENDAR LIVE</span>
+              <span><i aria-hidden="true"></i> TILES SAMPLE</span>
+            </div>
           </div>
-          <div class="sample-stamp"><span class="stamp-led"></span><span>SAMPLE SNAPSHOT<br><b>06:00 · OCT 05</b></span></div>
-        </div>
+          <figure class="hero-art">
+            <img src="kimi-khaos-hub.png" alt="Kimi, illustrated in electric blue light, with the KIMI wordmark">
+            <figcaption><span>KIMI</span><span>WORKBENCH MARK · 01</span></figcaption>
+          </figure>
+          <span class="hero-index" aria-hidden="true">KH<span> / </span>01</span>
+        </section>
 
         <div class="preview-banner" role="status">
           <span class="preview-icon" aria-hidden="true">i</span>
@@ -48,7 +57,7 @@
 
         <section aria-labelledby="calendar-title" class="calendar-section"><h2 id="calendar-title">Your schedule</h2><p>Appointments, events, and to-dos are grouped here. Repeating to-dos are tracked occurrence by occurrence. Completed items are tucked away, not deleted. Orage stays unchanged.</p><p id="calendar-state" role="status">Connecting to calendar…</p><div id="calendar-list"></div></section>
         <div class="section-head">
-          <div><p class="eyebrow">OVERVIEW</p><h2>System pulse</h2></div>
+          <div><p class="eyebrow">SYSTEM MAP <span>/</span> SAMPLE</p><h2>Systems</h2></div>
           <div class="scenario-control" role="group" aria-label="Preview sample scenario">
             <button class="scenario is-selected" type="button" data-scenario="0" aria-pressed="true">Nominal</button>
             <button class="scenario" type="button" data-scenario="1" aria-pressed="false">Partial</button>

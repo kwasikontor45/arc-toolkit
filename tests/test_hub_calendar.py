@@ -42,6 +42,19 @@ END:VCALENDAR
         self.assertFalse(saved['done'])
         self.assertEqual(original, self.hub.SOURCE.read_bytes())
 
+    def test_kimi_workbench_icons_are_explicit_local_static_assets(self):
+        assets = self.hub.static_assets()
+        expected = {
+            '/icon-kimi-512.png': 'image/png',
+            '/kimi-khaos-hub.png': 'image/png',
+            '/favicon.ico': 'image/png',
+        }
+        for route, mime in expected.items():
+            self.assertIn(route, assets)
+            root, name, actual_mime = assets[route]
+            self.assertEqual(actual_mime, mime)
+            self.assertTrue((root / name).is_file())
+
     def test_unknown_entry_and_nonboolean_check_rejected(self):
         with self.assertRaises(ValueError):
             self.hub.set_checked({'id': 'not-an-appointment', 'done': True, 'revision': 0})

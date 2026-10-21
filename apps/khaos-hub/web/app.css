@@ -435,3 +435,11 @@ body { background:radial-gradient(ellipse at 72% 2%,rgba(var(--phase-rgb),.07),t
 }
 @media (min-width:900px) { .workbench-hero { min-height:292px;margin-top:0;padding:36px 38px;border-radius:24px; } .hero-art { width:min(100%,205px);margin-right:22px; } }
 @media (prefers-reduced-motion:no-preference) { .hero-art { animation:hero-arrive .8s cubic-bezier(.2,.75,.25,1) both; } @keyframes hero-arrive { from { opacity:0;transform:translateY(8px) rotate(2deg); } to { opacity:1;transform:translateY(0) rotate(2deg); } } }
+
+/* Flight deck identity */
+.topbar-state { gap: 10px; white-space: nowrap; }
+.deck-label { color: #c6d5db; }
+.deck-label i { padding: 0 3px; color: #69818a; font-style: normal; }
+.deck-label b { color: #ff6374; font-weight: 850; text-shadow: 0 0 12px rgba(255,99,116,.28); }
+.phase-chip { padding: 5px 8px; border: 1px solid rgba(196,167,231,.35); border-radius: 999px; color: #c4a7e7; background: rgba(196,167,231,.08); font-size: 8px; letter-spacing: .12em; }
+@media (max-width: 420px) { .topbar-state { gap: 6px; font-size: 7px; letter-spacing: .055em; } .phase-chip { padding: 4px 6px; font-size: 7px; } }

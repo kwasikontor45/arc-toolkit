@@ -96,6 +96,7 @@ MOBILE_PREVIEW_SCRIPT = MOBILE_ACCESS_DIR / "automators" / "serve-preview.sh"
 MOBILE_ACCESS_GUIDE = MOBILE_ACCESS_DIR / "md-s" / "mobile-access-operator-2026-10-17.md"
 WORKBENCH_DRILL_DIR = HOME / "khaos-lab/local-cloud-hub/operations/workbench/17oct2026-drills"
 WORKBENCH_DRILL_INDEX = WORKBENCH_DRILL_DIR / "README.md"
+IPHONE_PRIVACY_CARD = WORKBENCH_DRILL_DIR / "iphone-cleanup-privacy-card.md"
 HEADER_ICON_PATH = HOME / ".local/share/khaos-lab/header-icon.png"
 HEADER_BG_PATH   = HOME / ".local/share/khaos-lab/header-bg.png"
 SIDEBAR_BG_PATH  = HOME / ".local/share/khaos-lab/sidebar-bg.png"
@@ -1516,6 +1517,7 @@ CATEGORIES = {
         # Never wired: `arc site url` (secret address -- terminal only) and `arc site rotate`.
     ],
     "Mobile Access": [],  # special view: iPhone fixture, Waydroid test, and denied standby slot
+    "iPhone Privacy": [],  # guided, read-only on-device checklist; no phone or network controls
     "Maintenance": [
         Action("Disk overview", "arc disk"),
         Action("System health", "arc health"),
@@ -3294,6 +3296,83 @@ class CockpitView(TileView):
         return FG
 
 
+class IPhonePrivacyView(View):
+    """A short, read-only walkthrough for manual iPhone privacy and battery review.
+
+    This view never queries or changes the phone. The linked source checklist remains
+    authoritative; the Tailnet preview is governed separately in Mobile Access.
+    """
+
+    scrollable = True
+
+    STEPS = (
+        ("01  Storage", "Settings  →  General  →  iPhone Storage",
+         "Review the list after it finishes loading. Remove only recognizable downloads you can fetch again; offload apps to keep their data."),
+        ("02  Sharing", "Settings  →  Privacy & Security  →  Safety Check",
+         "Use Manage Sharing & Access. Review one section at a time and remove only access or devices you recognize as obsolete."),
+        ("03  App access", "Settings  →  Privacy & Security",
+         "Review Location, Photos, Contacts, Bluetooth, Microphone, Camera, Local Network, and Tracking. Keep permissions needed by features you use."),
+        ("04  Observe", "Settings  →  Privacy & Security  →  App Privacy Report",
+         "Turn it on, use the phone normally, then review sensor access and contacted domains after a few days. A domain alone is not proof of tracking."),
+        ("05  Battery", "Settings  →  Battery",
+         "Check Battery usage and Battery Health. Start with apps iOS identifies for background activity; keep Optimized Battery Charging enabled."),
+        ("06  Test safely", "Use synthetic data in Kataleya",
+         "Do not enter credentials, recovery codes, financial details, or real health information. This panel cannot inspect or manage the iPhone."),
+    )
+
+    def build(self):
+        f = self.app.f
+        def responsive(label):
+            label.bind("<Configure>",
+                       lambda event, target=label: target.configure(
+                           wraplength=max(150, event.width - 24)), add="+")
+            return label
+
+        header = tk.Frame(self.frame, bg=SURFACE)
+        header.pack(fill="x", padx=6, pady=(4, 10))
+        tk.Label(header, text="IPHONE  /  PRIVATE BY DESIGN", font=f.small,
+                 bg=SURFACE, fg=self.app.phase_accent, anchor="w").pack(fill="x")
+        tk.Label(header, text="A calm, manual privacy pass", font=f.big,
+                 bg=SURFACE, fg=FG, anchor="w").pack(fill="x", pady=(2, 4))
+        responsive(tk.Label(header,
+                 text="Work through these steps on your iPhone. Nothing here reads or changes device settings.",
+                 font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left",
+                 wraplength=680)).pack(fill="x")
+
+        notice, notice_body = ui.rounded_frame(self.frame, BORDER, bg=OVERLAY, radius=14)
+        notice.pack(fill="x", padx=6, pady=(0, 8))
+        tk.Label(notice_body, text="PRIVATE PREVIEW  ·  CLOSED", font=f.label,
+                 bg=OVERLAY, fg=GOLD, anchor="w").pack(fill="x", padx=12, pady=(9, 2))
+        responsive(tk.Label(notice_body,
+                 text="This checklist does not open Tailnet access. Keep the phone route closed until effective allow/deny policy tests pass.",
+                 font=f.small, bg=OVERLAY, fg=FG_MUTED, anchor="w", justify="left",
+                 wraplength=680)).pack(fill="x", padx=12, pady=(0, 9))
+
+        for title, path, detail in self.STEPS:
+            shell, card = ui.rounded_frame(self.frame, BORDER, bg=OVERLAY, radius=14)
+            shell.pack(fill="x", padx=6, pady=3)
+            tk.Label(card, text=title, font=f.label, bg=OVERLAY,
+                     fg=self.app.phase_accent, anchor="w").pack(fill="x", padx=12, pady=(8, 1))
+            responsive(tk.Label(card, text=path, font=f.small, bg=OVERLAY, fg=FG,
+                                anchor="w", justify="left", wraplength=680)).pack(
+                                    fill="x", padx=12, pady=(0, 2))
+            responsive(tk.Label(card, text=detail, font=f.small, bg=OVERLAY, fg=FG_MUTED,
+                                anchor="w", justify="left", wraplength=680)).pack(
+                                    fill="x", padx=12, pady=(0, 9))
+
+        footer = tk.Frame(self.frame, bg=SURFACE)
+        footer.pack(fill="x", padx=6, pady=(8, 4))
+        ui.button(footer, "Open full checklist", command=lambda: self.app.run_action(
+            Action("Open full iPhone privacy checklist",
+                   "retext --preview " + shlex.quote(str(IPHONE_PRIVACY_CARD)), detach=True)),
+            font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+            padx=10, pady=6).pack(side="left", padx=(0, 6))
+        ui.button(footer, "Mobile Access", command=lambda: self.app.select("Mobile Access"),
+                  font=f.small, bg=OVERLAY, fg=FG_MUTED, hover_bg=BG,
+                  padx=10, pady=6).pack(side="left")
+        self.app.refresh_scroll(self.frame)
+
+
 class MobileAccessView(View):
     """A compact, fail-closed map of the three mobile lanes. The iPhone lane can
     only serve the synthetic fixture; Waydroid remains a local test guest, and
@@ -4561,6 +4640,7 @@ class HelpView(View):
         "Dev": "Git health, Arc Toolkit source-of-truth, mirrors, and development workflows",
         "Remote Access": "Tailscale, private notes site, and backup tunnel",
         "Mobile Access": "iPhone fixture, local Waydroid test, and denied standby slot",
+        "iPhone Privacy": "Guided manual iPhone privacy and battery checklist · read-only",
         "Maintenance": "Backups, cleanup, updates, and system repair",
         "Personal": "Personal utilities and daily workflow actions",
     }
@@ -4855,7 +4935,7 @@ class App:
                      "Audio": AudioView, "LT": LtView, "Commands": CommandsView,
                      "Cockpit": CockpitView, "Garage": GarageView, "Inventory": InventoryView,
                      "Display": DisplayView, "Logs": LogsView, "Find": FindView,
-                     "Mobile Access": MobileAccessView}
+                     "Mobile Access": MobileAccessView, "iPhone Privacy": IPhonePrivacyView}
 
     def __init__(self):
         # className explicit: WM_CLASS was generic "Tk" (never "khaos-lab" as the .desktop

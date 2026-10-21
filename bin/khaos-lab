@@ -1276,6 +1276,7 @@ CATEGORIES = {
     "Help": [],       # command-center guide and category jump-off
     "SOP": [],        # read the rules, review GAMEPLAN, start + acknowledge a session
     "Status": [],     # special view: live host/security dashboard
+    "Time Sync": [],  # special view: read-only clock and NTP health
     "Audio": [        # default output controls; the system mixers remain the advanced path
         Action("Open full audio mixer (pavucontrol)", "pavucontrol", detach=True),
         Action("Open hardware mixer (alsamixer)", "konsole --hold -e alsamixer", detach=True),
@@ -2377,6 +2378,56 @@ class AudioView(View):
         self.level_var = None
 
 
+def read_time_sync_snapshot(runner):
+    """Read clock/NTP health without changing time, services, or network settings."""
+    ok, status = runner.run("timedatectl status", timeout=6)
+    service_states = {}
+    for unit in ("ntpsec", "systemd-timesyncd"):
+        unit_ok, output = runner.run(f"systemctl is-active {unit}", timeout=5)
+        value = output.strip().splitlines()[-1] if output.strip() else "unknown"
+        if not unit_ok and ("Failed to connect" in output or "Operation not permitted" in output):
+            value = "unavailable"
+        elif not unit_ok and value in ("unknown", "not-found"):
+            value = "not installed"
+        service_states[unit] = value
+
+    peer_ok, peer_output = runner.run("ntpq -pn", timeout=6)
+    peers = []
+    for line in peer_output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("*", "+", "-", "x", "o", "#")):
+            peers.append(stripped[:180])
+            if len(peers) == 8:
+                break
+    sync_match = re.search(r"^System clock synchronized:\s*(.+)$", status, re.MULTILINE)
+    return {
+        "ok": ok,
+        "status": status[:1800],
+        "sync": sync_match.group(1).strip().lower() if sync_match else "unknown",
+        "services": service_states,
+        "peers": peers,
+        "peer_error": "" if peer_ok else peer_output[:240],
+    }
+
+
+def time_sync_summary(snapshot):
+    if not snapshot.get("ok"):
+        return "clock status unavailable"
+    sync = snapshot.get("sync", "unknown")
+    states = snapshot.get("services", {})
+    active = [unit for unit, state in states.items() if state == "active"]
+    unavailable = [state for state in states.values() if state == "unavailable"]
+    if sync == "yes":
+        label = "clock synchronized"
+    elif sync == "no":
+        label = "clock not synchronized"
+    else:
+        label = "clock sync unknown"
+    provider = ", ".join(active) if active else (
+        "daemon status unavailable" if unavailable else "no active NTP daemon")
+    return f"{label}  ·  {provider}"
+
+
 class StatusView(TileView):
     NAME = "status"
     EVERY = 15000
@@ -2400,6 +2451,11 @@ class StatusView(TileView):
                   padx=12, pady=5).pack(anchor='w', padx=10, pady=(0, 8))
         audio_tile = self.labels['audio'].master
         ui.button(audio_tile, 'Open audio controls', command=lambda: self.app.select('Audio'),
+                  font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                  padx=12, pady=5).pack(anchor='w', padx=10, pady=(0, 8))
+        time_tile = self.labels['timesync'].master
+        ui.button(time_tile, 'Open time sync details',
+                  command=lambda: self.app.select('Time Sync'),
                   font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
                   padx=12, pady=5).pack(anchor='w', padx=10, pady=(0, 8))
 
@@ -2484,6 +2540,7 @@ class StatusView(TileView):
         (5, 0, "notify", "Notify stack (voice · bubbles · site)"),
         (5, 1, "waydroid", "Waydroid · Android sandbox"),
         (6, 0, "lt", "LT · personal board"), (6, 1, "audio", "Sound output"),
+        (7, 0, "timesync", "Clock · NTP synchronization"),
     ]
 
     def checks(self):
@@ -2573,10 +2630,13 @@ class StatusView(TileView):
         def audio():
             return audio_status_line(read_audio_snapshot(r))
 
+        def timesync():
+            return time_sync_summary(read_time_sync_snapshot(self.app.runner))
+
         return {"dns": dns, "break": brk, "disk": disk, "services": services, "uptime": uptime,
                 "selfheal": selfheal, "idsips": idsips,
                 "awslab": awslab, "inventory": inventory, "notify": notify, "waydroid": waydroid,
-                "lt": lt_board, "audio": audio}
+                "lt": lt_board, "audio": audio, "timesync": timesync}
 
     def color_for(self, key, val):
         if key == "services":
@@ -2615,7 +2675,89 @@ class StatusView(TileView):
             if "muted" in val:
                 return GOLD
             return TEAL
+        if key == "timesync":
+            if "status unavailable" in val or "unknown" in val:
+                return FG_MUTED
+            return TEAL if "clock synchronized" in val and "not synchronized" not in val else GOLD
         return FG
+
+
+class TimeSyncView(View):
+    """Read-only clock and NTP diagnostics; all controls only refresh the view."""
+
+    scrollable = True
+    NAME = "time-sync-view"
+    EVERY = 30000
+
+    def build(self):
+        f = self.app.f
+        heading = tk.Frame(self.frame, bg=SURFACE)
+        heading.pack(fill="x", pady=(0, 10))
+        tk.Label(heading, text="SYSTEMS  /  TIME SYNC", font=f.small, bg=SURFACE,
+                 fg=self.app.phase_accent, anchor="w").pack(fill="x")
+        tk.Label(heading, text="Clock and NTP health", font=f.big, bg=SURFACE,
+                 fg=FG, anchor="w").pack(fill="x", pady=(3, 2))
+        tk.Label(heading,
+                 text="Live read-only status. Refresh checks the clock, daemon, and selected peer; it never changes system settings.",
+                 font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left",
+                 wraplength=680).pack(fill="x")
+        heading.bind("<Configure>", lambda event: [
+            child.configure(wraplength=max(event.width - 8, 140))
+            for child in heading.winfo_children()
+            if isinstance(child, tk.Label) and child.cget("justify") == "left"
+        ], add="+")
+
+        shell, body = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16)
+        shell.pack(fill="x", pady=(8, 4))
+        tk.Frame(body, bg=self.app.phase_accent, height=1).pack(fill="x")
+        self.summary = tk.Label(body, text="Checking clock…", font=f.label, bg=OVERLAY,
+                                fg=FG, anchor="w", justify="left", wraplength=680)
+        self.summary.pack(fill="x", padx=12, pady=(10, 4))
+        self.details = tk.Label(body, text="", font=f.small, bg=OVERLAY, fg=FG_MUTED,
+                                anchor="nw", justify="left", wraplength=680)
+        self.details.pack(fill="x", padx=12, pady=(0, 10))
+        body.bind("<Configure>", lambda event: [
+            label.configure(wraplength=max(event.width - 28, 140))
+            for label in (self.summary, self.details)
+        ], add="+")
+
+        controls = tk.Frame(self.frame, bg=SURFACE)
+        controls.pack(fill="x", pady=(4, 8))
+        self.refresh_button = ui.button(controls, "Refresh status", command=self.refresh,
+                                        font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                                        padx=12, pady=6)
+        self.refresh_button.pack(side="left")
+        self.updated = tk.Label(controls, text="", font=f.small, bg=SURFACE,
+                                fg=FG_MUTED, anchor="e")
+        self.updated.pack(side="right", padx=8)
+        self.poll(self.NAME, self.EVERY, lambda: read_time_sync_snapshot(self.app.runner),
+                  self.apply_snapshot)
+        self.kick(self.NAME)
+
+    def refresh(self):
+        self.updated.configure(text="checking…")
+        self.kick(self.NAME)
+
+    def apply_snapshot(self, snapshot):
+        if not self.alive():
+            return
+        summary = time_sync_summary(snapshot)
+        color = TEAL if snapshot.get("sync") == "yes" else GOLD if snapshot.get("sync") == "no" else ROSE
+        self.summary.configure(text=summary, fg=color)
+        status = snapshot.get("status", "")
+        service_lines = [f"{unit}: {state}" for unit, state in snapshot.get("services", {}).items()]
+        lines = [status] if status else ["timedatectl status: unavailable"]
+        if service_lines:
+            lines.extend(["", "NTP daemons", *service_lines])
+        if snapshot.get("peers"):
+            lines.extend(["", "NTP peers · selected peer is marked *", *snapshot["peers"]])
+        elif snapshot.get("peer_error"):
+            lines.extend(["", f"NTP peer query unavailable: {snapshot['peer_error']}"])
+        else:
+            lines.extend(["", "NTP peer query returned no selected/reachable peer yet."])
+        self.details.configure(text="\n".join(lines))
+        self.updated.configure(text=f"updated {time.strftime('%H:%M:%S')}")
+        self.app.refresh_scroll(self.frame)
 
 
 class CalendarView(View):
@@ -4619,6 +4761,7 @@ class HelpView(View):
     DESCRIPTIONS = {
         "SOP": "Read SOT/GAMEPLAN, satisfy the gate, and review compliance",
         "Status": "Live workstation health and security snapshot",
+        "Time Sync": "Local time, clock synchronization, NTP daemon, and selected peer",
         "Audio": "Default output level and mute controls · full and hardware mixers",
         "Calendar": "Check events and to-dos; shared live with local Khaos Hub",
         "LT": "Personal focus and tasks from the existing lt board",
@@ -4931,7 +5074,8 @@ class ActionsView(View):
 
 # ── the app ──────────────────────────────────────────────────────────────────
 class App:
-    SPECIAL_VIEWS = {"Help": HelpView, "SOP": SopView, "Status": StatusView, "Calendar": CalendarView,
+    SPECIAL_VIEWS = {"Help": HelpView, "SOP": SopView, "Status": StatusView,
+                     "Time Sync": TimeSyncView, "Calendar": CalendarView,
                      "Audio": AudioView, "LT": LtView, "Commands": CommandsView,
                      "Cockpit": CockpitView, "Garage": GarageView, "Inventory": InventoryView,
                      "Display": DisplayView, "Logs": LogsView, "Find": FindView,

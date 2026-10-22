@@ -369,7 +369,7 @@ _arc_greeting_vpn_location() {
 
 _arc_greeting_motto_body() {
   local _phase="$1" _rose='\033[38;2;245;198;215m' _glint _reset='\033[0m'
-  local _width _line _before _body='E Pluribus Unum  · ☠  · In God We Trust' _glints='✧'
+  local _width _line _before _pad _body='E Pluribus Unum  · ☠️💀☠️  · In God We Trust' _glints='✧'
   _width=$(_arc_greeting_width)
   (( _width < 52 )) || _glints='✧ ✧'
   _arc_greeting_phase_colors "$_phase"
@@ -378,11 +378,13 @@ _arc_greeting_motto_body() {
     _rose=''; _glint=''; _reset=''
   fi
   while IFS= read -r _line; do
+    _pad=$(( (_width - ${#_line} - 2) / 2 )); (( _pad >= 2 )) || _pad=2
+    printf '%*s' "$_pad" ''
     if [[ "$_line" == *'✧'* ]]; then
       _before=${_line%%✧*}
-      printf '  %b%s%b%b%s%b\n' "$_rose" "$_before" "$_reset" "$_glint" "${_line#"$_before"}" "$_reset"
+      printf '%b%s%b%b%s%b\n' "$_rose" "$_before" "$_reset" "$_glint" "${_line#"$_before"}" "$_reset"
     else
-      printf '  %b%s%b\n' "$_rose" "$_line" "$_reset"
+      printf '%b%s%b\n' "$_rose" "$_line" "$_reset"
     fi
   done < <(_arc_greeting_wrap "$_body $_glints" "$((_width - 4))")
 }
@@ -393,13 +395,13 @@ _arc_greeting_rule() {
   local _width _hull
   _width=$(_arc_greeting_width)
   if [[ "${_ARC_GREETING_SHIP:-0}" == 1 ]]; then
-    _hull=$(printf '%*s' "$_width" '' | tr ' ' '_')
+    _hull=$(printf '%*s' "$_width" '' | tr ' ' '.')
     printf '  %b\\%s/%b\n' "$MUTED" "$_hull" "$N"
-    _hull=$(printf '%*s' "$((_width - 4))" '' | tr ' ' '_')
+    _hull=$(printf '%*s' "$((_width - 4))" '' | tr ' ' '.')
     printf '    %b\\%s/%b\n' "$MUTED" "$_hull" "$N"
     printf '      %b~    ~    ~    ~    ~%b\n\n' "$MUTED" "$N"
   else
-    _hull=$(printf '%*s' "$((_width - 8))" '' | tr ' ' '_')
+    _hull=$(printf '%*s' "$((_width - 8))" '' | tr ' ' '.')
     printf '\n   %b\\%s/%b\n     %b~   ~   ~%b\n\n' "$MUTED" "$_hull" "$N" "$MUTED" "$N"
   fi
 }
@@ -644,8 +646,8 @@ _arc_greeting_collect_rows() {
 
   local _memSnapshot _rootSnapshot=''
   _memSnapshot=$(timeout 0.3s free -h 2>/dev/null || true)
+  _rootSnapshot=$(timeout 0.3s df -h / 2>/dev/null || true)
   if [[ "$profile" == cloud ]]; then
-    _rootSnapshot=$(timeout 0.3s df -h / 2>/dev/null || true)
     local cloud_mem_used cloud_mem_total cloud_disk cloud_uptime cloud_shell='bash'
     [[ -n "${ZSH_VERSION:-}" ]] && cloud_shell='zsh'
     cloud_mem_used=$(printf '%s\n' "$_memSnapshot" | awk '/Mem:/ {print $3}')
@@ -670,6 +672,14 @@ _arc_greeting_collect_rows() {
   mem_total=$(printf '%s\n' "$_memSnapshot" | awk '/Mem:/ {print $2}')
 
   mem_used=${mem_used:-unknown}; mem_free=${mem_free:-unknown}; mem_total=${mem_total:-unknown}
+  local disk_total disk_used disk_free disk_text
+  disk_total=$(printf '%s\n' "$_rootSnapshot" | awk 'NR==2 {print $2}')
+  disk_used=$(printf '%s\n' "$_rootSnapshot" | awk 'NR==2 {print $3}')
+  disk_free=$(printf '%s\n' "$_rootSnapshot" | awk 'NR==2 {print $4}')
+  disk_text='unavailable'
+  if [[ -n "$disk_total" && -n "$disk_used" && -n "$disk_free" ]]; then
+    disk_text="${disk_total} total · ${disk_used} used · ${disk_free} free"
+  fi
 
   local LT_FOCUS="$HOME/.local/share/lt/focus" focus="—"
   [[ -s "$LT_FOCUS" ]] && focus=$(cat "$LT_FOCUS")
@@ -787,6 +797,7 @@ except Exception:
 
   _arc_greeting_capture_section 'OPERATIONS'
   _arc_greeting_capture_row 'RAM' "${mem_used}/${mem_total} used · ${mem_free} free" "$TEXT"
+  _arc_greeting_capture_row 'DISK' "$disk_text" "$TEXT"
   _arc_greeting_capture_row 'FOCUS' "${focus}" "$TEXT"
   _arc_greeting_capture_row 'TASKS' "${tasks_text}" "${tasks_color}"
   local ops_color="$snap_color"
@@ -911,7 +922,7 @@ _arc_greeting() {
   _arc_greeting_uncached > "$_temp" || true
   _ARC_GREETING_OBSERVED_AT="$_now"
   if (( _ascii )); then
-    _payload=$(python3 -c 'import sys; t=sys.stdin.read(); m={"●":"*","·":".","✓":"+","✗":"x","—":"-","–":"-","☠":"X","✧":"*"}; sys.stdout.write("".join(m.get(c,c) if ord(c)<128 or c in m else "?" for c in t))' < "$_temp" 2>/dev/null) || _payload='Greeting unavailable'
+    _payload=$(python3 -c 'import sys; t=sys.stdin.read(); m={"●":"*","·":".","✓":"+","✗":"x","—":"-","–":"-","☠":"X","💀":"X","️":"","✧":"*"}; sys.stdout.write("".join(m.get(c,c) if ord(c)<128 or c in m else "?" for c in t))' < "$_temp" 2>/dev/null) || _payload='Greeting unavailable'
     printf '%s\n' "$_payload" > "$_temp"
   fi
   while IFS= read -r _payload; do printf '%s\n' "$_payload"; done < "$_temp"
@@ -949,7 +960,7 @@ _arc_greeting_capture_footer() {
   _arc_greeting_capture_row "$2" "$3${4:+ · $4}"
   [[ -z "$5" ]] || _arc_greeting_capture_row DNS_RADAR "$3 · $5"
   _arc_greeting_capture_row LOCAL_TIME "$6 · $1"
-  _arc_greeting_capture_row '@MOTTO' 'E Pluribus Unum · ☠ · In God We Trust ✧ ✧'
+  _arc_greeting_capture_row '@MOTTO' 'E Pluribus Unum · ☠️💀☠️ · In God We Trust ✧ ✧'
 }
 _arc_greeting_uncached() {
   local _rows _width _color=0 _result=0
@@ -965,6 +976,7 @@ _arc_greeting_uncached() {
 }
 _arc_greeting_cockpit_render() {
   python3 - "$@" <<'ARC_COCKPIT_PY'
+from datetime import date
 import sys,re,unicodedata
 from pathlib import Path
 path,widthText,phase,colorText,style=sys.argv[1:]
@@ -993,27 +1005,35 @@ def wrap(s,n):
   out.append(line)
  return out
 def clean(s):return re.sub(r"\x1b\[[0-9;]*m","",s)
-groups={};section="COMMAND";words=[];mascot=""
+groups={};section="COMMAND";words=[];studioLabel=""
 lookup={"234;154;151":palette["nyx"],"94;200;237":palette["choice"],"246;193;119":palette["desire"],"196;167;231":palette["still-pine"],"164;194;139":sage,"112;124;132":dim,"226;229;233":white}
 for raw in Path(path).read_text(encoding="utf-8").splitlines():
  f=raw.split("\t",2)
  if len(f)<2:continue
  key,text=safe(f[0]),safe(f[1]);tag=f[2] if len(f)>2 else ""
  if key=="@SECTION":section={"IDENTITY & INTENT":"COMMAND","OPERATIONS":"OPERATIONS","SYSTEMS":"SYSTEMS","RADAR & NAV":"RADAR"}.get(text,text);continue
- if key=="KATALEYA":
-  mascot=text
+ if key=="KHAOS-LAB":
+  studioLabel=text
   continue
  base=next((c for marker,c in lookup.items() if marker in tag),white)
  (words if key=="WOD" else groups.setdefault(section,[])).append((key,text,base))
+sunTzuQuotes=(
+ "All warfare is based on deception.",
+ "Attack him where he is unprepared.",
+ "Appear weak when you are strong.",
+)
+sunTzuQuote=sunTzuQuotes[(date.today().toordinal()-1)%len(sunTzuQuotes)]
+groups.setdefault("OPERATIONS",[]).append(("SUN TZU","“"+sunTzuQuote+"”",phaseColor))
 values={k:t for records in groups.values() for k,t,_ in records}
-def ram_pct(s):
- m=re.search(r"([\d.]+)([KMGTPE]?i?B?)/([\d.]+)([KMGTPE]?i?B?)",s,re.I)
- if not m:return None
- def n(v,u):
-  x=u[:1].upper();return float(v)*1024**("KMGTPE".find(x)+1 if x else 0)
- total=n(m[3],m[4]);return min(100,max(0,round(n(m[1],m[2])*100/total))) if total else None
 def emit(s=""):print("  "+s if s else "")
-def divider(title):emit(paint("// "+title.upper(),sage)+" "+paint("·"*max(2,limit-cells(title)-5),dim))
+def emit_center(s):
+ visible=clean(s)
+ emit(" "*max(0,(limit-cells(visible))//2)+s)
+def divider(title):
+ if plain:title=title.replace("·","-")
+ marker,rule=("> ","-") if plain else ("⌜ ","─")
+ label=marker+title.upper()
+ emit(paint(label,sage,True)+" "+paint(rule*max(2,limit-cells(label)-1),dim))
 def record(key,text,base,labelWidth=9):
  tint=base
  labelWidth=min(labelWidth,max(4,limit//3))
@@ -1023,42 +1043,54 @@ def record(key,text,base,labelWidth=9):
  if key=="FOCUS":tint=palette["choice"]
  chunks=wrap(text,max(8,limit-labelWidth-4))
  return ["  "+paint(key.ljust(labelWidth),dim)+"  "+paint(chunks[0],tint)]+["  "+" "*labelWidth+"  "+paint(x,tint) for x in chunks[1:]]
-def gauge(pct,tint):
- slots=min(10,max(4,limit-16));filled=round(pct*slots/100);bar=("#"*filled+"."*(slots-filled)) if plain else ("▓"*filled+"░"*(slots-filled))
- color=green if pct<70 else amber if pct<90 else red
- return paint(f"{pct:>3}%",color,True)+" "+paint("[",dim)+paint(bar,tint)+paint("]",dim)
 limit=width-4
 headerLeft="RIG 418 ·"
 headerRight="b6ones6aw · ARCHITECT-OF-CHAOS"
+headerText=headerLeft+"  "+headerRight
 def header_left():
  return paint("RIG ",sage)+paint("418",red,True)+paint(" ·",dim)
 def header_right():
  return paint("b6ones6aw",sage)+paint(" · ",dim)+paint("ARCHITECT-OF-CHAOS",dim)
-if cells(headerLeft)+2+cells(headerRight)<=limit:
- emit(header_left()+" "*(limit-cells(headerLeft)-cells(headerRight))+header_right())
+if cells(headerText)<=limit:
+ emit_center(header_left()+"  "+header_right())
 else:
- headerText=headerLeft+" "+headerRight
  def header_line(chunk):
   out=""
   for part in re.split(r"(RIG |418|b6ones6aw|ARCHITECT-OF-CHAOS|·)",chunk):
    tint=red if part=="418" else dim if part in ("·","ARCHITECT-OF-CHAOS") else sage
    out+=paint(part,tint,part=="418")
   return out
- for chunk in wrap(headerText,limit):emit(header_line(chunk))
-if mascot:
- description=mascot.split("·",1)[-1].strip() if "·" in mascot else "quiet companion"
- caption="KATALEYA // "+description
- B=chr(92)
- art=["   /"+B+"      /"+B,"  /  "+B+"____/  "+B,"  "+B+"  / /"+B+" "+B+"  /","   "+B+"/ /  "+B+" "+B+"/","     "+B+"_"+B+"||_/","       ||"]
- for i,line in enumerate(art):
-  if i==2 and width>=52:
-   emit(paint(line,phaseColor,True)+"   "+paint("KATALEYA",rose,True)+" "+paint("// "+description,dim))
-  else:
-   emit(paint(line,phaseColor,True))
- if width<52:
-  for chunk in wrap(caption,limit):emit(paint(chunk,rose,True))
+ for chunk in wrap(headerText,limit):emit_center(header_line(chunk))
+if studioLabel:
+ brand="KHAOS-LAB · "+studioLabel
+ if plain:brand=brand.replace("·","-")
+ marker="> " if plain else "⌜ "
+ brandLine=marker+"KHAOS-LAB "+("- " if plain else "· ")+studioLabel
+ if cells(brandLine)<=limit:
+  emit_center(paint(marker+"KHAOS-LAB",phaseColor,True)+" "+paint(("- " if plain else "· ")+studioLabel,dim))
+ else:
+  emit_center(paint(marker+"KHAOS-LAB",phaseColor,True))
+  for chunk in wrap(studioLabel,limit):emit_center(paint(chunk,dim))
+# Put identity, brand, and the live local clock before rotating/status content.
+for key,text,base in groups.get("RADAR",[]):
+ if key=="LOCAL_TIME":
+  suffix=" · "+phase
+  stamp=text[:-len(suffix)] if text.endswith(suffix) else text
+  badge="[ "+phase.upper()+" ]"
+  labelWidth=min(11,max(4,limit//3));available=max(8,limit-labelWidth-4)
+  chunks=wrap(stamp,available)
+  if cells(chunks[-1])+2+cells(badge)<=available:chunks[-1]+="  "+badge
+  for i,chunk in enumerate(chunks):
+   prefix="  "+paint(key.ljust(labelWidth),dim)+"  " if i==0 else "  "+" "*labelWidth+"  "
+   if chunk.endswith(badge):
+    stampPart=chunk[:-len(badge)].rstrip()
+    print(prefix+paint(stampPart,base)+"  "+paint(badge,phaseColor,True))
+   else:print(prefix+paint(chunk,base))
+  if not chunks[-1].endswith(badge):emit(paint(badge,phaseColor,True))
+ elif key=="@MOTTO":
+  for chunk in wrap(text,limit):emit_center(paint(chunk,rose))
 # WOD keeps its four established content colors, while the phase remains ambient.
-if words:divider("WOD / INTERCEPT")
+if words:divider("WOD · INTERCEPT")
 for _,text,_base in words:
  parts=re.split(r"( / | · )",text);colored=""
  for i,part in enumerate(parts):colored+=paint(part,dim if part.strip() in ("/","·") else list(palette.values())[min(i//2,3)])
@@ -1082,31 +1114,14 @@ for title,name in (("OPERATIONS","OPERATIONS"),("SYSTEMS","SYSTEMS")):
  if groups.get(name):divider(title)
  for key,text,base in groups.get(name,[]):
   if key=="RAM":
-   pct=ram_pct(text)
    for line in record(key,text,base):emit(line)
-   if pct is not None:emit("  "+paint("LOAD",dim)+"  "+gauge(pct,palette["desire"]))
   else:
    for line in record(key,text,base):emit(line)
-if groups.get("RADAR"):divider("RADAR / NAV")
+if groups.get("RADAR"):divider("RADAR · NAV")
 for key,text,base in groups.get("RADAR",[]):
- if key=="@MOTTO":
-  for chunk in wrap(text,limit-4):emit("  "+paint(chunk,rose))
- elif key=="LOCAL_TIME":
-  suffix=" · "+phase
-  stamp=text[:-len(suffix)] if text.endswith(suffix) else text
-  badge="[ "+phase.upper()+" ]"
-  labelWidth=min(11,max(4,limit//3));available=max(8,limit-labelWidth-4)
-  chunks=wrap(stamp,available)
-  if cells(chunks[-1])+2+cells(badge)<=available:chunks[-1]+="  "+badge
-  for i,chunk in enumerate(chunks):
-   prefix="  "+paint(key.ljust(labelWidth),dim)+"  " if i==0 else "  "+" "*labelWidth+"  "
-   if chunk.endswith(badge):
-    stampPart=chunk[:-len(badge)].rstrip()
-    print(prefix+paint(stampPart,base)+"  "+paint(badge,phaseColor,True))
-   else:print(prefix+paint(chunk,base))
-  if not chunks[-1].endswith(badge):emit(paint(badge,phaseColor,True))
- else:
-  for line in record(key,text,base,11):emit(line)
+ if key in ("@MOTTO","LOCAL_TIME"):
+  continue
+ for line in record(key,text,base,11):emit(line)
 emit()
 ARC_COCKPIT_PY
 }

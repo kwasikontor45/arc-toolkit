@@ -7,7 +7,7 @@ class GreetingTests(unittest.TestCase):
   self.home=self.root/"home";self.home.mkdir()
   (self.home/".config/arc").mkdir(parents=True)
   (self.home/".local/share/lt").mkdir(parents=True)
-  (self.home/".config/arc/motd").write_text("I–III: WWSJD · Right & tight · Swiss cheese\nKATALEYA: ʚ🦋ɞ · quiet companion\nMO: ~/dev-notes/intel-ops/MO.md\n")
+  (self.home/".config/arc/motd").write_text("I–III: WWSJD · Right & tight · Swiss cheese\nKHAOS-LAB: DEV-STUDIO\nMO: ~/dev-notes/intel-ops/MO.md\n")
   (self.home/".local/share/lt/focus").write_text("a-long-process-name-"*8)
   self.log=self.root/"probes"
   bodies={
@@ -46,7 +46,9 @@ class GreetingTests(unittest.TestCase):
     out=self.runGreeting(shell,TEST_STATE=state,ARC_GREETING_CACHE="0")
     self.assertIn("HOST",out);self.assertIn("LOCAL_RADAR",out);self.assertNotIn("\x1b",out)
     self.assertTrue("DIRECT_ROUTE" in out or "NO_CARRIER" in out or "NETWORK_UNKNOWN" in out)
-    if state=="broken":self.assertIn("unknown",out)
+    if state=="broken":
+     self.assertIn("unknown",out)
+     self.assertRegex(out,r"DISK\s+unavailable")
     if state=="missing":self.assertIn("unavailable",out)
  def test_modes(self):
   for shell in ("bash","zsh"):
@@ -105,24 +107,53 @@ class GreetingTests(unittest.TestCase):
 
  def test_cockpit_panels_and_flight_deck_identity(self):
   out=self.runGreeting(COLUMNS="96",ARC_GREETING_CACHE="0")
-  self.assertRegex(out,r"(?m)^\s+RIG 418 · +b6ones6aw · ARCHITECT-OF-CHAOS$")
+  self.assertRegex(out,r"(?m)^\s+RIG 418 ·  b6ones6aw · ARCHITECT-OF-CHAOS$")
   self.assertRegex(out,r"\[ (?:NYX|CHOICE|DESIRE|STILL-PINE) \]")
   header=out.splitlines()[0]
-  self.assertRegex(header,r"^\s+RIG 418 · +b6ones6aw · ARCHITECT-OF-CHAOS$")
+  self.assertRegex(header,r"^\s+RIG 418 ·  b6ones6aw · ARCHITECT-OF-CHAOS$")
+  self.assertGreater(len(header)-len(header.lstrip()),15)
+  brand=next(line for line in out.splitlines() if "KHAOS-LAB" in line)
+  self.assertGreater(len(brand)-len(brand.lstrip()),25)
   time_line=next(line for line in out.splitlines() if "LOCAL_TIME" in line)
   self.assertRegex(time_line,r"\[ (?:NYX|CHOICE|DESIRE|STILL-PINE) \]")
   self.assertNotRegex(time_line,r"· still-pine$")
-  self.assertIn("// OPERATIONS",out);self.assertIn("// SYSTEMS",out)
-  self.assertIn("KATALEYA // quiet companion",out)
-  self.assertIn("||_/",out)
+  self.assertIn("⌜ OPERATIONS",out);self.assertIn("⌜ SYSTEMS",out)
+  self.assertIn("⌜ KHAOS-LAB",out)
+  self.assertIn("DEV-STUDIO",out)
+  self.assertNotIn("KATALEYA",out);self.assertNotIn("COMPANION",out)
+  from datetime import date
+  sunTzuQuotes=("All warfare is based on deception.","Attack him where he is unprepared.","Appear weak when you are strong.")
+  self.assertIn("SUN TZU",out)
+  self.assertIn(sunTzuQuotes[(date.today().toordinal()-1)%len(sunTzuQuotes)],out)
+  motto=next(line for line in out.splitlines() if "E Pluribus" in line)
+  self.assertIn("☠️💀☠️",motto)
+  import unicodedata
+  motto_width=sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in ("W","F") else 1 for c in motto.strip())
+  self.assertEqual(len(motto)-len(motto.lstrip()),2+(92-motto_width)//2)
+  self.assertNotIn("//",out)
+  self.assertNotIn("||_/",out);self.assertNotIn("____/",out)
   self.assertIn("IDENTITY   lt · fixture · arc",out)
   self.assertIn("USER       fixture-user",out)
-  self.assertRegex(out,r"LOAD\s+43%\s+\[▓{4}░{6}\]")
+  self.assertNotIn("LOAD",out)
   self.assertRegex(out,r"HOST\s+swap 0B/7.9Gi · shell bash")
-  self.assertNotIn("DISK",out);self.assertNotIn("53G/69G free",out)
+  self.assertRegex(out,r"DISK\s+122G total · 52G used · 70G free")
+  self.assertIn("df-args:-h /",self.log.read_text().splitlines())
   self.assertNotIn("rootfs",out)
-  self.assertNotIn("df-args:-h /",self.log.read_text().splitlines())
   self.assertNotIn("+---",out);self.assertNotIn("|___",out)
+ def test_ship_rule_uses_dots_not_underscores(self):
+  code="source "+SOURCE+"; _ARC_GREETING_SHIP=1; COLUMNS=52; _arc_greeting_rule"
+  result=subprocess.run(["bash","-c",code],env=self.env,capture_output=True,text=True,timeout=3)
+  self.assertEqual(result.returncode,0,result.stderr)
+  self.assertIn("................",result.stdout)
+  self.assertNotIn("________",result.stdout)
+
+ def test_plain_cockpit_markers_are_ascii_and_art_free(self):
+  out=self.runGreeting(ARC_GREETING_STYLE="plain",COLUMNS="52",ARC_GREETING_CACHE="0")
+  self.assertIn("> OPERATIONS",out);self.assertIn("> KHAOS-LAB - DEV-STUDIO",out)
+  marker_lines=[line for line in out.splitlines() if line.strip().startswith(">")]
+  self.assertTrue(marker_lines and all(line.isascii() for line in marker_lines))
+  self.assertNotIn("//",out);self.assertNotIn("____/",out);self.assertNotIn("||_/",out)
+
  def test_circadian_phase_schedule_boundaries(self):
   code="source "+SOURCE+"; _arc_greeting_clock() { printf '%s\\n' \"$TEST_HOUR\"; }; _arc_greeting_current_phase"
   expected={"0":"nyx","5":"nyx","6":"choice","10":"choice","11":"desire","16":"desire","17":"still-pine","20":"still-pine","21":"nyx","23":"nyx"}
@@ -133,7 +164,7 @@ class GreetingTests(unittest.TestCase):
 
  def test_circadian_color_is_limited_to_live_phase_signals(self):
   rows=self.root/"circadian-fixture.tsv"
-  fixture="WOD\tgossamer / gos-uh-mer · noun · a very light, delicate material or thread\n@SECTION\tOPERATIONS\nRAM\t3.3Gi/7.7Gi used · 4.4Gi free\t\\033[38;2;226;229;233m\n@SECTION\tSYSTEMS\nHOST\tswap 0B/7.9Gi · shell zsh 5.9/omz\t\\033[38;2;226;229;233m\n@SECTION\tRADAR & NAV\nLOCAL_TIME\tSun, 18 Oct 2026 · 05:55:45 PDT · PHASE\t\\033[38;2;226;229;233m\n@MOTTO\tE Pluribus Unum · ☠ · In God We Trust ✧ ✧\n"
+  fixture="WOD\tgossamer / gos-uh-mer · noun · a very light, delicate material or thread\n@SECTION\tOPERATIONS\nRAM\t3.3Gi/7.7Gi used · 4.4Gi free\t\\033[38;2;226;229;233m\n@SECTION\tSYSTEMS\nHOST\tswap 0B/7.9Gi · shell zsh 5.9/omz\t\\033[38;2;226;229;233m\n@SECTION\tRADAR & NAV\nLOCAL_TIME\tSun, 18 Oct 2026 · 05:55:45 PDT · PHASE\t\\033[38;2;226;229;233m\n@MOTTO\tE Pluribus Unum · ☠️💀☠️ · In God We Trust ✧ ✧\n"
   palette={"nyx":"234;154;151","choice":"94;200;237","desire":"246;193;119","still-pine":"196;167;231"}
   for phase,rgb in palette.items():
    rows.write_text(fixture.replace("PHASE",phase))
@@ -148,8 +179,9 @@ class GreetingTests(unittest.TestCase):
    self.assertIn("\x1b[1;38;2;"+rgb+"m[ "+phase.upper()+" ]",result.stdout)
    self.assertIn("\x1b[38;2;234;154;151mgossamer",result.stdout)
    self.assertIn("\x1b[38;2;245;198;215mE Pluribus",result.stdout)
-   self.assertIn("\x1b[1;38;2;134;210;160m 43%",result.stdout)
-   self.assertIn("// WOD / INTERCEPT",result.stdout)
+   self.assertNotIn("LOAD",result.stdout)
+   self.assertIn("⌜ WOD · INTERCEPT",plain_output)
+   self.assertNotIn("//",plain_output)
    plain=re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]","",result.stdout)
    lines=plain.splitlines(); motto=next(i for i,line in enumerate(lines) if "E Pluribus" in line)
    self.assertTrue(lines[motto-1].strip().startswith("LOCAL_TIME"))

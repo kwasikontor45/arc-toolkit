@@ -118,6 +118,14 @@ class GreetingTests(unittest.TestCase):
   self.assertNotIn("rootfs",out)
   self.assertNotIn("df-args:-h /",self.log.read_text().splitlines())
   self.assertNotIn("+---",out);self.assertNotIn("|___",out)
+ def test_circadian_phase_schedule_boundaries(self):
+  code="source "+SOURCE+"; _arc_greeting_clock() { printf '%s\\n' \"$TEST_HOUR\"; }; _arc_greeting_current_phase"
+  expected={"0":"nyx","5":"nyx","6":"choice","10":"choice","11":"desire","16":"desire","17":"still-pine","20":"still-pine","21":"nyx","23":"nyx"}
+  for hour,phase in expected.items():
+   result=subprocess.run(["bash","-c",code],env={**self.env,"TEST_HOUR":hour},capture_output=True,text=True,timeout=3)
+   self.assertEqual(result.returncode,0,result.stderr)
+   self.assertEqual(result.stdout.strip(),phase)
+
  def test_circadian_color_is_limited_to_live_phase_signals(self):
   rows=self.root/"circadian-fixture.tsv"
   fixture="WOD\tgossamer / gos-uh-mer · noun · a very light, delicate material or thread\n@SECTION\tOPERATIONS\nRAM\t3.3Gi/7.7Gi used · 4.4Gi free\t\\033[38;2;226;229;233m\n@SECTION\tSYSTEMS\nHOST\tswap 0B/7.9Gi · shell zsh 5.9/omz\t\\033[38;2;226;229;233m\n@SECTION\tRADAR & NAV\nLOCAL_TIME\tSun, 18 Oct 2026 · 05:55:45 PDT · PHASE\t\\033[38;2;226;229;233m\n@MOTTO\tE Pluribus Unum · ☠ · In God We Trust ✧ ✧\n"

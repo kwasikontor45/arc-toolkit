@@ -429,7 +429,6 @@ _arc_greeting_value() {
         [[ "$_token" != '>' ]] || _tint="$_ARC_GREETING_PHASE_COLOR" ;;
       HOST)
         case "$_token" in
-          disk) _valueTint="$_ARC_GREETING_CHOICE_COLOR" ;;
           swap) _valueTint="$_ARC_GREETING_DESIRE_COLOR" ;;
           shell) _valueTint="$_ARC_GREETING_STILL_PINE_COLOR" ;;
         esac

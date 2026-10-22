@@ -40,6 +40,7 @@ fi
 install -m 0755 "$script_dir/arc_break_taskbar.py" "$install_root/arc_break_taskbar.py"
 install -m 0644 "$script_dir/README.md" "$install_root/README.md"
 install -m 0644 "$script_dir/icon.png" "$install_root/icon.png"
+install -m 0644 "$script_dir/flamingo-mark.png" "$install_root/flamingo-mark.png"
 shared_ui="$script_dir/../../bin/_arc_ui.py"
 if [ ! -f "$shared_ui" ]; then
   printf '%s\n' "Missing shared circadian UI engine: $shared_ui" >&2

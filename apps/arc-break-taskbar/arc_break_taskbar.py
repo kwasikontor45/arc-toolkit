@@ -35,6 +35,7 @@ import _arc_ui as ui
 APP_ID = "studio.kontor.ArcBreakTaskbar"
 APP_NAME = "Arc Break"
 LOGO_FILE = Path(__file__).resolve().with_name('icon.png')
+FLAMINGO_FILE = Path(__file__).resolve().with_name('flamingo-mark.png')
 CONFIG_ROOT = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "arc-break-taskbar"
 STATE_ROOT = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "arc-break-taskbar"
 CONFIG_FILE = CONFIG_ROOT / "settings.json"
@@ -225,7 +226,8 @@ class ArcBreak:
           scrollbar {{ background: transparent; }}
           scrollbar trough {{ border-radius: 999px; }}
           scrollbar slider {{ border-radius: 999px; min-width: 10px; min-height: 28px; background: {ACCENT}; }}
-          .arc-title {{ color: {TEXT}; font-size: 20px; font-weight: 600; }}
+          .arc-title {{ color: {TEXT}; font-size: 18px; font-weight: 600; }}
+          .arc-kicker {{ color: {ACCENT}; font-size: 10px; font-weight: 600; letter-spacing: 1.1px; }}
           .arc-clock {{ color: {ACCENT}; font-size: 48px; font-weight: 300; }}
           .arc-subtle {{ color: {MUTED}; font-size: 12px; }}
           button.arc-action {{ background-image: linear-gradient(145deg, {self._rgba(SURFACE, .96)}, {self._rgba(BG, .96)});
@@ -266,7 +268,7 @@ class ArcBreak:
 
     def _build_window(self):
         self.window = Gtk.ApplicationWindow(application=self.app, title=APP_NAME)
-        self.window.set_default_size(330, 282 if self._window_timer_mode else 220)
+        self.window.set_default_size(360, 350 if self._window_timer_mode else 300)
         self.window.set_resizable(True)
         self.window.set_position(Gtk.WindowPosition.CENTER)
         if LOGO_FILE.exists():
@@ -278,12 +280,23 @@ class ArcBreak:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_border_width(20)
         self.window.add(box)
-        if LOGO_FILE.exists():
-            logo = Gtk.Image.new_from_pixbuf(GdkPixbuf.Pixbuf.new_from_file_at_scale(str(LOGO_FILE), 48, 48, True))
-            box.pack_start(logo, False, False, 0)
-        title = Gtk.Label(label="ARC / BREAK")
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=11)
+        header.set_halign(Gtk.Align.CENTER)
+        box.pack_start(header, False, False, 2)
+        if FLAMINGO_FILE.is_file():
+            mark = Gtk.Image.new_from_pixbuf(
+                GdkPixbuf.Pixbuf.new_from_file_at_scale(str(FLAMINGO_FILE), 38, 38, True))
+            mark.set_tooltip_text("Khaos Lab flamingo")
+            header.pack_start(mark, False, False, 0)
+        identity = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        identity.set_valign(Gtk.Align.CENTER)
+        header.pack_start(identity, False, False, 0)
+        kicker = Gtk.Label(label="KHAOS LAB", xalign=0)
+        kicker.get_style_context().add_class("arc-kicker")
+        identity.pack_start(kicker, False, False, 0)
+        title = Gtk.Label(label="ARC / BREAK", xalign=0)
         title.get_style_context().add_class("arc-title")
-        box.pack_start(title, False, False, 0)
+        identity.pack_start(title, False, False, 0)
         self.status_label = Gtk.Label()
         self.status_label.get_style_context().add_class("arc-subtle")
         box.pack_start(self.status_label, False, False, 0)
@@ -309,10 +322,13 @@ class ArcBreak:
             button.connect("clicked", lambda _button, cb=callback: cb())
             self.controls_row.pack_start(button, True, True, 0)
         self.cycle_hint = Gtk.Label()
+        self.cycle_hint.set_line_wrap(True)
+        self.cycle_hint.set_max_width_chars(36)
         self.cycle_hint.get_style_context().add_class("arc-subtle")
         box.pack_start(self.cycle_hint, False, False, 4)
         self.window.show_all()
         self._update()
+        self.window.resize(360, 350 if self.phase != "stopped" else 300)
 
     def _open_settings(self, *_args):
         dialog = Gtk.Dialog(title="Arc Break · settings", transient_for=self.window,
@@ -475,7 +491,7 @@ class ArcBreak:
         if self.window:
             timer_mode = self.phase != "stopped"
             if timer_mode != self._window_timer_mode:
-                self.window.resize(330, 282 if timer_mode else 220)
+                self.window.resize(360, 350 if timer_mode else 300)
                 self._window_timer_mode = timer_mode
             if self.phase == "stopped":
                 self.window.set_title(APP_NAME)

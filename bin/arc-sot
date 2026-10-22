@@ -17,7 +17,7 @@
 # its own... single canonical SOT... pull/update my pc or any other new pc."
 set -uo pipefail
 
-REPO="$HOME/khaos-lab/arc-toolkit"
+REPO="$HOME/khaos-lab/local-cloud-hub/apps/arc-toolkit"
 BIN="$REPO/bin"
 USB_MIRROR="/mnt/storage/Persistent/arc-toolkit-mirror"
 LOCAL_BIN="$HOME/.local/bin"
@@ -234,8 +234,12 @@ cmd_pull() {
     echo "  ${R}✗${N}  uncommitted local changes -- snapshot or stash first (arc sot snapshot)"
     return 1
   fi
-  echo -n "  git pull... "
-  git pull -q origin main && echo "${G}done${N}" || { echo "${R}failed${N}"; return 1; }
+  if [[ "${ARC_SOT_OFFLINE:-0}" == 1 ]]; then
+    echo "  local source selected; skipping network update"
+  else
+    echo -n "  git pull... "
+    git pull -q origin main && echo "${G}done${N}" || { echo "${R}failed${N}"; return 1; }
+  fi
 
   echo -e "\n  installing scripts (symlinks):"
   mkdir -p "$LOCAL_BIN"
@@ -344,6 +348,8 @@ cmd_install_autostart() {
 # ── bootstrap: fresh machine, nothing installed yet ────────────────────────
 cmd_bootstrap() {
   local src="${1:-git@github.com:kwasikontor45/arc-toolkit.git}"
+  local offline=0
+  [[ -e "$src" || "$src" == file://* ]] && offline=1
   echo -e "$HR\n  ${C}${B}arc sot bootstrap${N}  —  fresh-machine setup\n$HR\n"
   if [[ -d "$REPO/.git" ]]; then
     echo "  ${Y}!${N}  $REPO already exists -- use 'arc sot pull' instead"
@@ -352,7 +358,11 @@ cmd_bootstrap() {
   mkdir -p "$(dirname "$REPO")"
   echo "  cloning from: $src"
   git clone "$src" "$REPO" || { echo "  ${R}✗${N} clone failed"; return 1; }
-  cmd_pull
+  if (( offline )); then
+    ARC_SOT_OFFLINE=1 cmd_pull || { echo "  ${R}✗${N} bootstrap install failed"; return 1; }
+  else
+    cmd_pull || { echo "  ${R}✗${N} bootstrap install failed"; return 1; }
+  fi
   echo -e "\n  Run these next, in order, reviewing each before confirming:"
   echo "    arc sot install-sudoers"
   echo "    arc sot install-systemd"

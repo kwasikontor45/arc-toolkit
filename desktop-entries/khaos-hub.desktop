@@ -3,6 +3,6 @@ Type=Application
 Name=Khaos Hub
 Comment=Live local calendar and shared Khaos Lab check marks
 Exec=xdg-open http://127.0.0.1:8766/
-Icon=/home/architect-of-chaos/khaos-lab/local-cloud-hub/apps/arc-toolkit/apps/khaos-hub/web/kimi-wallpaper.jpg
+Icon=/home/architect-of-chaos/khaos-lab/local-cloud-hub/apps/arc-toolkit/apps/khaos-hub/web/icon-kimi-round-512.png
 Terminal=false
 Categories=Utility;

@@ -11,7 +11,7 @@ Visual language matches kontor.studio / kontor.studio/bootlog: JetBrains Mono
 (installed locally, no webfont fetch needed), raised mineral surfaces, readable
 copy, a softened scanline/vignette, and circadian phase accents.
 
-Output lives on local disk (~/khaos-lab/notes-site) as of 2026-09-19 -- it no
+Output lives on local disk (~/khaos-lab/local-cloud-hub/operations/current/notes-site) -- it no
 longer depends on the USB vault being mounted (vault/archive below is just an
 optional extra source, skipped if absent). The "lock" is now the arc-site-server
 layers (loopback-only + tailnet identity + secret path), not the vault mount.
@@ -30,7 +30,7 @@ except ImportError:
     sys.exit(1)
 
 HOME = Path.home()
-OUT = HOME / "khaos-lab" / "notes-site"   # local disk since 2026-09-19 (was the USB vault)
+OUT = HOME / "khaos-lab" / "local-cloud-hub" / "operations" / "current" / "notes-site"
 
 TREES = {
     "arc-lt-cmc": HOME / "arc-lt-cmc",
@@ -39,13 +39,18 @@ TREES = {
     "vault/archive": Path("/mnt/storage/archive"),
 }
 
-SKIP_DIR_NAMES = {".git", "node_modules", "__pycache__", ".arc-notes", "master-archive"}
+SKIP_DIR_NAMES = {
+    ".git", "node_modules", "__pycache__", ".arc-notes", "master-archive",
+    # Private case files and the owner-only cabinet must never enter a generated index.
+    "private-intel", "personal-cabinet",
+}
 # Current reference source directory. Keep the dashboard, its companion guides, and the
 # Kataleya map on one explicit source path so a folder move cannot silently blank the page.
-REFS_DIR = HOME / "khaos-lab" / "bio..:☠️:..hazard" / "refs"
+REFS_DIR = HOME / "khaos-lab" / "local-cloud-hub" / "personal-cabinet" / "reference" / "refs"
 DASHBOARD_SOURCE = REFS_DIR / "resources-in-place.md"
+CARD_SOURCE = HOME / "khaos-lab" / "local-cloud-hub" / "personal-cabinet" / "reference" / "personal-business-card-beta.html"
 
-FAVICON_SOURCE = HOME / ".local/share/arc/notes-site-favicon.png"
+FAVICON_SOURCE = Path(__file__).resolve().parent.parent / "assets/khaos-lab/flamingo-favicon-round.png"
 FAVICON_TAG = ""
 if FAVICON_SOURCE.exists():
     _b64 = base64.b64encode(FAVICON_SOURCE.read_bytes()).decode()
@@ -340,7 +345,7 @@ def render_markdown(text: str) -> str:
     return _markdown.markdown(text, extensions=["fenced_code", "tables"])
 
 
-def page_shell(system_label: str, body: str, active: str, extra_script: str = "") -> str:
+def page_shell(system_label: str, body: str, active: str, extra_script: str = "", relative_prefix: str = "") -> str:
     home_cls = ' class="uplink-btn active"' if active == "home" else ' class="uplink-btn"'
     browse_cls = ' class="uplink-btn active"' if active == "browse" else ' class="uplink-btn"'
     blueprint_cls = ' class="uplink-btn active"' if active == "blueprint" else ' class="uplink-btn"'
@@ -364,6 +369,7 @@ def page_shell(system_label: str, body: str, active: str, extra_script: str = ""
     <a href="index.html"{home_cls}>dashboard</a>
     <a href="browse.html"{browse_cls}>browse // search</a>
     <a href="blueprint.html"{blueprint_cls}>blueprint</a>
+    <a href="{relative_prefix}personal-card.html" class="uplink-btn">personal card</a>
   </nav>
 
   {body}
@@ -388,7 +394,7 @@ def collect_notes():
                 continue
             if f.suffix.lower() not in (".md", ".txt"):
                 continue
-            if any(part in SKIP_DIR_NAMES for part in f.parts):
+            if any(part in SKIP_DIR_NAMES for part in f.relative_to(tree_root).parts):
                 continue
             try:
                 text = f.read_text(encoding="utf-8", errors="ignore")
@@ -404,7 +410,7 @@ def collect_notes():
 # listed boxes that no longer exist. It is now rendered from arc-inv's generated
 # inventory.json -- registry (what we say exists) reconciled against live probes --
 # so it can only be as stale as the last scan, and says exactly when that was.
-INVENTORY_JSON = HOME / "khaos-lab" / "inventory" / "inventory.json"
+INVENTORY_JSON = HOME / "khaos-lab" / "local-cloud-hub" / "operations" / "current" / "inventory" / "inventory.json"
 KIND_TITLES = [("site", "sites & edge"), ("cloud-instance", "cloud instances"), ("service", "services"),
                ("container", "containers"), ("device", "devices"), ("storage", "storage"),
                ("job", "scheduled jobs"), ("repo", "repositories"), ("account", "accounts"),
@@ -577,17 +583,28 @@ def kataleya_flow_map():
 
 
 def main():
-    OUT.mkdir(parents=True, exist_ok=True)
+    # The site contains personal notes. Keep the generated copy owner-only even
+    # when a systemd service runs the build with the default 022 umask.
+    if OUT.is_symlink():
+        raise SystemExit(f"refusing symlink output directory: {OUT}")
+    OUT.mkdir(parents=True, exist_ok=True, mode=0o700)
+    OUT.chmod(0o700)
     notes_dir = OUT / "notes"
     # Slugs hash the full source path -- a moved/renamed file gets a new
     # slug, and the old rendered page for its previous path was otherwise
     # never cleaned up, silently accumulating stale orphans every time
     # something in the four source trees moves. Full rebuild each run
     # anyway, so wiping first is correct, not just tidy.
+    if notes_dir.is_symlink():
+        raise SystemExit(f"refusing symlink notes directory: {notes_dir}")
+    if notes_dir.exists() and not notes_dir.is_dir():
+        raise SystemExit(f"refusing non-directory notes path: {notes_dir}")
     if notes_dir.exists():
+        notes_dir.chmod(0o700)
         for f in notes_dir.glob("*.html"):
             f.unlink()
-    notes_dir.mkdir(exist_ok=True)
+    notes_dir.mkdir(exist_ok=True, mode=0o700)
+    notes_dir.chmod(0o700)
 
     notes = collect_notes()
     print(f"found {len(notes)} notes across {len(TREES)} trees")
@@ -599,8 +616,9 @@ def main():
         body_html = render_markdown(n["content"])
         title = f"{n['tree']}/{n['rel']}"
         page_body = f"<div class='panel'><span class='tag'>{html.escape(n['tree'])}</span>{body_html}</div>"
-        page = page_shell(title, page_body, active="browse")
+        page = page_shell(title, page_body, active="browse", relative_prefix="../")
         out_file.write_text(page, encoding="utf-8")
+        out_file.chmod(0o600)
 
         index_entries.append({
             "tree": n["tree"],
@@ -623,10 +641,12 @@ def main():
     </div>
     """
     browse_script = "<script>const INDEX = " + index_json + ";\n" + SEARCH_JS + "</script>"
-    (OUT / "browse.html").write_text(
+    browse_file = OUT / "browse.html"
+    browse_file.write_text(
         page_shell("ARCHIVE_SEARCH", browse_body, active="browse", extra_script=browse_script),
         encoding="utf-8",
     )
+    browse_file.chmod(0o600)
 
     # Dashboard (home) page, from resources-in-place.md
     if DASHBOARD_SOURCE.exists():
@@ -643,19 +663,35 @@ def main():
     {inventory_summary_panel(_load_inventory())}
     <div class="panel">{dash_html}</div>
     """
-    (OUT / "index.html").write_text(
+    index_file = OUT / "index.html"
+    index_file.write_text(
         page_shell("NOTES_ARCHIVE", dash_body, active="home"),
         encoding="utf-8",
     )
+    index_file.chmod(0o600)
 
-    (OUT / "blueprint.html").write_text(
+    blueprint_file = OUT / "blueprint.html"
+    blueprint_file.write_text(
         page_shell("BLUEPRINT", inventory_blueprint_body(), active="blueprint"),
         encoding="utf-8",
     )
+    blueprint_file.chmod(0o600)
 
-    (OUT / "style.css").write_text(CSS, encoding="utf-8")
+    css_file = OUT / "style.css"
+    css_file.write_text(CSS, encoding="utf-8")
+    css_file.chmod(0o600)
 
-    print(f"built: {OUT}/index.html (dashboard), {OUT}/browse.html (search), {OUT}/blueprint.html")
+    if CARD_SOURCE.is_file() and not CARD_SOURCE.is_symlink():
+        card_html = CARD_SOURCE.read_text(encoding="utf-8")
+        if FAVICON_TAG and "rel=\"icon\"" not in card_html:
+            card_html = card_html.replace("</head>", f"{FAVICON_TAG}\n</head>", 1)
+        if "</main>" in card_html:
+            card_html = card_html.replace("</main>", '<p class="note"><a href="index.html">notes site</a></p>\n</main>', 1)
+        card_file = OUT / "personal-card.html"
+        card_file.write_text(card_html, encoding="utf-8")
+        card_file.chmod(0o600)
+
+    print(f"built: {OUT}/index.html (dashboard), {OUT}/browse.html (search), {OUT}/blueprint.html, {OUT}/personal-card.html")
     print(f"{len(notes)} notes indexed")
 
 

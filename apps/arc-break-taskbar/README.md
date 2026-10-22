@@ -37,6 +37,6 @@ The installer copies this app and the shared circadian palette into `~/.local/op
 
 The older `arc break start|stop|status` commands still control the supervised daemon, which keeps separate state and timing. `arc break gui` opens this standalone app. The daemon no longer configures Genmon; run only one timer at a time.
 
-Official logo: the unchanged https://kwasikontor.dev/favikon.png, installed as icon.png. The live countdown overlays that image; the launcher/window/header retain the same identity.
+Official logo: the Kataleya orb mark from https://kwasikontor.dev/favikon.png, rendered as a transparent circular crop in icon.png. The live countdown overlays that image; the launcher/window/header retain the same identity.
 
 The optional user unit owns a running timer independently of tool sessions and restarts after a crash. Login resume remains conditional on saved active state. Arc Heal restores a missing process only for an active saved phase, and respects explicit Stop. Lab status/start/stop/open controls use this taskbar timer. CLI: --status, --start, --stop, --resume-only.

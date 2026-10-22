@@ -38,10 +38,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--mint); outline-
 .topbar { position: sticky; z-index: 5; top: 0; display: flex; align-items: center; justify-content: space-between; height: 56px; padding: 0 17px; border-bottom: 1px solid rgba(var(--paper-rgb),.08); background: rgba(var(--ink-rgb),.82); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
 .topbar-brand { display: flex; align-items: center; gap: 9px; color: var(--paper); font-size: 11px; font-weight: 750; letter-spacing: .12em; }
 .topbar-brand b { color: var(--muted); font-weight: 650; }
-.brand-mark { position: relative; display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid rgba(141,226,189,.3); border-radius: 15px; background: linear-gradient(145deg,rgba(141,226,189,.14),rgba(145,191,255,.04)); color: var(--mint); font-size: 22px; font-weight: 800; text-decoration: none; box-shadow: inset 0 1px rgba(255,255,255,.08),0 8px 25px rgba(8,11,16,.35); }
+.brand-mark { position: relative; display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid rgba(141,226,189,.3); border-radius: 50%; background: linear-gradient(145deg,rgba(141,226,189,.14),rgba(145,191,255,.04)); color: var(--mint); font-size: 22px; font-weight: 800; text-decoration: none; box-shadow: inset 0 1px rgba(255,255,255,.08),0 8px 25px rgba(8,11,16,.35); }
 .brand-mark span { position: absolute; top: 4px; right: 4px; color: var(--blue); font-size: 9px; }
-.brand-icon { display:block;width:100%;height:100%;border-radius:9px;object-fit:cover; }
-.brand-mark.small { width: 27px; height: 27px; border-radius: 9px; font-size: 15px; }
+.brand-icon { display:block;width:100%;height:100%;border-radius:50%;object-fit:cover; }
+.brand-mark.small { width: 27px; height: 27px; border-radius: 50%; font-size: 15px; }
 .brand-mark.small span { top: 1px; right: 2px; font-size: 7px; }
 .topbar-state,.sample-stamp { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 9px; font-weight: 750; letter-spacing: .09em; }
 .state-led,.stamp-led,.rail-led { width: 7px; height: 7px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 12px rgba(145,191,255,.72); }
@@ -355,7 +355,7 @@ h1 { max-width: 650px; margin-bottom: 6px; font-size: clamp(25px,7vw,38px); line
   --shadow:none; font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
 }
 body { background:radial-gradient(ellipse at 72% 2%,rgba(var(--phase-rgb),.07),transparent 33rem),linear-gradient(150deg,#111a17,var(--ink) 68%); }
-.brand-mark { width:40px;height:40px;border:1px solid var(--line-bright);border-radius:12px;background:rgba(var(--surface-rgb),.78);box-shadow:none; }
+.brand-mark { width:40px;height:40px;border:1px solid var(--line-bright);border-radius:50%;background:rgba(var(--surface-rgb),.78);box-shadow:none; }
 .brand-mark span { color:var(--amber); }
 .sample-stamp,.preview-banner,.scenario-control,.status-card,.guide-card,.detail-dialog { border-radius:12px;box-shadow:none; }
 .preview-banner { border-color:var(--line);background:rgba(var(--surface-rgb),.72); }
@@ -466,7 +466,7 @@ body { background:radial-gradient(ellipse at 72% 2%,rgba(var(--phase-rgb),.07),t
 @media (min-width: 900px) {
   .app-shell { grid-template-columns: 68px minmax(0,1fr); }
   .side-rail { gap: 25px; padding: 17px 8px; }
-  .brand-mark { width: 40px; height: 40px; border-radius: 13px; }
+  .brand-mark { width: 40px; height: 40px; border-radius: 50%; }
   .rail-nav { gap: 5px; }
   .rail-link { min-height: 52px; gap: 4px; border-radius: 12px; }
   .topbar { height: 52px; padding-inline: 30px; }
@@ -492,7 +492,7 @@ body { background:radial-gradient(ellipse at 72% 2%,rgba(var(--phase-rgb),.07),t
   .workbench-hero { min-height: 170px; }
   .calendar-section { margin: 16px 0; padding: 13px 0; }
   .calendar-section > p:not([role="status"]) { font-size: 11px; line-height: 1.45; }
-  .library-form,.library-tools { padding: 13px; gap: 9px; border-radius: 13px; }
+  .library-form,.library-tools { padding: 13px; gap: 9px; border-radius: 50%; }
   .library-actions button,.library-import,.library-card-actions button { min-height: 42px; }
 }
 @media (prefers-reduced-motion: no-preference) {

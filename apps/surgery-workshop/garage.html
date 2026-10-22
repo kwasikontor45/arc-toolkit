@@ -70,7 +70,7 @@
       <p class="trace-intro">Fixture path · the overview’s sample tiles are not live telemetry.</p>
       <ol class="path"><li><strong>1 · Browser</strong><span>A selected sample scenario changes local presentation.</span></li><li><strong>2 · Fixture</strong><span>Labels and values come from a fixed array in the page bundle.</span></li><li><strong>3 · Verify</strong><span>There is no host, network, inventory, service, or cloud request behind these tiles.</span></li></ol>
       <details><summary>Where this lives</summary><ul class="sources"><li><code>apps/khaos-hub/web/index.html</code> · scenario controls</li><li><code>apps/khaos-hub/web/app.js</code> · cards[] / renderCards()</li></ul></details>
-      <p class="boundary"><span aria-hidden="true">◇</span><span><strong>Boundary:</strong> sample values must not be treated as current system state.</span></p>
+      <p class="boundary"><span aria-hidden="true">◇</span><span><strong>Boundary:</strong> sample values are not current host state. A pilot MFD should identify each value's source and sample time, label stale or unavailable data in words, and use Circadian color only as an accent - never as the only severity cue.</span></p>
     </section>
     <section class="trace-bench" aria-labelledby="bench-title">
       <p class="eyebrow">SOURCE TRACE BENCH · DAY ONE</p><h2 id="bench-title">Think like a disassembler. Follow the behavior.</h2>

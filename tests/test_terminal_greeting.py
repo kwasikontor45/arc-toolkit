@@ -12,7 +12,7 @@ class GreetingTests(unittest.TestCase):
   self.log=self.root/"probes"
   bodies={
    "free": "printf '              total used free shared buff/cache available\\nMem: 7.7Gi 3.3Gi 1Gi 0B 3Gi 4.4Gi\\nSwap: 7.9Gi 0B 7.9Gi\\n'",
-   "df":"printf 'Filesystem Size Used Avail Use%% Mounted\\nrootfs 122G 52G 70G 43%% /\\n'",
+   "df":"printf 'df-args:%s\\n' \"$*\" >> \"$TEST_PROBE_LOG\"; printf 'Filesystem Size Used Avail Use%% Mounted\\nrootfs 122G 52G 70G 43%% /\\n'",
    "ip":"if [ \"$TEST_STATE\" = up ]; then printf 'proton0 UNKNOWN 10.2.0.2/32\\n'; fi",
    "hostname":"if [ \"$1\" = -I ]; then [ \"$TEST_STATE\" != up ] || printf '192.0.2.2\\n'; else printf '%s\\n' \"${TEST_NODE:-fixture}\"; fi",
    "id":"printf '%s\n' \"${TEST_USER:-fixture-user}\"",
@@ -97,6 +97,7 @@ class GreetingTests(unittest.TestCase):
   out=self.runGreeting(ARC_GREETING_PROFILE="cloud")
   self.assertIn("ORIGIN",out);self.assertIn("SESSION",out)
   self.assertNotIn("EXT ",out);self.assertNotIn("WOD",out)
+  self.assertIn("df-args:-h /",self.log.read_text())
   self.assertFalse((self.home/".cache/arc/greeting-snapshots/station").exists())
  def test_no_temp_storage(self):
   self.assertIn("Greeting unavailable",self.runGreeting(TMPDIR=str(self.root/"missing"),ARC_GREETING_CACHE="0"))
@@ -106,21 +107,27 @@ class GreetingTests(unittest.TestCase):
   out=self.runGreeting(COLUMNS="96",ARC_GREETING_CACHE="0")
   self.assertIn("RIG 418 · B6ones6aw · ARCHITECT-OF-CHAOS",out)
   self.assertIn("[ STILL-PINE ]",out)
+  header=out.splitlines()[0]
+  self.assertRegex(header,r"^\s+\[ STILL-PINE \].*RIG 418 · B6ones6aw · ARCHITECT-OF-CHAOS$")
   self.assertIn("// OPERATIONS",out);self.assertIn("// SYSTEMS",out)
   self.assertIn("IDENTITY   lt · fixture · arc",out)
   self.assertIn("USER       fixture-user",out)
   self.assertRegex(out,r"LOAD\s+43%\s+\[▓{4}░{6}\]")
-  self.assertRegex(out,r"DISK\s+43%\s+\[▓{4}░{6}\]")
+  self.assertRegex(out,r"HOST\s+swap 0B/7.9Gi · shell bash")
+  self.assertNotIn("DISK",out);self.assertNotIn("53G/69G free",out)
+  self.assertNotIn("rootfs",out)
+  self.assertNotIn("df-args:-h /",self.log.read_text().splitlines())
   self.assertNotIn("+---",out);self.assertNotIn("|___",out)
  def test_circadian_color_is_limited_to_live_phase_signals(self):
   rows=self.root/"circadian-fixture.tsv"
-  fixture="WOD\tgossamer / gos-uh-mer · noun · a very light, delicate material or thread\n@SECTION\tOPERATIONS\nRAM\t3.3Gi/7.7Gi used · 4.4Gi free\t\\033[38;2;226;229;233m\n@SECTION\tSYSTEMS\nHOST\tdisk 52G/70G free (43%) · swap 0B/7.9Gi · shell zsh 5.9/omz\t\\033[38;2;226;229;233m\n@SECTION\tRADAR & NAV\nLOCAL_TIME\tSun, 18 Oct 2026 · 05:55:45 PDT · PHASE\t\\033[38;2;226;229;233m\n@MOTTO\tE Pluribus Unum · ☠ · In God We Trust ✧ ✧\n"
+  fixture="WOD\tgossamer / gos-uh-mer · noun · a very light, delicate material or thread\n@SECTION\tOPERATIONS\nRAM\t3.3Gi/7.7Gi used · 4.4Gi free\t\\033[38;2;226;229;233m\n@SECTION\tSYSTEMS\nHOST\tswap 0B/7.9Gi · shell zsh 5.9/omz\t\\033[38;2;226;229;233m\n@SECTION\tRADAR & NAV\nLOCAL_TIME\tSun, 18 Oct 2026 · 05:55:45 PDT · PHASE\t\\033[38;2;226;229;233m\n@MOTTO\tE Pluribus Unum · ☠ · In God We Trust ✧ ✧\n"
   palette={"nyx":"234;154;151","choice":"94;200;237","desire":"246;193;119","still-pine":"196;167;231"}
   for phase,rgb in palette.items():
    rows.write_text(fixture.replace("PHASE",phase))
    code="source "+SOURCE+"; _arc_greeting_cockpit_render \""+str(rows)+"\" 96 "+phase+" 1 cockpit"
    result=subprocess.run(["bash","-c",code],env={**self.env,"NO_COLOR":"","_ARC_GREETING_COLOR":"1"},capture_output=True,text=True,timeout=5)
    self.assertEqual(result.returncode,0,result.stderr)
+   self.assertIn("[ "+phase.upper()+" ]",re.sub(r"\x1b\[[0-9;]*m","",result.stdout).splitlines()[0])
    self.assertIn("\x1b[38;2;164;194;139mRIG ",result.stdout)
    self.assertIn("\x1b[1;38;2;255;68;92m418\x1b[0m",result.stdout)
    self.assertIn("\x1b[1;38;2;"+rgb+"m[ "+phase.upper()+" ]",result.stdout)

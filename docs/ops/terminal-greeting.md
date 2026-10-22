@@ -34,7 +34,7 @@ The rollout is per target. Review the preview and explicitly use `--apply` for e
 
 ## Value color map
 
-METHOD keeps neutral words and active-phase arrows. HOST uses Choice cyan for disk, Desire amber for swap, and Still-Pine lavender for shell. RAM uses amber for used and cyan for free; FOCUS is cyan. IDENTITY and principle groups cycle through the canonical accents; MO is lavender. These are field distinctions, not resource-pressure alarms. Value group colors continue over wrapped lines. Separators are muted; NO_COLOR/dumb/redirected normal greeting output stays plain. Colors are applied after wrapping, preserving the grid and every text field.
+METHOD keeps neutral words and active-phase arrows. HOST uses Desire amber for swap and Still-Pine lavender for shell; local root-disk usage is omitted. RAM uses amber for used and cyan for free; FOCUS is cyan. IDENTITY and principle groups cycle through the canonical accents; MO is lavender. These are field distinctions, not resource-pressure alarms. Value group colors continue over wrapped lines. Separators are muted; NO_COLOR/dumb/redirected normal greeting output stays plain. Colors are applied after wrapping, preserving the grid and every text field.
 
 ## Greeting order and outer spacing
 
@@ -50,6 +50,6 @@ The installed greeting reuses an owner-only 10-second startup snapshot, bounds l
 
 ## 18 October cockpit readability update · active locally
 
-The cockpit uses a HUD/word strip, full-width COMMAND and RADAR & NAV panels, and paired OPERATIONS/SYSTEMS panes at 96 columns and wider. The pair gives SYSTEMS slightly more room; when wrapping leaves pane heights uneven, a muted blank spacer keeps their bottom edges aligned. Narrower terminals stack the panes. RAM/disk bars derive from existing values. See [the cockpit design and preview](terminal-cockpit.md). The greeting is installed locally; it has not been pushed to cloud hosts.
+The cockpit uses a HUD/word strip, full-width COMMAND and RADAR & NAV panels, and paired OPERATIONS/SYSTEMS panes at 96 columns and wider. The pair gives SYSTEMS slightly more room; when wrapping leaves pane heights uneven, a muted blank spacer keeps their bottom edges aligned. Narrower terminals stack the panes. The RAM load meter derives from the existing memory snapshot; local root-disk usage is omitted, while cloud profile ROOT_FS reporting remains. See [the cockpit design and preview](terminal-cockpit.md). The greeting is installed locally; it has not been pushed to cloud hosts.
 
 The readability pass rollback copy is `~/.config/arc/greeting.sh.before-readability-20261018` (owner-only, mode 0600). Restore it to the installed path to undo that pass while preserving the earlier pre-cockpit candidate below.

@@ -643,10 +643,10 @@ _arc_greeting_collect_rows() {
     done < "$MOTD_FILE"
   fi
 
-  local _memSnapshot _rootSnapshot
+  local _memSnapshot _rootSnapshot=''
   _memSnapshot=$(timeout 0.3s free -h 2>/dev/null || true)
-  _rootSnapshot=$(timeout 0.3s df -h / 2>/dev/null || true)
   if [[ "$profile" == cloud ]]; then
+    _rootSnapshot=$(timeout 0.3s df -h / 2>/dev/null || true)
     local cloud_mem_used cloud_mem_total cloud_disk cloud_uptime cloud_shell='bash'
     [[ -n "${ZSH_VERSION:-}" ]] && cloud_shell='zsh'
     cloud_mem_used=$(printf '%s\n' "$_memSnapshot" | awk '/Mem:/ {print $3}')
@@ -767,17 +767,13 @@ except Exception:
   elif timeout 0.3s mountpoint -q /fortress 2>/dev/null; then fortress_text='stale'; fortress_color="$Y"
   else fortress_text='not mounted'; fortress_color="$D"; fi
 
-  local disk_used disk_free disk_pct sw_used sw_total shell_name shell_ver omz_tag=''
-  disk_used=$(printf '%s\n' "$_rootSnapshot" | awk 'NR==2 {print $3}')
-  disk_free=$(printf '%s\n' "$_rootSnapshot" | awk 'NR==2 {print $4}')
-  disk_pct=$(printf '%s\n' "$_rootSnapshot" | awk 'NR==2 {print $5}')
+  local sw_used sw_total shell_name shell_ver omz_tag=''
   sw_used=$(printf '%s\n' "$_memSnapshot" | awk '/Swap:/ {print $3}')
   sw_total=$(printf '%s\n' "$_memSnapshot" | awk '/Swap:/ {print $2}')
   shell_name=$(basename "${SHELL:-zsh}")
   shell_ver=$("$SHELL" --version 2>/dev/null | head -1 | awk '{print $2}' | cut -d. -f1,2)
   [[ -d "$HOME/.oh-my-zsh" ]] && omz_tag='/omz'
 
-  disk_used=${disk_used:-unknown}; disk_free=${disk_free:-unknown}; disk_pct=${disk_pct:-unknown}
   sw_used=${sw_used:-unknown}; sw_total=${sw_total:-unknown}
 
   local ts_name ts_date ts_manual ts_tag
@@ -812,7 +808,7 @@ except Exception:
   [[ "$usb_color" == "$Y" || "$fortress_color" == "$Y" ]] && storage_color="$Y"
   [[ "$usb_color" == "$D" && "$fortress_color" == "$D" ]] && storage_color="$D"
   _arc_greeting_capture_row 'STORE' "USB ${usb_text} · Fortress ${fortress_text}" "$storage_color" "$SYSTEM_BULLET"
-  _arc_greeting_capture_row 'HOST' "disk ${disk_used}/${disk_free} free (${disk_pct}) · swap ${sw_used}/${sw_total} · shell ${shell_name} ${shell_ver}${omz_tag}" "$TEXT" "$SYSTEM_BULLET"
+  _arc_greeting_capture_row 'HOST' "swap ${sw_used}/${sw_total} · shell ${shell_name} ${shell_ver}${omz_tag}" "$TEXT" "$SYSTEM_BULLET"
   _arc_greeting_capture_footer "$_phase" "$radar_label" "$session_state" "$routePairOne" "$routePairTwo" "$now" "$C"
 }
 
@@ -1014,8 +1010,6 @@ def ram_pct(s):
  def n(v,u):
   x=u[:1].upper();return float(v)*1024**("KMGTPE".find(x)+1 if x else 0)
  total=n(m[3],m[4]);return min(100,max(0,round(n(m[1],m[2])*100/total))) if total else None
-def disk_pct(s):
- m=re.search(r"\((\d+)%\)",s);return min(100,max(0,int(m[1]))) if m else None
 def emit(s=""):print("  "+s if s else "")
 def divider(title):emit(paint("// "+title.upper(),sage)+" "+paint("·"*max(2,limit-cells(title)-5),dim))
 def record(key,text,base,labelWidth=9):
@@ -1034,12 +1028,13 @@ def gauge(pct,tint):
 limit=width-4
 headerText="RIG 418 · B6ones6aw · ARCHITECT-OF-CHAOS";badge="[ "+phase.upper()+" ]"
 header=paint("RIG ",sage)+paint("418",red,True)+paint(" · B6ones6aw · ARCHITECT-OF-CHAOS",sage)
-if not plain and cells(headerText)+cells(badge)+2<=limit:emit(header+" "*max(2,limit-cells(headerText)-cells(badge))+paint(badge,phaseColor,True))
+if not plain and cells(headerText)+cells(badge)+2<=limit:
+ emit(paint(badge,phaseColor,True)+" "*max(2,limit-cells(headerText)-cells(badge))+header)
 else:
+ if not plain:emit(paint(badge,phaseColor,True))
  for chunk in wrap(headerText,limit):
   if "418" in chunk:emit(paint(chunk[:chunk.index("418")],sage)+paint("418",red,True)+paint(chunk[chunk.index("418")+3:],sage))
   else:emit(paint(chunk,sage))
- if not plain:emit(paint(badge,phaseColor,True))
 # WOD keeps its four established content colors, while the phase remains ambient.
 if words:divider("WOD / INTERCEPT")
 for _,text,_base in words:
@@ -1068,17 +1063,6 @@ for title,name in (("OPERATIONS","OPERATIONS"),("SYSTEMS","SYSTEMS")):
    pct=ram_pct(text)
    for line in record(key,text,base):emit(line)
    if pct is not None:emit("  "+paint("LOAD",dim)+"  "+gauge(pct,palette["desire"]))
-  elif key=="HOST":
-   m=re.match(r"disk\s+(.+?)\s+\((\d+)%\)\s+·\s+(.*)",text)
-   if m:
-    used=re.match(r"(.+?)/(.+?)\s+free",m[1]);detail=(used[1]+"/"+used[2]+" free") if used else m[1]
-    g=gauge(int(m[2]),palette["choice"])
-    if limit>=48:emit("  "+paint("DISK",dim)+"  "+g+"  "+paint(detail,white))
-    else:
-     emit("  "+paint("DISK",dim)+"  "+paint(detail,white))
-     emit("  "+paint("LOAD",dim)+"  "+g)
-    text=m[3]
-   for line in record("HOST",text,base):emit(line)
   else:
    for line in record(key,text,base):emit(line)
 if groups.get("RADAR"):divider("RADAR / NAV")

@@ -993,13 +993,16 @@ def wrap(s,n):
   out.append(line)
  return out
 def clean(s):return re.sub(r"\x1b\[[0-9;]*m","",s)
-groups={};section="COMMAND";words=[]
+groups={};section="COMMAND";words=[];mascot=""
 lookup={"234;154;151":palette["nyx"],"94;200;237":palette["choice"],"246;193;119":palette["desire"],"196;167;231":palette["still-pine"],"164;194;139":sage,"112;124;132":dim,"226;229;233":white}
 for raw in Path(path).read_text(encoding="utf-8").splitlines():
  f=raw.split("\t",2)
  if len(f)<2:continue
  key,text=safe(f[0]),safe(f[1]);tag=f[2] if len(f)>2 else ""
  if key=="@SECTION":section={"IDENTITY & INTENT":"COMMAND","OPERATIONS":"OPERATIONS","SYSTEMS":"SYSTEMS","RADAR & NAV":"RADAR"}.get(text,text);continue
+ if key=="KATALEYA":
+  mascot=text
+  continue
  base=next((c for marker,c in lookup.items() if marker in tag),white)
  (words if key=="WOD" else groups.setdefault(section,[])).append((key,text,base))
 values={k:t for records in groups.values() for k,t,_ in records}
@@ -1025,14 +1028,35 @@ def gauge(pct,tint):
  color=green if pct<70 else amber if pct<90 else red
  return paint(f"{pct:>3}%",color,True)+" "+paint("[",dim)+paint(bar,tint)+paint("]",dim)
 limit=width-4
-headerText="RIG 418 · b6ones6aw · ARCHITECT-OF-CHAOS"
-def header_line(chunk):
- out=""
- for part in re.split(r"(RIG |418|b6ones6aw|ARCHITECT-OF-CHAOS|·)",chunk):
-  tint=red if part=="418" else dim if part in ("·","ARCHITECT-OF-CHAOS") else sage
-  out+=paint(part,tint,part=="418")
- return out
-for chunk in wrap(headerText,limit):emit(header_line(chunk))
+headerLeft="RIG 418 ·"
+headerRight="b6ones6aw · ARCHITECT-OF-CHAOS"
+def header_left():
+ return paint("RIG ",sage)+paint("418",red,True)+paint(" ·",dim)
+def header_right():
+ return paint("b6ones6aw",sage)+paint(" · ",dim)+paint("ARCHITECT-OF-CHAOS",dim)
+if cells(headerLeft)+2+cells(headerRight)<=limit:
+ emit(header_left()+" "*(limit-cells(headerLeft)-cells(headerRight))+header_right())
+else:
+ headerText=headerLeft+" "+headerRight
+ def header_line(chunk):
+  out=""
+  for part in re.split(r"(RIG |418|b6ones6aw|ARCHITECT-OF-CHAOS|·)",chunk):
+   tint=red if part=="418" else dim if part in ("·","ARCHITECT-OF-CHAOS") else sage
+   out+=paint(part,tint,part=="418")
+  return out
+ for chunk in wrap(headerText,limit):emit(header_line(chunk))
+if mascot:
+ description=mascot.split("·",1)[-1].strip() if "·" in mascot else "quiet companion"
+ caption="KATALEYA // "+description
+ B=chr(92)
+ art=["   /"+B+"      /"+B,"  /  "+B+"____/  "+B,"  "+B+"  / /"+B+" "+B+"  /","   "+B+"/ /  "+B+" "+B+"/","     "+B+"_"+B+"||_/","       ||"]
+ for i,line in enumerate(art):
+  if i==2 and width>=52:
+   emit(paint(line,phaseColor,True)+"   "+paint("KATALEYA",rose,True)+" "+paint("// "+description,dim))
+  else:
+   emit(paint(line,phaseColor,True))
+ if width<52:
+  for chunk in wrap(caption,limit):emit(paint(chunk,rose,True))
 # WOD keeps its four established content colors, while the phase remains ambient.
 if words:divider("WOD / INTERCEPT")
 for _,text,_base in words:

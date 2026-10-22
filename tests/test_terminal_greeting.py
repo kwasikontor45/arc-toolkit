@@ -7,7 +7,7 @@ class GreetingTests(unittest.TestCase):
   self.home=self.root/"home";self.home.mkdir()
   (self.home/".config/arc").mkdir(parents=True)
   (self.home/".local/share/lt").mkdir(parents=True)
-  (self.home/".config/arc/motd").write_text("I–III: WWSJD · Right & tight · Swiss cheese\nMO: ~/dev-notes/intel-ops/MO.md\n")
+  (self.home/".config/arc/motd").write_text("I–III: WWSJD · Right & tight · Swiss cheese\nKATALEYA: ʚ🦋ɞ · quiet companion\nMO: ~/dev-notes/intel-ops/MO.md\n")
   (self.home/".local/share/lt/focus").write_text("a-long-process-name-"*8)
   self.log=self.root/"probes"
   bodies={
@@ -105,14 +105,16 @@ class GreetingTests(unittest.TestCase):
 
  def test_cockpit_panels_and_flight_deck_identity(self):
   out=self.runGreeting(COLUMNS="96",ARC_GREETING_CACHE="0")
-  self.assertIn("RIG 418 · b6ones6aw · ARCHITECT-OF-CHAOS",out)
-  self.assertIn("[ STILL-PINE ]",out)
+  self.assertRegex(out,r"(?m)^\s+RIG 418 · +b6ones6aw · ARCHITECT-OF-CHAOS$")
+  self.assertRegex(out,r"\[ (?:NYX|CHOICE|DESIRE|STILL-PINE) \]")
   header=out.splitlines()[0]
-  self.assertRegex(header,r"^\s+RIG 418 · b6ones6aw · ARCHITECT-OF-CHAOS$")
+  self.assertRegex(header,r"^\s+RIG 418 · +b6ones6aw · ARCHITECT-OF-CHAOS$")
   time_line=next(line for line in out.splitlines() if "LOCAL_TIME" in line)
-  self.assertIn("[ STILL-PINE ]",time_line)
+  self.assertRegex(time_line,r"\[ (?:NYX|CHOICE|DESIRE|STILL-PINE) \]")
   self.assertNotRegex(time_line,r"· still-pine$")
   self.assertIn("// OPERATIONS",out);self.assertIn("// SYSTEMS",out)
+  self.assertIn("KATALEYA // quiet companion",out)
+  self.assertIn("||_/",out)
   self.assertIn("IDENTITY   lt · fixture · arc",out)
   self.assertIn("USER       fixture-user",out)
   self.assertRegex(out,r"LOAD\s+43%\s+\[▓{4}░{6}\]")

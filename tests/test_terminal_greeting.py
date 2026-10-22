@@ -14,7 +14,8 @@ class GreetingTests(unittest.TestCase):
    "free": "printf '              total used free shared buff/cache available\\nMem: 7.7Gi 3.3Gi 1Gi 0B 3Gi 4.4Gi\\nSwap: 7.9Gi 0B 7.9Gi\\n'",
    "df":"printf 'Filesystem Size Used Avail Use%% Mounted\\nrootfs 122G 52G 70G 43%% /\\n'",
    "ip":"if [ \"$TEST_STATE\" = up ]; then printf 'proton0 UNKNOWN 10.2.0.2/32\\n'; fi",
-   "hostname":"if [ \"$1\" = -I ]; then [ \"$TEST_STATE\" != up ] || printf '192.0.2.2\\n'; else printf 'fixture\\n'; fi",
+   "hostname":"if [ \"$1\" = -I ]; then [ \"$TEST_STATE\" != up ] || printf '192.0.2.2\\n'; else printf '%s\\n' \"${TEST_NODE:-fixture}\"; fi",
+   "id":"printf '%s\n' \"${TEST_USER:-fixture-user}\"",
    "systemctl":"if [ \"$TEST_STATE\" != up ]; then printf 'inactive\\n'; exit 3; fi; case \"$*\" in *--quiet*) ;; *) printf 'active\\n';; esac",
    "pgrep":"[ \"$TEST_STATE\" = up ]",
    "mountpoint":"[ \"$TEST_STATE\" = up ]",
@@ -25,7 +26,7 @@ class GreetingTests(unittest.TestCase):
    "curl":"exit 99"}
   for name,body in bodies.items():
    p=self.bin/name;p.write_text("#!/bin/sh\nprintf '%s\\n' '"+name+"' >> \"$TEST_PROBE_LOG\"\n"+("if [ \"$TEST_STATE\" = broken ]; then exit 127; fi\n" if name not in ("arc","curl") else "")+body+"\n");p.chmod(0o700)
-  self.env={**os.environ,"HOME":str(self.home),"XDG_CACHE_HOME":str(self.home/".cache"),"TMPDIR":str(self.root),"PATH":str(self.bin)+":"+os.environ["PATH"],"TEST_PROBE_LOG":str(self.log),"TEST_STATE":"up","COLUMNS":"96","LC_ALL":"C.UTF-8","TERM":"xterm-256color","NO_COLOR":"1","SHELL":"/bin/bash"}
+  self.env={**os.environ,"HOME":str(self.home),"XDG_CACHE_HOME":str(self.home/".cache"),"TMPDIR":str(self.root),"PATH":str(self.bin)+":"+os.environ["PATH"],"TEST_PROBE_LOG":str(self.log),"TEST_STATE":"up","TEST_NODE":"fixture","TEST_USER":"fixture-user","HOSTNAME":"fixture","COLUMNS":"96","LC_ALL":"C.UTF-8","TERM":"xterm-256color","NO_COLOR":"1","SHELL":"/bin/bash"}
   self.code="source "+SOURCE+"; _arc_greeting_public_ipv4() { printf '198.51.100.2'; }; _arc_greeting_configured_isp_ip() { printf '192.0.2.1'; }; _arc_greeting"
  def tearDown(self):self.tmp.cleanup()
  def runGreeting(self,shell="zsh",**env):
@@ -35,7 +36,7 @@ class GreetingTests(unittest.TestCase):
  def test_cache(self):
   a=self.runGreeting(); first=self.log.read_text()
   b=self.runGreeting()
-  self.assertEqual(a,b);self.assertEqual(first,self.log.read_text())
+  self.assertEqual(a,b);self.assertEqual([x for x in first.splitlines() if x!="id"],[x for x in self.log.read_text().splitlines() if x!="id"])
   self.assertEqual(first.splitlines().count("free"),1)
   self.assertLessEqual(first.splitlines().count("df"),3)
   self.assertIn("[ STATION_READY ]",a)
@@ -84,6 +85,14 @@ class GreetingTests(unittest.TestCase):
   lines=cache.read_text().splitlines()
   cache.write_text("\n".join(lines[:3])+"\n")
   self.assertIn("HOST",self.runGreeting())
+ def test_portable_identity_updates_cache(self):
+  first=self.runGreeting(TEST_NODE="node-a",TEST_USER="user-a",HOSTNAME="node-a")
+  self.assertIn("IDENTITY   lt · node-a · arc",first)
+  self.assertIn("USER       user-a",first)
+  second=self.runGreeting(TEST_NODE="node-b",TEST_USER="user-b",HOSTNAME="node-b")
+  self.assertIn("IDENTITY   lt · node-b · arc",second)
+  self.assertIn("USER       user-b",second)
+
  def test_cloud_profile(self):
   out=self.runGreeting(ARC_GREETING_PROFILE="cloud")
   self.assertIn("ORIGIN",out);self.assertIn("SESSION",out)
@@ -95,14 +104,14 @@ class GreetingTests(unittest.TestCase):
 
  def test_cockpit_panels_and_flight_deck_identity(self):
   out=self.runGreeting(COLUMNS="96",ARC_GREETING_CACHE="0")
-  self.assertIn("[ KHAOS-LAB / 418 / DEV-STUDIO ]",out)
+  self.assertIn("RIG 418 · B6ones6aw · ARCHITECT-OF-CHAOS",out)
   self.assertIn("[ STILL-PINE ]",out)
-  self.assertIn("02 / OPERATIONS",out);self.assertIn("03 / SYSTEMS",out)
-  self.assertIn("ram-load",out);self.assertIn("disk-load",out)
-  self.assertIn("43% used",out)
-  self.assertRegex(out,r"ram-load\s+43% used\s+\[█{4}░{6}\]")
-  self.assertRegex(out,r"disk-load\s+43% used\s+\[█{4}░{6}\]")
-  self.assertNotIn("|___",out)
+  self.assertIn("// OPERATIONS",out);self.assertIn("// SYSTEMS",out)
+  self.assertIn("IDENTITY   lt · fixture · arc",out)
+  self.assertIn("USER       fixture-user",out)
+  self.assertRegex(out,r"LOAD\s+43%\s+\[▓{4}░{6}\]")
+  self.assertRegex(out,r"DISK\s+43%\s+\[▓{4}░{6}\]")
+  self.assertNotIn("+---",out);self.assertNotIn("|___",out)
  def test_circadian_color_is_limited_to_live_phase_signals(self):
   rows=self.root/"circadian-fixture.tsv"
   fixture="WOD\tgossamer / gos-uh-mer · noun · a very light, delicate material or thread\n@SECTION\tOPERATIONS\nRAM\t3.3Gi/7.7Gi used · 4.4Gi free\t\\033[38;2;226;229;233m\n@SECTION\tSYSTEMS\nHOST\tdisk 52G/70G free (43%) · swap 0B/7.9Gi · shell zsh 5.9/omz\t\\033[38;2;226;229;233m\n@SECTION\tRADAR & NAV\nLOCAL_TIME\tSun, 18 Oct 2026 · 05:55:45 PDT · PHASE\t\\033[38;2;226;229;233m\n@MOTTO\tE Pluribus Unum · ☠ · In God We Trust ✧ ✧\n"
@@ -112,23 +121,16 @@ class GreetingTests(unittest.TestCase):
    code="source "+SOURCE+"; _arc_greeting_cockpit_render \""+str(rows)+"\" 96 "+phase+" 1 cockpit"
    result=subprocess.run(["bash","-c",code],env={**self.env,"NO_COLOR":"","_ARC_GREETING_COLOR":"1"},capture_output=True,text=True,timeout=5)
    self.assertEqual(result.returncode,0,result.stderr)
-   self.assertIn("\x1b[38;2;164;194;139m[ KHAOS-LAB / ",result.stdout)
+   self.assertIn("\x1b[38;2;164;194;139mRIG ",result.stdout)
    self.assertIn("\x1b[1;38;2;255;68;92m418\x1b[0m",result.stdout)
-   self.assertIn("\x1b[38;2;164;194;139m / DEV-STUDIO ]",result.stdout)
-   self.assertIn("\x1b[38;2;"+rgb+"m[ "+phase.upper()+" ]",result.stdout)
-   self.assertIn("\x1b[38;2;112;124;132m+\x1b[0m\x1b[38;2;164;194;139m HUD / WORD OF THE DAY ",result.stdout)
+   self.assertIn("\x1b[1;38;2;"+rgb+"m[ "+phase.upper()+" ]",result.stdout)
    self.assertIn("\x1b[38;2;234;154;151mgossamer",result.stdout)
-   self.assertIn("\x1b[38;2;94;200;237m gos-uh-mer",result.stdout)
-   self.assertIn("\x1b[38;2;246;193;119m noun",result.stdout)
-   self.assertIn("\x1b[38;2;196;167;231m a very light",result.stdout)
    self.assertIn("\x1b[38;2;245;198;215mE Pluribus",result.stdout)
-   self.assertIn("\x1b[38;2;"+rgb+"m✧",result.stdout)
-   self.assertIn("\x1b[38;2;246;193;119m43% used",result.stdout)
-   self.assertIn("\x1b[38;2;94;200;237m43% used",result.stdout)
-   self.assertIn("\x1b[38;2;"+rgb+"m"+phase,result.stdout)
+   self.assertIn("\x1b[1;38;2;134;210;160m 43%",result.stdout)
+   self.assertIn("// WOD / INTERCEPT",result.stdout)
    plain=re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]","",result.stdout)
    lines=plain.splitlines(); motto=next(i for i,line in enumerate(lines) if "E Pluribus" in line)
-   self.assertRegex(lines[motto-1],r"^\s+\| +\|$")
+   self.assertTrue(lines[motto-1].strip().startswith("LOCAL_TIME"))
 
  def test_unicode_focus_cells(self):
   import unicodedata

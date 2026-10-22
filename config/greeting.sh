@@ -539,10 +539,11 @@ _arc_greeting_collect_rows() {
     C=''; CIRCLE=''; ART=''
   }
 
-  local profile="${ARC_GREETING_PROFILE:-station}" host_name now session_state radar_label origin_name
+  local profile="${ARC_GREETING_PROFILE:-station}" host_name login_name now session_state radar_label origin_name
   local SYSTEM_BULLET=''
   [[ -n "$N" ]] && SYSTEM_BULLET="$_ARC_GREETING_DESIRE_COLOR"
   host_name=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'unknown-node')
+  login_name=$(id -un 2>/dev/null || printf '%s' "${USER:-unknown-user}")
   now=$(date '+%a, %d %b %Y · %H:%M:%S %Z')
   if [[ "$profile" == cloud ]]; then
     if [[ -n "${SSH_CONNECTION:-}" ]]; then session_state='[ SSH_SESSION_ACTIVE ]'
@@ -618,7 +619,8 @@ _arc_greeting_collect_rows() {
     fi
 
   _arc_greeting_capture_section 'IDENTITY & INTENT' 0
-  _arc_greeting_capture_row 'IDENTITY' "lt · $(whoami) · arc" "$TEXT"
+  _arc_greeting_capture_row 'IDENTITY' "lt · $host_name · arc" "$TEXT"
+  _arc_greeting_capture_row 'USER' "$login_name" "$TEXT"
   _arc_greeting_capture_row 'METHOD' "$CG" "$TEXT"
   # ── Principles and policy source ───────────────────────────────────────────
   local MOTD_FILE="$HOME/.config/arc/motd"
@@ -860,11 +862,13 @@ _arc_greeting() {
   local _source
   if [[ -n "${BASH_VERSION:-}" ]]; then _source="${BASH_SOURCE[0]}"
   else _source="${(%):-%x}"; fi
-  local _now _day _key _cacheRoot _cacheDir _cache _stamp _storedKey _payload _mode _terminalWidth _ttl=10 _temp=''
+  local _now _day _key _cacheRoot _cacheDir _cache _stamp _storedKey _payload _mode _terminalWidth _node _login _ttl=10 _temp=''
   _now=$(_arc_greeting_clock '%s')
   _day=$(_arc_greeting_clock '%F')
   _terminalWidth=$(_arc_greeting_width)
-  _key="cockpit-v1|$_day|$(_arc_greeting_current_phase)|$_terminalWidth|${TERM:-dumb}|$_ARC_GREETING_COLOR|$ARC_GREETING_STYLE|$_ascii"
+  _node=${HOSTNAME:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'unknown-node')}
+  _login=$(id -un 2>/dev/null || printf '%s' "${USER:-unknown-user}")
+  _key="cockpit-v2|$_day|$(_arc_greeting_current_phase)|$_terminalWidth|${TERM:-dumb}|$_ARC_GREETING_COLOR|$ARC_GREETING_STYLE|$_ascii|$_node|$_login"
   _cacheRoot="${XDG_CACHE_HOME:-$HOME/.cache}/arc"
   _cacheDir="$_cacheRoot/greeting-snapshots"
   _cache="$_cacheDir/station"
@@ -968,169 +972,121 @@ _arc_greeting_cockpit_render() {
   python3 - "$@" <<'ARC_COCKPIT_PY'
 import sys,re,unicodedata
 from pathlib import Path
-dataPath,widthText,phase,colorText,style=sys.argv[1:]
+path,widthText,phase,colorText,style=sys.argv[1:]
 width=max(24,min(96,int(widthText))); color=colorText=="1"; plain=style=="plain"
 palette={"nyx":(234,154,151),"choice":(94,200,237),"desire":(246,193,119),"still-pine":(196,167,231)}
-phaseAccent=palette.get(phase,palette["nyx"]); accent=(164,194,139)
-neutral=(226,229,233); muted=(112,124,132); roseQuartz=(245,198,215)
-reset="\x1b[0m" if color else ""
-def paint(text,tint,bold=False,italic=False):
- style=[]
- if bold:style.append("1")
- if italic:style.append("3")
- style.append("38;2;%d;%d;%d"%tint)
- return ("\x1b["+";".join(style)+"m"+text+reset) if color else text
-def cells(text):
- return sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in ("W","F") else 1 for c in text)
-def safe(text):
- text=re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]","",text)
- return "".join(c for c in text if c>=" " and c!="\x7f")
-def coloredChars(key,text,base):
- group=0; current=base; result=[]
- for token in re.findall(r"\s+|\S+",text):
-  tint=base
-  if key=="METHOD" and token==">":tint=accent
-  elif key=="HOST":
-   if token in ("disk","swap","shell"):current=palette[{"disk":"choice","swap":"desire","shell":"still-pine"}[token]]
-   tint=current
-  elif key=="RAM":tint=palette["desire" if group==0 else "choice"]
-  elif key=="FOCUS":tint=palette["choice"]
-  elif key=="MO":tint=palette["still-pine"]
-  elif key in ("IDENTITY","I–III","IV–V","VI–VII"):tint=list(palette.values())[group%4]
-  elif key=="WOD":tint=list(palette.values())[min(group,3)]
-  elif key=="LOCAL_TIME" and token==phase:tint=phaseAccent
-  elif key=="@MOTTO":tint=phaseAccent if "✧" in token else roseQuartz
-  if token=="·" or (key=="WOD" and token=="/"):
-   tint=muted;group+=1
-  result.extend((c,tint) for c in token)
- return result
-def wrapChars(chars,limit):
- lines=[];part=[];used=0
- for char,tint in chars:
-  count=cells(char)
-  if used+count>limit and part:
-   spaces=[i for i,(c,_) in enumerate(part) if c==" "]
-   cut=spaces[-1] if spaces else len(part)
-   if cut:
-    lines.append(part[:cut]);part=part[cut+1:] if cut<len(part) else []
-   else:lines.append(part);part=[]
-   used=sum(cells(c) for c,_ in part)
-   if used+count>limit and part:lines.append(part);part=[];used=0
-  if not part and char==" ":continue
-  part.append((char,tint));used+=count
- if part or not lines:lines.append(part)
- return lines
-def encoded(chars):
- if not color:return "".join(c for c,_ in chars)
- out=[];run="";last=None
- for char,tint in chars:
-  if last is not None and tint!=last:
-   out.append(paint(run,last));run=""
-  run+=char;last=tint
- if run:out.append(paint(run,last))
- return "".join(out)
-def visible(line):return cells(re.sub(r"\x1b\[[0-9;]*m","",line))
-groups={};section="COMMAND";words=[]
-for line in Path(dataPath).read_text(encoding="utf-8").splitlines():
- fields=line.split("\t",2)
- if len(fields)<2:continue
- key,text=safe(fields[0]),safe(fields[1]);tag=fields[2] if len(fields)>2 else ""
- if key=="@SECTION":
-  section={"IDENTITY & INTENT":"COMMAND","OPERATIONS":"OPERATIONS","SYSTEMS":"SYSTEMS","RADAR & NAV":"RADAR"}.get(text,text)
-  continue
- base=neutral
- tagPalette={"234;154;151":palette["nyx"],"94;200;237":palette["choice"],"246;193;119":palette["desire"],"196;167;231":palette["still-pine"],"164;194;139":accent,"128;137;145":(128,137,145),"112;124;132":muted,"226;229;233":neutral}
- for marker,tint in tagPalette.items():
-  if marker in tag:base=tint;break
- if key=="WOD":words.append((key,text,base))
- else:groups.setdefault(section,[]).append((key,text,base))
-def rows(records,inner):
+phaseColor=palette.get(phase,palette["nyx"]); sage=(164,194,139); white=(226,229,233); dim=(112,124,132)
+rose=(245,198,215); red=(255,68,92); green=(134,210,160); amber=(246,193,119)
+def paint(s,c,bold=False):
+ return ("\x1b["+("1;" if bold else "")+"38;2;%d;%d;%d"%c+"m"+s+"\x1b[0m") if color and s else s
+def cells(s):return sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in ("W","F") else 1 for c in s)
+def safe(s):return "".join(c for c in re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]","",s) if c>=" " and c!="\x7f")
+def wrap(s,n):
  out=[]
- labelWidth=min(11,max((cells(key) for key,_,_ in records if key!="@MOTTO"),default=11))
- for key,text,base in records:
-  if key=="@MOTTO":
-   if out:out.append("")
-   for chunk in wrapChars(coloredChars(key,text,base),inner-2):out.append(" "+encoded(chunk))
-   continue
-  if inner>=34:
-   label=" "+key.ljust(labelWidth)+"  "; indent=" "*(labelWidth+3);limit=inner-labelWidth-4
-   chunks=wrapChars(coloredChars(key,text,base),limit)
-   for i,chunk in enumerate(chunks):out.append((paint(label,neutral) if i==0 else indent)+encoded(chunk))
-  else:
-   out.append(paint(" "+key,accent))
-   for chunk in wrapChars(coloredChars(key,text,base),inner-4):out.append("   "+encoded(chunk))
+ for para in s.splitlines() or [""]:
+  line=""
+  for word in para.split():
+   if line and cells(line+" "+word)>n:out.append(line);line=word
+   else:line=(line+" "+word).strip()
+   while cells(line)>n:
+    part=""
+    for ch in line:
+     if cells(part+ch)>n:break
+     part+=ch
+    if not part:break
+    out.append(part);line=line[len(part):]
+  out.append(line)
  return out
-def panel(title,records,size):
- inner=size-2
- title=" "+title+" "
- if cells(title)>inner:title=" HUD / WOD " if "WORD" in title else title[:inner]
- top="-"*max(0,inner-cells(title))+"+"
- result=[paint("+",muted)+paint(title,accent)+paint(top,muted)]
- for line in rows(records,inner):
-  result.append(paint("|",muted)+line+" "*max(0,inner-visible(line))+paint("|",muted))
- result.append(paint("+"+"-"*inner+"+",muted))
- return result
-def output(line=""):print("  "+line if line else "")
-output()
-measure=width-4
-rightLabel="[ "+phase.upper()+" ]"; red=(255,68,92)
-if plain:
- for label in ("COMMAND","OPERATIONS","SYSTEMS","RADAR"):
-  for line in rows((words if label=="COMMAND" else [])+groups.get(label,[]),measure):output(line)
+def clean(s):return re.sub(r"\x1b\[[0-9;]*m","",s)
+groups={};section="COMMAND";words=[]
+lookup={"234;154;151":palette["nyx"],"94;200;237":palette["choice"],"246;193;119":palette["desire"],"196;167;231":palette["still-pine"],"164;194;139":sage,"112;124;132":dim,"226;229;233":white}
+for raw in Path(path).read_text(encoding="utf-8").splitlines():
+ f=raw.split("\t",2)
+ if len(f)<2:continue
+ key,text=safe(f[0]),safe(f[1]);tag=f[2] if len(f)>2 else ""
+ if key=="@SECTION":section={"IDENTITY & INTENT":"COMMAND","OPERATIONS":"OPERATIONS","SYSTEMS":"SYSTEMS","RADAR & NAV":"RADAR"}.get(text,text);continue
+ base=next((c for marker,c in lookup.items() if marker in tag),white)
+ (words if key=="WOD" else groups.setdefault(section,[])).append((key,text,base))
+values={k:t for records in groups.values() for k,t,_ in records}
+def ram_pct(s):
+ m=re.search(r"([\d.]+)([KMGTPE]?i?B?)/([\d.]+)([KMGTPE]?i?B?)",s,re.I)
+ if not m:return None
+ def n(v,u):
+  x=u[:1].upper();return float(v)*1024**("KMGTPE".find(x)+1 if x else 0)
+ total=n(m[3],m[4]);return min(100,max(0,round(n(m[1],m[2])*100/total))) if total else None
+def disk_pct(s):
+ m=re.search(r"\((\d+)%\)",s);return min(100,max(0,int(m[1]))) if m else None
+def emit(s=""):print("  "+s if s else "")
+def divider(title):emit(paint("// "+title.upper(),sage)+" "+paint("·"*max(2,limit-cells(title)-5),dim))
+def record(key,text,base,labelWidth=9):
+ tint=base
+ labelWidth=min(labelWidth,max(4,limit//3))
+ if key in ("NET","SEC","LOCAL_RADAR","DNS_RADAR"):
+  tint=green if any(x in text.lower() for x in ("up","station_ready","✓","open")) else red if "no_carrier" in text.lower() else amber
+ if key=="TASKS":tint=amber if re.search(r"[1-9]",text) else green
+ if key=="FOCUS":tint=palette["choice"]
+ chunks=wrap(text,max(8,limit-labelWidth-4))
+ return ["  "+paint(key.ljust(labelWidth),dim)+"  "+paint(chunks[0],tint)]+["  "+" "*labelWidth+"  "+paint(x,tint) for x in chunks[1:]]
+def gauge(pct,tint):
+ slots=min(10,max(4,limit-16));filled=round(pct*slots/100);bar=("#"*filled+"."*(slots-filled)) if plain else ("▓"*filled+"░"*(slots-filled))
+ color=green if pct<70 else amber if pct<90 else red
+ return paint(f"{pct:>3}%",color,True)+" "+paint("[",dim)+paint(bar,tint)+paint("]",dim)
+limit=width-4
+headerText="RIG 418 · B6ones6aw · ARCHITECT-OF-CHAOS";badge="[ "+phase.upper()+" ]"
+header=paint("RIG ",sage)+paint("418",red,True)+paint(" · B6ones6aw · ARCHITECT-OF-CHAOS",sage)
+if not plain and cells(headerText)+cells(badge)+2<=limit:emit(header+" "*max(2,limit-cells(headerText)-cells(badge))+paint(badge,phaseColor,True))
 else:
- if measure>=52:
-  prefix="[ KHAOS-LAB / "; code="418"; suffix=" / DEV-STUDIO ]"
- elif measure>=24:
-  prefix="[ KHAOS-LAB / "; code="418"; suffix=" ]"
+ for chunk in wrap(headerText,limit):
+  if "418" in chunk:emit(paint(chunk[:chunk.index("418")],sage)+paint("418",red,True)+paint(chunk[chunk.index("418")+3:],sage))
+  else:emit(paint(chunk,sage))
+ if not plain:emit(paint(badge,phaseColor,True))
+# WOD keeps its four established content colors, while the phase remains ambient.
+if words:divider("WOD / INTERCEPT")
+for _,text,_base in words:
+ parts=re.split(r"( / | · )",text);colored=""
+ for i,part in enumerate(parts):colored+=paint(part,dim if part.strip() in ("/","·") else list(palette.values())[min(i//2,3)])
+ if cells(text)<=limit:emit(colored)
  else:
-  prefix="[ KH / "; code="418"; suffix=" ]"
- leftLabel=prefix+code+suffix
- left=paint(prefix,accent)+paint(code,red,True)+paint(suffix,accent)
- if measure>=52:
-  output(left+" "*max(1,measure-cells(leftLabel)-cells(rightLabel))+paint(rightLabel,phaseAccent))
- else:output(left)
- output()
- if words:
-  for line in panel("HUD / WORD OF THE DAY",words,measure):output(line)
-  output()
- for line in panel("01 / COMMAND",groups.get("COMMAND",[]),measure):output(line)
- output()
- if width>=96:
-  # Give SYSTEMS a slight width bias; per-panel labels already reclaim space.
-  # A quiet spacer row preserves one clean shared baseline when content wraps unevenly.
-  paneWidth=measure-2
-  leftWidth=paneWidth*49//100;rightWidth=paneWidth-leftWidth
-  ops=list(groups.get("OPERATIONS",[]))
-  values={key:text for records in groups.values() for key,text,_ in records}
-  def quantity(value,unit):
-   head=unit[:1].upper();power="KMGTPE".find(head)+1 if head else 0
-   return float(value)*(1024**power)
-  match=re.search(r"([\d.]+)([KMGTPE]?i?B?)/([\d.]+)([KMGTPE]?i?B?)",values.get("RAM",""),re.I)
-  gauges=[]
-  if match:
-   total=quantity(match[3],match[4])
-   if total>0:gauges.append(("ram-load",round(quantity(match[1],match[2])*100/total),palette["desire"]))
-  match=re.search(r"\((\d+)%\)",values.get("HOST",""))
-  if match:gauges.append(("disk-load",int(match[1]),palette["choice"]))
-  for label,percent,tint in gauges:
-   filled=max(0,min(10,round(percent/10)))
-   meter=("#"*filled+"."*(10-filled)) if plain else ("█"*filled+"░"*(10-filled))
-   ops.append((label,str(percent)+"% used  ["+meter+"]",tint))
-  left=panel("02 / OPERATIONS",ops,leftWidth)
-  rightLines=panel("03 / SYSTEMS",groups.get("SYSTEMS",[]),rightWidth)
-  height=max(len(left),len(rightLines))
-  while len(left)<height:left.insert(-1,paint("|"+" "*(leftWidth-2)+"|",muted))
-  while len(rightLines)<height:rightLines.insert(-1,paint("|"+" "*(rightWidth-2)+"|",muted))
-  for i in range(height):
-   a=left[i] if i<len(left) else "";b=rightLines[i] if i<len(rightLines) else ""
-   output(a+" "*max(0,leftWidth-visible(a))+"  "+b)
+  for chunk in wrap(text,limit):emit(paint(chunk,list(palette.values())[min(len(chunk.split()),3)]))
+if groups.get("COMMAND"):divider("COMMAND")
+identity=values.get("IDENTITY","").split(" · ");node=identity[1] if len(identity)>1 else "unknown-node"
+for key,text,base in groups.get("COMMAND",[]):
+ if key=="IDENTITY":text=f"lt · {node} · arc"
+ elif key=="USER":text=values.get("USER","unknown-user")
+ if key=="METHOD":
+  colored=re.sub(r" > "," "+paint(">",sage,True)+" ",text)
+  if cells(text)+13<=limit:emit("  "+paint(key.ljust(9),dim)+"  "+colored)
+  else:
+   emit("  "+paint(key,dim))
+   for chunk in wrap(text,max(5,limit-6)):emit("    "+re.sub(r" > "," "+paint(">",sage,True)+" ",chunk))
+  continue
+ for line in record(key,text,base):emit(line)
+for title,name in (("OPERATIONS","OPERATIONS"),("SYSTEMS","SYSTEMS")):
+ if groups.get(name):divider(title)
+ for key,text,base in groups.get(name,[]):
+  if key=="RAM":
+   pct=ram_pct(text)
+   for line in record(key,text,base):emit(line)
+   if pct is not None:emit("  "+paint("LOAD",dim)+"  "+gauge(pct,palette["desire"]))
+  elif key=="HOST":
+   m=re.match(r"disk\s+(.+?)\s+\((\d+)%\)\s+·\s+(.*)",text)
+   if m:
+    used=re.match(r"(.+?)/(.+?)\s+free",m[1]);detail=(used[1]+"/"+used[2]+" free") if used else m[1]
+    g=gauge(int(m[2]),palette["choice"])
+    if limit>=48:emit("  "+paint("DISK",dim)+"  "+g+"  "+paint(detail,white))
+    else:
+     emit("  "+paint("DISK",dim)+"  "+paint(detail,white))
+     emit("  "+paint("LOAD",dim)+"  "+g)
+    text=m[3]
+   for line in record("HOST",text,base):emit(line)
+  else:
+   for line in record(key,text,base):emit(line)
+if groups.get("RADAR"):divider("RADAR / NAV")
+for key,text,base in groups.get("RADAR",[]):
+ if key=="@MOTTO":
+  for chunk in wrap(text,limit-4):emit("  "+paint(chunk,rose))
  else:
-  for label,title in (("OPERATIONS","02 / OPERATIONS"),("SYSTEMS","03 / SYSTEMS")):
-   for line in panel(title,groups.get(label,[]),measure):output(line)
-   output()
- output()
- for line in panel("04 / RADAR & NAV",groups.get("RADAR",[]),measure):output(line)
-output()
-
+  for line in record(key,text,base,11):emit(line)
+emit()
 ARC_COCKPIT_PY
 }

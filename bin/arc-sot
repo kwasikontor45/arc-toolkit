@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # arc-sot — canonical single-source-of-truth manager for this machine's
-# personal tooling. The repo (~/khaos-lab/arc-toolkit) IS the live tooling,
+# personal tooling. The repo (~/khaos-lab/local-cloud-hub/apps/arc-toolkit) IS the live tooling,
 # not a copy of it: every script under bin/ is symlinked from ~/.local/bin,
 # so editing either path edits the same file, and `git status` in the repo
 # always tells you the real truth about uncommitted changes -- no separate

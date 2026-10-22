@@ -8,5 +8,4 @@ Icon=/home/architect-of-chaos/khaos-lab/local-cloud-hub/apps/arc-toolkit/assets/
 Terminal=false
 Categories=Utility;
 StartupWMClass=khaos-lab
-Path=
 StartupNotify=true

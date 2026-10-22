@@ -1025,15 +1025,14 @@ def gauge(pct,tint):
  color=green if pct<70 else amber if pct<90 else red
  return paint(f"{pct:>3}%",color,True)+" "+paint("[",dim)+paint(bar,tint)+paint("]",dim)
 limit=width-4
-headerText="RIG 418 · B6ones6aw · ARCHITECT-OF-CHAOS";badge="[ "+phase.upper()+" ]"
-header=paint("RIG ",sage)+paint("418",red,True)+paint(" · B6ones6aw · ARCHITECT-OF-CHAOS",sage)
-if not plain and cells(headerText)+cells(badge)+2<=limit:
- emit(paint(badge,phaseColor,True)+" "*max(2,limit-cells(headerText)-cells(badge))+header)
-else:
- if not plain:emit(paint(badge,phaseColor,True))
- for chunk in wrap(headerText,limit):
-  if "418" in chunk:emit(paint(chunk[:chunk.index("418")],sage)+paint("418",red,True)+paint(chunk[chunk.index("418")+3:],sage))
-  else:emit(paint(chunk,sage))
+headerText="RIG 418 · b6ones6aw · ARCHITECT-OF-CHAOS"
+def header_line(chunk):
+ out=""
+ for part in re.split(r"(RIG |418|b6ones6aw|ARCHITECT-OF-CHAOS|·)",chunk):
+  tint=red if part=="418" else dim if part in ("·","ARCHITECT-OF-CHAOS") else sage
+  out+=paint(part,tint,part=="418")
+ return out
+for chunk in wrap(headerText,limit):emit(header_line(chunk))
 # WOD keeps its four established content colors, while the phase remains ambient.
 if words:divider("WOD / INTERCEPT")
 for _,text,_base in words:
@@ -1068,6 +1067,20 @@ if groups.get("RADAR"):divider("RADAR / NAV")
 for key,text,base in groups.get("RADAR",[]):
  if key=="@MOTTO":
   for chunk in wrap(text,limit-4):emit("  "+paint(chunk,rose))
+ elif key=="LOCAL_TIME":
+  suffix=" · "+phase
+  stamp=text[:-len(suffix)] if text.endswith(suffix) else text
+  badge="[ "+phase.upper()+" ]"
+  labelWidth=min(11,max(4,limit//3));available=max(8,limit-labelWidth-4)
+  chunks=wrap(stamp,available)
+  if cells(chunks[-1])+2+cells(badge)<=available:chunks[-1]+="  "+badge
+  for i,chunk in enumerate(chunks):
+   prefix="  "+paint(key.ljust(labelWidth),dim)+"  " if i==0 else "  "+" "*labelWidth+"  "
+   if chunk.endswith(badge):
+    stampPart=chunk[:-len(badge)].rstrip()
+    print(prefix+paint(stampPart,base)+"  "+paint(badge,phaseColor,True))
+   else:print(prefix+paint(chunk,base))
+  if not chunks[-1].endswith(badge):emit(paint(badge,phaseColor,True))
  else:
   for line in record(key,text,base,11):emit(line)
 emit()

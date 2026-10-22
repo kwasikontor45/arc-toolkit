@@ -105,10 +105,13 @@ class GreetingTests(unittest.TestCase):
 
  def test_cockpit_panels_and_flight_deck_identity(self):
   out=self.runGreeting(COLUMNS="96",ARC_GREETING_CACHE="0")
-  self.assertIn("RIG 418 · B6ones6aw · ARCHITECT-OF-CHAOS",out)
+  self.assertIn("RIG 418 · b6ones6aw · ARCHITECT-OF-CHAOS",out)
   self.assertIn("[ STILL-PINE ]",out)
   header=out.splitlines()[0]
-  self.assertRegex(header,r"^\s+\[ STILL-PINE \].*RIG 418 · B6ones6aw · ARCHITECT-OF-CHAOS$")
+  self.assertRegex(header,r"^\s+RIG 418 · b6ones6aw · ARCHITECT-OF-CHAOS$")
+  time_line=next(line for line in out.splitlines() if "LOCAL_TIME" in line)
+  self.assertIn("[ STILL-PINE ]",time_line)
+  self.assertNotRegex(time_line,r"· still-pine$")
   self.assertIn("// OPERATIONS",out);self.assertIn("// SYSTEMS",out)
   self.assertIn("IDENTITY   lt · fixture · arc",out)
   self.assertIn("USER       fixture-user",out)
@@ -135,7 +138,9 @@ class GreetingTests(unittest.TestCase):
    code="source "+SOURCE+"; _arc_greeting_cockpit_render \""+str(rows)+"\" 96 "+phase+" 1 cockpit"
    result=subprocess.run(["bash","-c",code],env={**self.env,"NO_COLOR":"","_ARC_GREETING_COLOR":"1"},capture_output=True,text=True,timeout=5)
    self.assertEqual(result.returncode,0,result.stderr)
-   self.assertIn("[ "+phase.upper()+" ]",re.sub(r"\x1b\[[0-9;]*m","",result.stdout).splitlines()[0])
+   plain_output=re.sub(r"\x1b\[[0-9;]*m","",result.stdout)
+   time_line=next(line for line in plain_output.splitlines() if "LOCAL_TIME" in line)
+   self.assertIn("[ "+phase.upper()+" ]",time_line)
    self.assertIn("\x1b[38;2;164;194;139mRIG ",result.stdout)
    self.assertIn("\x1b[1;38;2;255;68;92m418\x1b[0m",result.stdout)
    self.assertIn("\x1b[1;38;2;"+rgb+"m[ "+phase.upper()+" ]",result.stdout)

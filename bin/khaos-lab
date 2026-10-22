@@ -1675,18 +1675,16 @@ CATEGORIES = {
         Action("Android: recent launch logs", "arc-waydroid logs", timeout=10),
     ],
     "Studio": [
+        Action("Course: Studio Foundations (web app)", "xdg-open " + shlex.quote((HOME / "khaos-lab/local-cloud-hub/operations/current/notes-site/studio-course.html").as_uri()), detach=True),
+        Action("Course: printable PDF", "xdg-open " + shlex.quote((HOME / "khaos-lab/studio-khaos/projects/studio/exports/studio-foundations-course.pdf").as_uri()), detach=True),
         Action("LMMS: launch music studio", "flatpak run io.lmms.LMMS", detach=True),
         Action("LMMS: open Reborn practice beat", "flatpak run io.lmms.LMMS "
                "~/khaos-lab/studio-khaos/projects/studio/projects/Reborn_Practice_Beat.mmp", detach=True),
         Action("Audacity: launch audio editor", "flatpak run org.audacityteam.Audacity", detach=True),
         Action("Mixxx: launch DJ decks", "mixxx", detach=True),
         Action("Markdown: launch ReText", "retext", detach=True),
-        Action("Guide: Reborn beat baby steps", "retext --preview "
-               "~/khaos-lab/studio-khaos/projects/studio/library/guides/Reborn_LMMS_Baby_Steps.md", detach=True),
         Action("Guide: studio quick start", "retext --preview "
                + shlex.quote(str(STUDIO_DOC_DIR / "quick-start.md")), detach=True),
-        Action("Guide: YouTube listening exercises", "retext --preview "
-               + shlex.quote(str(STUDIO_DOC_DIR / "youtube-listening-exercises.md")), detach=True),
         Action("Template: event cue sheet", "retext --preview "
                + shlex.quote(str(STUDIO_DOC_DIR / "event-cue-sheet-template.md")), detach=True),
         Action("Tutorial: Audacity recording and editing", "xdg-open "
@@ -5102,7 +5100,7 @@ class HelpView(View):
         "Reference": "Build and open your private reference library",
         "Phone": "ADB device tools · UAD-ng package management",
         "Waydroid": "Open Android → connect ADB → manage it from Phone",
-        "Studio": "Launch LMMS, open the practice project, or read its beginner guide",
+        "Studio": "Follow one course for beat-making, editing, DJ practice, and event sound",
         "Security": "SOPs, firewall, account, and security checks",
         "SOC": "Local and cloud security labs, dashboards, and scanners",
         "Cloud": "AWS guardrails and stop controls · Cloudflare · Git release lanes · SSH references",
@@ -6232,11 +6230,10 @@ class App:
                  "Android: open (starts Waydroid + X11 display if needed)",
                  "Android: restart session"} <= wired["Waydroid"]
             and waydroid_manual_lock
-            and {"LMMS: launch music studio", "LMMS: open Reborn practice beat",
+            and {"Course: Studio Foundations (web app)", "Course: printable PDF",
+                 "LMMS: launch music studio", "LMMS: open Reborn practice beat",
                  "Audacity: launch audio editor", "Mixxx: launch DJ decks",
-                 "Markdown: launch ReText", "Guide: Reborn beat baby steps",
-                 "Guide: studio quick start",
-                 "Guide: YouTube listening exercises",
+                 "Markdown: launch ReText", "Guide: studio quick start",
                  "Template: event cue sheet", "Tutorial: Audacity recording and editing",
                  "Guide: Mixxx hardware and headphone cueing", "iPhone: GarageBand for iOS",
                  "Reference: Lorde — Hammer",
@@ -6245,7 +6242,9 @@ class App:
                  "Reference: Becky G + Peso Pluma — CHANEL"} <= wired["Studio"]
             and all(shutil.which(cmd) for cmd in ("arc", "arc-sop", "arc-waydroid", "adb", "uad-ng", "flatpak"))
             and (HOME / "khaos-lab/studio-khaos/projects/studio/projects/Reborn_Practice_Beat.mmp").is_file()
-            and (HOME / "khaos-lab/studio-khaos/projects/studio/library/guides/Reborn_LMMS_Baby_Steps.md").is_file()
+            and (HOME / "khaos-lab/studio-khaos/projects/studio/library/guides/studio-music-production-course.md").is_file()
+            and (HOME / "khaos-lab/local-cloud-hub/operations/current/notes-site/studio-course.html").is_file()
+            and (HOME / "khaos-lab/studio-khaos/projects/studio/exports/studio-foundations-course.pdf").is_file()
             and (STUDIO_DOC_DIR / "quick-start.md").is_file()
             and (STUDIO_DOC_DIR / "youtube-listening-exercises.md").is_file()
             and (STUDIO_DOC_DIR / "event-cue-sheet-template.md").is_file()
@@ -6253,7 +6252,7 @@ class App:
             and remote_access_ok
         )
         print(f"  program/project wiring   {'ok' if integration_ok else 'FAILED'} "
-              "(Arc SOP · Waydroid manual-start lock/ADB/UAD · LMMS/Audacity/Mixxx/ReText + studio assets)")
+              "(Arc SOP · Waydroid lock/ADB/UAD · Studio course/PDF · LMMS/Audacity/Mixxx/ReText)")
         garage_workspace_ok = (
             App.SPECIAL_VIEWS.get("Garage") is GarageView
             and not CATEGORIES.get("Garage")

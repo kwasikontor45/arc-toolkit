@@ -1,23 +1,25 @@
-# Small Studio: PC + iPhone starter path
+# Studio Foundations: quick start
 
-This is a deliberately small, on-demand setup for learning beats, editing sound, DJ transitions, karaoke preparation, and simple event playback. It uses software already on this workstation. It does not install a sound server, cloud account, media library, or background service.
+Use the unified **Studio Foundations** course for the complete eight-unit path. Source: `~/khaos-lab/studio-khaos/projects/studio/library/guides/studio-music-production-course.md`. In the private Notes Site, choose **studio course** or open **Khaos Lab → Studio → Course: Studio Foundations (web app)**. The printable edition is beside the project exports and is also linked from the course. The source Markdown is the single curriculum source; generated Notes Site pages should not be edited by hand.
+
+This page is a short equipment and launch card. The setup remains small and on demand: no sound server, cloud account, media library, or background service is required.
 
 ## What is ready on the PC
 
-| App | Installed version | Best first use |
-|---|---:|---|
-| LMMS | 1.2.2 Flatpak | Make original beats and arrangements. Open the existing `ref/Reborn_Practice_Beat.mmp` and follow `ref/Reborn_LMMS_Baby_Steps.md`. LMMS is not a live DJ mixer and does not record a microphone. |
-| Audacity | 3.7.8 Flatpak | Record a voice, trim/edit audio, balance a small set, make fades, and export a finished program file. Keep the editable project as well as the exported copy. |
-| Mixxx | 2.5.6 system package | Practice two-deck mixing, beat matching, transitions, and cue points. Start with a few legally obtained local tracks; no controller is required to learn the basics with mouse and keyboard. |
+| App | Best first use |
+|---|---|
+| LMMS | Make original beats and arrangements. Open `~/khaos-lab/studio-khaos/projects/studio/projects/Reborn_Practice_Beat.mmp` and follow `~/khaos-lab/studio-khaos/projects/studio/library/guides/Reborn_LMMS_Baby_Steps.md`. LMMS is not a live DJ mixer and does not record a microphone. |
+| Audacity | Record a voice, trim/edit audio, balance a small set, make fades, and export a finished program file. Keep the editable project as well as the exported copy. |
+| Mixxx | Practice two-deck mixing, beat matching, transitions, and cue points. Start with a few legally obtained local tracks; no controller is required to learn the basics with mouse and keyboard. |
 
-Open these from **Khaos Lab → Studio**. The Markdown guides open in ReText 8.1.0 preview (also the default `.md` handler); apps launch only when clicked. The Studio menu now includes a separate listening-exercises guide and direct links to two YouTube references. Apostrophe was removed, along with its now-unused GNOME 49 runtime. Keep the first session simple: one app at a time, a few tracks, and no extra plugins.
+Open these from **Khaos Lab → Studio**. The course links to focused lessons and listening references so the menu can stay short. Apps launch only when clicked. Keep the first session simple: one app at a time, a few tracks, and no extra plugins.
 
 ## First practice session
 
-1. **Create:** open the Reborn practice beat in LMMS. Change one drum step or tempo, then use **Save As** to make your own copy. Export a short WAV or OGG when ready.
-2. **Edit:** open Audacity. Import the exported beat or a recording you own/have permission to use. Trim the start and end, add a gentle fade, listen at a comfortable level, and export a new WAV for quality or MP3 for a smaller playback copy.
-3. **Mix:** open Mixxx and load two local tracks. Practice starting the next track, matching its tempo by ear, and moving the crossfader slowly. Save cue points only after the transition feels comfortable.
-4. **Prepare an event:** fill in `event-cue-sheet-template.md`. Test the whole playlist in order, including its opening, microphone moments, ending, and a backup copy before the day.
+1. **Create:** open the Reborn practice beat in LMMS. Change one drum step or tempo, then use **Save As** to make your own copy.
+2. **Edit:** open Audacity. Import a recording you own or may use; trim it and add a gentle fade.
+3. **Mix:** open Mixxx and load two local tracks. Practice matching their pulse and moving the crossfader slowly.
+4. Follow the course units for saving sources, exporting, event planning, and rights checks.
 
 For a first baby shower or small gathering, a pre-tested playlist or one continuous Audacity export is more dependable than improvising. Mixxx is useful when you want live transitions. Use local files that you own or are licensed for the event; a streaming-service subscription may not grant public-performance rights.
 

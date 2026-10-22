@@ -5,7 +5,9 @@ build-notes-site — static, offline, self-contained site over your notes.
 Home page = resources-in-place.md rendered as a dashboard (the "sites/servers
 blueprint"). Browse page = full-text search across arc-lt-cmc + dev-notes +
 khaos-lab + vault/archive, with an inline (not fetched) search index so it
-works from a plain file:// open in any browser, no server, no internet.
+works from a plain file:// open in any browser, no server, no internet. The
+Studio Foundations course page and printable PDF are generated from the
+course guide in the local Studio cabinet.
 
 Visual language matches kontor.studio / kontor.studio/bootlog: JetBrains Mono
 (installed locally, no webfont fetch needed), raised mineral surfaces, readable
@@ -49,6 +51,8 @@ SKIP_DIR_NAMES = {
 REFS_DIR = HOME / "khaos-lab" / "local-cloud-hub" / "personal-cabinet" / "reference" / "refs"
 DASHBOARD_SOURCE = REFS_DIR / "resources-in-place.md"
 CARD_SOURCE = HOME / "khaos-lab" / "local-cloud-hub" / "personal-cabinet" / "reference" / "personal-business-card-beta.html"
+STUDIO_COURSE_SOURCE = HOME / "khaos-lab" / "studio-khaos" / "projects" / "studio" / "library" / "guides" / "studio-music-production-course.md"
+STUDIO_COURSE_PDF = HOME / "khaos-lab" / "studio-khaos" / "projects" / "studio" / "exports" / "studio-foundations-course.pdf"
 
 FAVICON_SOURCE = Path(__file__).resolve().parent.parent / "assets/khaos-lab/flamingo-favicon-round.png"
 FAVICON_TAG = ""
@@ -280,6 +284,36 @@ body :is(small,.system-bar,.uplink-btn,.tag,.stats,.tree-tag,.close-bar,
 body :is(input,button,select,textarea,summary) { font-size:max(14px,.9em) !important; }
 body :is(.panel,.kat-detail,.kat-field,.kat-node) { border-color:var(--border); }
 @media (max-width:640px) { body { font-size:16px; } }
+
+.course-tools { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin-top:14px; }
+.course-progress { flex:1 1 190px; min-width:170px; }
+.course-progress progress { width:100%; height:8px; accent-color:var(--cyan); }
+.course-progress output { display:block; color:var(--text-dim); font-size:12px; }
+.course-control { border:1px solid var(--border); border-radius:999px; padding:8px 13px; background:var(--panel-bg-alt); color:var(--text); cursor:pointer; font:inherit; }
+.course-control:hover { border-color:var(--cyan); }
+.course-control:focus-visible { border-color:var(--cyan); outline:2px solid var(--cyan); outline-offset:2px; }
+.course-complete { display:inline-flex; align-items:center; gap:6px; margin-left:10px; color:var(--text-dim); font-size:12px; font-weight:400; text-transform:none; letter-spacing:0; }
+.course-complete input { width:18px; height:18px; accent-color:var(--cyan); }
+.course-unit { scroll-margin-top:16px; }
+@media print {
+  @page { size:Letter; margin:0.68in; }
+  :root { color-scheme:light; --bg:#fff; --panel-bg:#fff; --panel-bg-alt:#f4f5f6; --text:#181818; --text-dim:#454545; --text-mid:#222; --border:#b8bec5; --phosphor:#245b75; --cyan:#194f70; }
+  body,.site-wrapper { background:#fff !important; color:#181818 !important; }
+  body::before,body::after,.system-bar,nav.uplinks,.close-bar,.course-tools,.course-complete { display:none !important; }
+  .site-wrapper { max-width:none; padding:0; display:block; }
+  .panel { background:#fff !important; color:#181818 !important; border:0; box-shadow:none; padding:0; animation:none; overflow:visible; }
+  .panel h1,.panel h2,.panel h3,.panel p,.panel li,.panel th,.panel td { color:#181818 !important; }
+  .panel h1 { font-size:23pt; }
+  .panel h2 { font-size:15pt; border-bottom:1px solid #aab0b5; break-after:avoid; }
+  .panel h3 { font-size:12pt; break-after:avoid; }
+  .panel p,.panel li { font-size:10.5pt !important; line-height:1.45 !important; }
+  .panel a { color:#174e71 !important; text-decoration:underline; }
+  .panel a[href^="http"]::after { content:" (" attr(href) ")"; font-size:8pt; overflow-wrap:anywhere; }
+  .panel table { font-size:9pt; break-inside:avoid; }
+  .panel th,.panel td { padding:4px 6px; }
+  h2,h3 { break-after:avoid; }
+  ul,ol,table,pre { break-inside:avoid; }
+}
 """
 
 PHASE_SCRIPT = """
@@ -349,6 +383,7 @@ def page_shell(system_label: str, body: str, active: str, extra_script: str = ""
     home_cls = ' class="uplink-btn active"' if active == "home" else ' class="uplink-btn"'
     browse_cls = ' class="uplink-btn active"' if active == "browse" else ' class="uplink-btn"'
     blueprint_cls = ' class="uplink-btn active"' if active == "blueprint" else ' class="uplink-btn"'
+    studio_cls = ' class="uplink-btn active"' if active == "studio" else ' class="uplink-btn"'
     return f"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -369,6 +404,7 @@ def page_shell(system_label: str, body: str, active: str, extra_script: str = ""
     <a href="index.html"{home_cls}>dashboard</a>
     <a href="browse.html"{browse_cls}>browse // search</a>
     <a href="blueprint.html"{blueprint_cls}>blueprint</a>
+    <a href="{relative_prefix}studio-course.html"{studio_cls}>studio course</a>
     <a href="{relative_prefix}personal-card.html" class="uplink-btn">personal card</a>
   </nav>
 
@@ -589,6 +625,8 @@ def main():
         raise SystemExit(f"refusing symlink output directory: {OUT}")
     OUT.mkdir(parents=True, exist_ok=True, mode=0o700)
     OUT.chmod(0o700)
+    if not STUDIO_COURSE_SOURCE.is_file():
+        raise SystemExit(f"required Studio course source is missing: {STUDIO_COURSE_SOURCE}")
     notes_dir = OUT / "notes"
     # Slugs hash the full source path -- a moved/renamed file gets a new
     # slug, and the old rendered page for its previous path was otherwise
@@ -611,6 +649,16 @@ def main():
 
     index_entries = []
     for n in notes:
+        if n["path"] == STUDIO_COURSE_SOURCE:
+            # The course has its own guided route. Keep it searchable without
+            # generating a second full copy as an ordinary note page.
+            index_entries.append({
+                "tree": "studio",
+                "rel": "Studio Foundations course",
+                "href": "studio-course.html",
+                "content": n["content"][:4000],
+            })
+            continue
         slug = slug_for(n["path"])
         out_file = OUT / "notes" / slug
         body_html = render_markdown(n["content"])
@@ -648,6 +696,79 @@ def main():
     )
     browse_file.chmod(0o600)
 
+    # The course page is generated from the canonical Studio guide, not copied by hand.
+    course_markdown = STUDIO_COURSE_SOURCE.read_text(encoding="utf-8", errors="strict")
+    course_html = render_markdown(course_markdown)
+    course_body = f"""
+    <div class="panel hero">
+      <span class="tag">studio // self-paced course</span>
+      <h1>STUDIO FOUNDATIONS</h1>
+      <p class="hero-sub">Music production, DJ practice, and sound engineering · 8 practical units · on-demand tools</p>
+      <div class="course-tools" aria-label="Course progress controls">
+        <div class="course-progress">
+          <progress id="course-progress" max="8" value="0" aria-label="Course progress"></progress>
+          <output id="course-progress-label" for="course-progress" aria-live="polite">0 of 8 units complete · saved in this browser only</output>
+        </div>
+        <button class="course-control" id="course-reset" type="button">Reset progress</button>
+        <a class="uplink-btn" href="studio-course.pdf">printable PDF</a>
+      </div>
+    </div>
+    <div class="panel" id="studio-course-content">{course_html}</div>
+    """
+    course_script = """
+    <script>
+    (function(){
+      const key='studio-foundations-progress-v1';
+      const bar=document.getElementById('course-progress');
+      const label=document.getElementById('course-progress-label');
+      const headings=[...document.querySelectorAll('#studio-course-content h2')]
+        .filter(h=>/^Unit\\s+\\d+:/i.test(h.textContent.trim()));
+      let saved={};
+      try { saved=JSON.parse(localStorage.getItem(key)||'{}')||{}; } catch(_e) { saved={}; }
+      function update(){
+        const done=headings.filter(h=>h.querySelector('input')?.checked).length;
+        bar.value=done;
+        label.textContent=done+' of '+headings.length+' units complete · saved in this browser only';
+        try { localStorage.setItem(key,JSON.stringify(Object.fromEntries(headings.map((h,i)=>[String(i+1),!!h.querySelector('input')?.checked])))); } catch(_e) {}
+      }
+      headings.forEach((h,i)=>{
+        h.classList.add('course-unit');
+        const wrap=document.createElement('label');
+        wrap.className='course-complete';
+        const box=document.createElement('input');
+        box.type='checkbox'; box.checked=!!saved[String(i+1)];
+        box.setAttribute('aria-label','Mark '+h.textContent.trim()+' complete');
+        box.addEventListener('change',update);
+        wrap.append(box,document.createTextNode('complete'));
+        h.append(wrap);
+      });
+      document.getElementById('course-reset').addEventListener('click',function(){
+        headings.forEach(h=>{ const box=h.querySelector('input'); if(box) box.checked=false; });
+        try { localStorage.removeItem(key); } catch(_e) {}
+        update(); headings[0]?.querySelector('input')?.focus();
+      });
+      update();
+    }());
+    </script>
+    """
+    course_file = OUT / "studio-course.html"
+    if course_file.is_symlink():
+        raise SystemExit(f"refusing symlink course page: {course_file}")
+    course_file.write_text(
+        page_shell("Studio Foundations - Music Production and Sound Engineering", course_body,
+                   active="studio", extra_script=course_script),
+        encoding="utf-8",
+    )
+    course_file.chmod(0o600)
+    site_pdf = OUT / "studio-course.pdf"
+    if site_pdf.is_symlink():
+        raise SystemExit(f"refusing symlink course PDF: {site_pdf}")
+    if STUDIO_COURSE_PDF.is_file():
+        site_pdf.write_bytes(STUDIO_COURSE_PDF.read_bytes())
+        site_pdf.chmod(0o600)
+    elif site_pdf.exists():
+        site_pdf.unlink()
+
     # Dashboard (home) page, from resources-in-place.md
     if DASHBOARD_SOURCE.exists():
         dash_html = render_markdown(DASHBOARD_SOURCE.read_text(encoding="utf-8", errors="ignore"))
@@ -659,6 +780,12 @@ def main():
     <div class="panel hero">
       <h1>SITES &amp; SERVERS</h1>
       <p class="hero-sub">built {built_at} &mdash; live inventory summary + the how-to notes (resources-in-place.md)</p>
+    </div>
+    <div class="panel"><span class="tag">studio // learning path</span>
+      <h2>Studio Foundations</h2>
+      <p>One self-paced path for beat-making, audio editing, DJ practice, and small-event sound.</p>
+      <p><a class="uplink-btn" href="studio-course.html">open the course</a>
+         <a class="uplink-btn" href="studio-course.pdf">printable PDF</a></p>
     </div>
     {inventory_summary_panel(_load_inventory())}
     <div class="panel">{dash_html}</div>
@@ -691,7 +818,7 @@ def main():
         card_file.write_text(card_html, encoding="utf-8")
         card_file.chmod(0o600)
 
-    print(f"built: {OUT}/index.html (dashboard), {OUT}/browse.html (search), {OUT}/blueprint.html, {OUT}/personal-card.html")
+    print(f"built: {OUT}/index.html (dashboard), {OUT}/browse.html (search), {OUT}/blueprint.html, {OUT}/studio-course.html, {OUT}/studio-course.pdf, {OUT}/personal-card.html")
     print(f"{len(notes)} notes indexed")
 
 

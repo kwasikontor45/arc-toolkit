@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Local Hub calendar: Orage is read-only; this service owns check marks."""
 import argparse
+import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -250,6 +252,22 @@ def library_delete(data):
     return library_list()
 
 
+def garage_csp():
+    """Build the Garage policy from its exact inline script and style bytes."""
+    html = GARAGE_APP.read_text(encoding='utf-8')
+    hashes = {}
+    for tag in ('script', 'style'):
+        match = re.search(rf'<{tag}[^>]*>(.*?)</{tag}>', html, re.S)
+        if not match:
+            raise ValueError(f'Garage is missing its inline {tag}')
+        digest = base64.b64encode(hashlib.sha256(match.group(1).encode()).digest()).decode()
+        hashes[tag] = f"'sha256-{digest}'"
+    return ("default-src 'none'; "
+            f"script-src {hashes['script']}; style-src {hashes['style']}; "
+            "img-src data:; connect-src 'none'; font-src 'none'; object-src 'none'; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+
+
 def static_assets():
     """Return the exact static routes served by the local Hub."""
     return {
@@ -267,6 +285,7 @@ def static_assets():
         '/garage': (GARAGE_APP.parent, GARAGE_APP.name, 'text/html; charset=utf-8'),
         '/garage/': (GARAGE_APP.parent, GARAGE_APP.name, 'text/html; charset=utf-8'),
         '/garage/index.html': (GARAGE_APP.parent, GARAGE_APP.name, 'text/html; charset=utf-8'),
+        '/horizon-dusk.jpg': (GARAGE_APP.parent, 'horizon-dusk.jpg', 'image/jpeg'),
     }
 
 
@@ -283,10 +302,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         if urlsplit(self.path).path.startswith('/garage'):
-            csp = ("default-src 'none'; script-src 'sha256-d2JpzVwRiDruayd+v5EXFjz5TzQUBJo9If6RDzv/dw0='; "
-                   "style-src 'sha256-+3y1/sir3uFOw8q7n0xt4KF2AsEjAlVgm+z4Sl9UlbA='; "
-                   "img-src data:; connect-src 'none'; font-src 'none'; object-src 'none'; "
-                   "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            csp = garage_csp()
         else:
             csp = "default-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
         self.send_header('Content-Security-Policy', csp)

@@ -21,7 +21,7 @@ const circadianAnchors = [
   {hour: 18, bg: "#1a1712", surface: "#242018", overlay: "#342d20", fg: "#efe7d7", muted: "#b3a183"},
   {hour: 24, bg: "#0c1211", surface: "#121d1a", overlay: "#192723", fg: "#e5eee8", muted: "#9caaa2"}
 ];
-const phaseAccents = {choice: "#80b9c9", desire: "#d8b375", "still-pine": "#a2c6a5", nyx: "#b391a0"};
+const phaseAccents = {choice: "#5ec8ed", desire: "#f6c177", "still-pine": "#c4a7e7", nyx: "#ea9a97"};
 function hexRgb(hex) { return hex.match(/[a-f\d]{2}/gi).map(value => parseInt(value, 16)); }
 function rgbHex(rgb) { return `#${rgb.map(value => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0")).join("")}`; }
 function blendHex(a, b, amount) {
@@ -50,7 +50,12 @@ function updateCircadianTheme() {
   const root = document.documentElement;
   const colors = {};
   for (const role of ["bg", "surface", "overlay", "fg", "muted"]) colors[role] = blendHex(first[role], second[role], position);
-  const accent = phaseAccents[circadianPhase(hour)];
+  const phase = circadianPhase(hour);
+  const phaseChip = document.querySelector(".phase-chip");
+  if (phaseChip) phaseChip.textContent = phase.toUpperCase();
+  const state = document.querySelector(".topbar-state");
+  if (state) state.setAttribute("aria-label", "Khaos-Lab 418 Dev-Studio · " + phase + " phase");
+  const accent = phaseAccents[phase];
   const rgb = color => hexRgb(color).join(",");
   root.style.setProperty("--ink", colors.bg);
   root.style.setProperty("--ink-rgb", rgb(colors.bg));

@@ -98,7 +98,7 @@ WORKBENCH_DRILL_DIR = HOME / "khaos-lab/local-cloud-hub/operations/workbench/17o
 WORKBENCH_DRILL_INDEX = WORKBENCH_DRILL_DIR / "README.md"
 IPHONE_PRIVACY_CARD = WORKBENCH_DRILL_DIR / "iphone-cleanup-privacy-card.md"
 HEADER_ICON_PATH = HOME / ".local/share/khaos-lab/header-icon.png"
-HEADER_BG_PATH   = HOME / ".local/share/khaos-lab/header-bg.png"
+HEADER_BG_PATH   = Path(__file__).resolve().parent.parent / "apps/surgery-workshop/horizon-panel.png"
 SIDEBAR_BG_PATH  = HOME / ".local/share/khaos-lab/sidebar-bg.png"
 SIDEBAR_ICON_PATH = HOME / ".local/share/khaos-lab/sidebar-icon.png"
 CONTENT_BG_PATH  = HOME / ".local/share/khaos-lab/content-bg.png"
@@ -5416,8 +5416,8 @@ class App:
         # Start at a comfortable fraction of the actual screen instead of imposing one
         # workstation-sized box on every display. The window remains freely resizable.
         screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
-        width = min(1120, max(640, int(screen_w * 0.88)))
-        height = min(790, max(500, int(screen_h * 0.88)))
+        width = min(1240, max(640, int(screen_w * 0.90)))
+        height = min(900, max(500, int(screen_h * 0.90)))
         root.geometry(f"{width}x{height}")
         root.minsize(min(640, max(520, screen_w - 40)), min(480, max(380, screen_h - 50)))
         self.errors = []
@@ -5475,12 +5475,12 @@ class App:
             # DejaVu Sans for the title: JetBrains Mono has no glyph for the skull and Tk does no
             # per-character font fallback (it rendered blank space).
             return SimpleNamespace(
-                big=tkfont.Font(family="DejaVu Sans", size=18, weight="bold"),
-                identity=tkfont.Font(family="DejaVu Sans", size=11),
-                label=tkfont.Font(family="DejaVu Sans", size=13, weight="bold"),
-                small=tkfont.Font(family="DejaVu Sans", size=12),
-                mono=tkfont.Font(family="JetBrains Mono", size=12),
-                nav=tkfont.Font(family="DejaVu Sans", size=12))
+                big=tkfont.Font(family="DejaVu Sans", size=17, weight="bold"),
+                identity=tkfont.Font(family="DejaVu Sans", size=10),
+                label=tkfont.Font(family="DejaVu Sans", size=12, weight="bold"),
+                small=tkfont.Font(family="DejaVu Sans", size=11),
+                mono=tkfont.Font(family="JetBrains Mono", size=11),
+                nav=tkfont.Font(family="DejaVu Sans", size=11))
         except Exception:
             d = tkfont.Font(size=12)
             return SimpleNamespace(big=d, identity=d, label=d, small=d, mono=d, nav=d)
@@ -5488,7 +5488,7 @@ class App:
     def _build_header(self):
         f, root = self.f, self.root
         header = tk.Frame(root, bg=BG)
-        header.pack(fill="x", padx=18, pady=(12, 5))
+        header.pack(fill="x", padx=14, pady=(8, 3))
         # Background watermark via place() so the icon/title/clock (packed normally) stack on top
         # of it and keep their own resize behaviour.
         self._header_bg = load_image(HEADER_BG_PATH)
@@ -5529,7 +5529,7 @@ class App:
         # The quick-jump gets its own full-width row, leaving the brand and window controls clear.
         self.search_var = owned_variable(root)
         quickbar_shell, quickbar = ui.rounded_frame(root, BG, bg=OVERLAY, radius=20, border=BORDER)
-        quickbar_shell.pack(fill="x", padx=18, pady=(0, 9))
+        quickbar_shell.pack(fill="x", padx=14, pady=(0, 6))
         self.search_entry = tk.Entry(quickbar, textvariable=self.search_var, font=f.small, bg=OVERLAY,
                                      fg=FG, insertbackground=FG, relief="flat", highlightthickness=0,
                                      highlightbackground=OVERLAY, highlightcolor=GOLD)
@@ -5540,7 +5540,7 @@ class App:
         self.search_entry.configure(fg=FG_MUTED)
         self.search_entry.bind("<FocusIn>", self._search_focus_in)
         self.search_entry.bind("<FocusOut>", self._search_focus_out)
-        tk.Frame(root, bg=OVERLAY, height=1).pack(fill="x", padx=18)
+        tk.Frame(root, bg=OVERLAY, height=1).pack(fill="x", padx=14)
 
     def _search_focus_in(self, _e=None):
         if self._ph_active:
@@ -5561,7 +5561,7 @@ class App:
             self.body_pane.forget(self.sidebar_frame)
             self._sidebar_visible = False
         else:
-            self.body_pane.add(self.sidebar_frame, before=self.content_wrap, minsize=188, width=216)
+            self.body_pane.add(self.sidebar_frame, before=self.content_wrap, minsize=168, width=190)
             self._sidebar_visible = True
         self._sidebar_auto_hidden = False
         if hasattr(self, "menu_access"):
@@ -5619,13 +5619,13 @@ class App:
             return
         # Auto-tuck navigation only at genuinely narrow widths; wide screens never get
         # an unsolicited layout change, and a manual toggle takes priority.
-        if event.width < 700 and self._sidebar_visible:
+        if event.width < 860 and self._sidebar_visible:
             self.body_pane.forget(self.sidebar_frame)
             self._sidebar_visible = False
             self._sidebar_auto_hidden = True
             self.menu_access.configure(text="SHOW MENU")
-        elif event.width > 840 and self._sidebar_auto_hidden and not self._sidebar_visible:
-            self.body_pane.add(self.sidebar_frame, before=self.content_wrap, minsize=188, width=216)
+        elif event.width > 1020 and self._sidebar_auto_hidden and not self._sidebar_visible:
+            self.body_pane.add(self.sidebar_frame, before=self.content_wrap, minsize=168, width=190)
             self._sidebar_visible = True
             self._sidebar_auto_hidden = False
             self.menu_access.configure(text="HIDE MENU")
@@ -5638,7 +5638,7 @@ class App:
                                         sashpad=0, sashrelief="flat", bd=0, showhandle=False,
                                         opaqueresize=True,
                                         cursor="arrow")
-        self.main_pane.pack(fill="both", expand=True, padx=18, pady=(5, 0))
+        self.main_pane.pack(fill="both", expand=True, padx=12, pady=(3, 0))
         body = tk.Frame(self.main_pane, bg=BG)
         self.main_pane.add(body, minsize=240, height=520)
         body_pane = self.body_pane = tk.PanedWindow(body, orient="horizontal", bg=BORDER, sashwidth=5,
@@ -5650,16 +5650,16 @@ class App:
         body_pane.pack(fill="both", expand=True)
         # Canvas, not Frame, so the watermark can sit behind the nav buttons.
         self.sidebar_frame, sidebar_inner = ui.rounded_pane(body_pane, BORDER, bg=BG)
-        self.sidebar_frame.configure(width=216)
+        self.sidebar_frame.configure(width=190)
         self.sidebar_frame.pack_propagate(False)
-        self.sidebar = tk.Canvas(sidebar_inner, bg=BG, width=207, highlightthickness=0)
+        self.sidebar = tk.Canvas(sidebar_inner, bg=BG, width=182, highlightthickness=0)
         self.sidebar_scroll = ui.PillScrollbar(sidebar_inner, orient="vertical", command=self.sidebar.yview,
                                            bg=OVERLAY, troughcolor=BG, activebackground=self.phase_accent,
                                            bd=0, highlightthickness=0, width=8)
         self.sidebar.configure(yscrollcommand=self.sidebar_scroll.set)
         self.sidebar.pack(side="left", fill="both", expand=True)
         self.sidebar_scroll.pack(side="right", fill="y")
-        body_pane.add(self.sidebar_frame, minsize=188, width=216)
+        body_pane.add(self.sidebar_frame, minsize=168, width=190)
         self.content_wrap, content_wrap = ui.rounded_pane(body_pane, BORDER, bg=SURFACE)
         body_pane.add(self.content_wrap, minsize=300)
         self.content = tk.Canvas(content_wrap, bg=SURFACE, highlightthickness=0)
@@ -5676,12 +5676,12 @@ class App:
         console_shell, console_frame = ui.rounded_pane(self.main_pane, BORDER, bg=BG)
         # Keep output available without letting it dominate the work area at startup.
         self.console_frame = console_shell
-        self.main_pane.add(console_shell, minsize=86, height=148)
+        self.main_pane.add(console_shell, minsize=78, height=108)
         self.console = ConsolePane(self, console_frame)
         # An always-visible operational rail makes state discoverable while moving between
         # every workspace. The nearby splitter grip above controls output height.
         self.statusbar = tk.Frame(root, bg=BG)
-        self.statusbar.pack(fill="x", padx=18, pady=(5, 11))
+        self.statusbar.pack(fill="x", padx=12, pady=(3, 7))
         tk.Frame(self.statusbar, bg=self.phase_accent, width=3).pack(side="left", fill="y", padx=(0, 9))
         self.route_menu = tk.Menu(self.root, tearoff=0, bg=OVERLAY, fg=FG,
                                   activebackground=SURFACE, activeforeground=GOLD,
@@ -5740,8 +5740,8 @@ class App:
             total = self.main_pane.winfo_height()
             if total <= 1:
                 return
-            console_h = min(250, max(110, round(total * 0.25)))
-            console_h = min(console_h, max(86, total - 240))
+            console_h = min(190, max(90, round(total * 0.20)))
+            console_h = min(console_h, max(78, total - 250))
             target_y = max(0, total - console_h)
             _x, current_y = self.main_pane.sash_coord(0)
             # Configure events can arrive in short bursts while the WM and
@@ -5773,7 +5773,7 @@ class App:
                                                           sb.configure(cursor="hand2")))
         sb.tag_bind("dev_link", "<Leave>", lambda _e: (sb.itemconfigure(dev_link, fill=TEAL),
                                                           sb.configure(cursor="arrow")))
-        sb.create_line(12, 81, 202, 81, fill=BORDER, width=1)
+        sb.create_line(12, 81, 178, 81, fill=BORDER, width=1)
         sb.create_text(13, 91, anchor="nw", text="WORKSPACES", font=self.f.small, fill=FG_MUTED)
         self.nav_buttons, self.nav_y = {}, {}
         self.nav_accent = sb.create_rectangle(0, 0, 0, 0, fill=GOLD, width=0)   # active-row tick
@@ -5782,7 +5782,7 @@ class App:
             b = ui.button(sb, cat, command=lambda c=cat: self.select(c), font=self.f.nav, bg=BG, fg=FG_MUTED,
                           hover_bg=OVERLAY, hover_fg=GOLD, padx=14, pady=6)
             b.configure(anchor="w")
-            sb.create_window(10, y, anchor="nw", window=b, width=194)
+            sb.create_window(9, y, anchor="nw", window=b, width=170)
             b.update_idletasks()
             self.nav_y[cat] = (y, b.winfo_reqheight())
             y += b.winfo_reqheight() + 1
@@ -5793,7 +5793,7 @@ class App:
             b.bind("<Button-5>", lambda _e: sb.yview_scroll(1, "units"))
             b.bind("<MouseWheel>", lambda e: sb.yview_scroll(-1 if e.delta > 0 else 1, "units"))
         # Scrollable, so every category stays reachable at any window height / sash position.
-        sb.configure(scrollregion=(0, 0, 216, y + 8))
+        sb.configure(scrollregion=(0, 0, 190, y + 8))
         sb.bind("<Button-4>", lambda _e: sb.yview_scroll(-1, "units"))
         sb.bind("<Button-5>", lambda _e: sb.yview_scroll(1, "units"))
         sb.bind("<MouseWheel>", lambda e: sb.yview_scroll(-1 if e.delta > 0 else 1, "units"))
@@ -5814,7 +5814,7 @@ class App:
             return                                     # a Text scrolls itself; don't also scroll the page
         self.content.yview_scroll(-1 if (evt.num == 4 or evt.delta > 0) else 1, "units")
 
-    def embed(self, widget, pad=22, scrollable=False):
+    def embed(self, widget, pad=16, scrollable=False):
         # pad on all sides is also what lets the watermark show through.
         item = self.content.create_window(pad, pad, anchor="nw", window=widget)
 
@@ -5845,7 +5845,7 @@ class App:
                 self.content.unbind_all(seq)
             self._set_scrollbar(False)
 
-    def refresh_scroll(self, widget, pad=22):
+    def refresh_scroll(self, widget, pad=16):
         """Re-measure after rows are added to an already-sized canvas (a category switch doesn't
         resize anything, so <Configure> alone would never fire)."""
         try:
@@ -6182,9 +6182,9 @@ class App:
                 layouts.append(cols == expected)
                 banner_spans.append(self.view._tile_banner.grid_info().get("columnspan") == expected)
             word_ui_ok = word_ui_ok and all(banner_spans)
-        self._on_root_configure(SimpleNamespace(widget=self.root, width=650))
+        self._on_root_configure(SimpleNamespace(widget=self.root, width=820))
         nav_narrow = not self._sidebar_visible and self._sidebar_auto_hidden
-        self._on_root_configure(SimpleNamespace(widget=self.root, width=900))
+        self._on_root_configure(SimpleNamespace(widget=self.root, width=1040))
         nav_wide = self._sidebar_visible and not self._sidebar_auto_hidden
         print(f"  responsive tile layouts  {'ok' if all(layouts) else 'FAILED'} ({layouts})")
         print(f"  offline daily word       {'ok' if word_ui_ok else 'FAILED'} (provider + responsive banner)")

@@ -42,7 +42,7 @@ class GarageRouteChecks(unittest.TestCase):
         for remote in ("http://", "https://", "<iframe", "<link"):
             self.assertNotIn(remote, self.body)
         self.assertIn("img-src data:", self.body)
-        self.assertEqual(self.body.count("<img "), 2)
+        self.assertEqual(self.body.count("<img "), 3)
         self.assertIn("data:image/png;base64,", self.body)
         self.assertIn("data:image/jpeg;base64,", self.body)
         wallpaper = self.root / "apps/khaos-hub/web/kimi-wallpaper.jpg"
@@ -53,6 +53,14 @@ class GarageRouteChecks(unittest.TestCase):
         self.assertIn("no host access", self.body)
         for context in ("Calendar looks stale", "A task was checked", "A status tile looks wrong"):
             self.assertIn(context, self.body)
+
+    def test_horizon_asset_is_shared_by_explicit_routes(self):
+        assets = self.hub.static_assets()
+        expected = self.root / "apps/surgery-workshop/horizon-dusk.jpg"
+        self.assertEqual(assets["/horizon-dusk.jpg"][0] / assets["/horizon-dusk.jpg"][1], expected)
+        self.assertTrue(expected.is_file())
+        encoded = base64.b64encode(expected.read_bytes()).decode()
+        self.assertIn("data:image/jpeg;base64," + encoded, self.body)
 
     def test_hub_response_policy_is_hash_scoped_and_sources_are_not_served(self):
         handler = object.__new__(self.hub.Handler)

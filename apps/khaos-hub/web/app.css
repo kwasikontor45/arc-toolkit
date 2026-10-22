@@ -447,3 +447,65 @@ body { background:radial-gradient(ellipse at 72% 2%,rgba(var(--phase-rgb),.07),t
 .library-form,.library-tools{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px;padding:18px;border:1px solid var(--line);border-radius:16px;background:rgba(var(--surface-rgb),.55)}.library-form label,.library-tools label{display:grid;gap:6px;color:var(--muted);font-size:12px}.library-form input,.library-form select,.library-form textarea,.library-tools input,.library-tools select{width:100%;min-width:0;padding:10px 11px;border:1px solid var(--line-bright);border-radius:10px;background:rgba(var(--ink-rgb),.8);color:var(--paper);font:inherit}.library-note,.library-actions,#library-state{grid-column:1/-1}.library-actions,.library-card-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.library-actions button,.library-import,.library-card-actions button{min-height:38px;padding:8px 12px;border:1px solid var(--line-bright);border-radius:10px;background:rgba(var(--overlay-rgb),.7);color:var(--paper);font:inherit;cursor:pointer}.library-actions .library-save{border-color:var(--mint);color:var(--mint)}#library-state,.library-boundary,.library-card-meta{margin:0;color:var(--muted);font-size:12px}.library-tools{margin:14px 0}.library-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:12px}.library-card{min-width:0;padding:16px;border:1px solid var(--line);border-radius:15px;background:rgba(var(--surface-rgb),.65);overflow-wrap:anywhere}.library-card-title{display:block;margin:0 0 8px;color:var(--paper);font-size:17px;font-weight:700}.library-card p{color:var(--muted);white-space:pre-wrap}.library-empty,.library-boundary{color:var(--muted)}.library-boundary{margin:14px 0 28px}
 
 .mobile-nav{grid-template-columns:repeat(4,minmax(0,1fr))}
+
+/* Responsive control-deck refinement */
+@media (min-width: 600px) {
+  .topbar { height: 56px; padding-inline: 24px; }
+  .page { padding: 28px 26px 30px; }
+  .page-heading { margin-bottom: 18px; }
+  .preview-banner { min-height: 46px; padding: 9px 12px; }
+  .section-head { margin-top: 21px; }
+  .status-grid { gap: 11px; }
+  .status-card { min-height: 108px; padding: 14px; border-radius: 14px; }
+  .card-head { margin-bottom: 12px; }
+  .guide-card { min-height: 138px; padding: 17px; }
+  .guide-wide { min-height: 112px; }
+  .main-shell { padding-bottom: 68px; }
+  .mobile-nav { width: min(360px,calc(100% - 32px)); }
+}
+@media (min-width: 900px) {
+  .app-shell { grid-template-columns: 68px minmax(0,1fr); }
+  .side-rail { gap: 25px; padding: 17px 8px; }
+  .brand-mark { width: 40px; height: 40px; border-radius: 13px; }
+  .rail-nav { gap: 5px; }
+  .rail-link { min-height: 52px; gap: 4px; border-radius: 12px; }
+  .topbar { height: 52px; padding-inline: 30px; }
+  .page { width: min(100%,1280px); padding: 28px 30px 32px; }
+  .page-heading { margin-bottom: 18px; }
+  .workbench-hero { min-height: 222px; margin-bottom: 13px; padding: 25px 30px; border-radius: 20px; }
+  .workbench-hero h1 { font-size: clamp(30px,3.5vw,42px); }
+  .hero-signals { margin-top: 14px; }
+  .hero-art { width: 118px; margin-right: 8px; }
+  .preview-banner { min-height: 44px; }
+  .calendar-section { padding: 15px 0; margin: 17px 0; }
+  .calendar-row { padding: 8px 4px; }
+  .status-grid { grid-template-columns: repeat(4,minmax(0,1fr)); gap: 11px; }
+  .status-card { min-height: 102px; padding: 13px; }
+  .card-head { margin-bottom: 10px; }
+  .page-foot { margin-top: 14px; }
+}
+@media (max-width: 599px) {
+  .topbar { padding-inline: 12px; }
+  .topbar-state { max-width: 72vw; gap: 5px; overflow: hidden; }
+  .deck-label { overflow: hidden; text-overflow: ellipsis; }
+  .page { padding-inline: 16px; }
+  .workbench-hero { min-height: 170px; }
+  .calendar-section { margin: 16px 0; padding: 13px 0; }
+  .calendar-section > p:not([role="status"]) { font-size: 11px; line-height: 1.45; }
+  .library-form,.library-tools { padding: 13px; gap: 9px; border-radius: 13px; }
+  .library-actions button,.library-import,.library-card-actions button { min-height: 42px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rail-link,.mobile-link,.scenario,.library-card { transition: color .16s ease,border-color .16s ease,background .16s ease,transform .16s ease; }
+  .rail-link:hover,.mobile-link:hover { border-color: var(--line); transform: translateY(-1px); }
+  .library-card:hover { border-color: var(--line-bright); transform: translateY(-1px); }
+}
+
+/* A narrow horizon marker gives the live-to-sample transition a quiet visual anchor. */
+.horizon-divider{position:relative;display:flex;align-items:center;min-height:48px;margin:16px 0 20px;overflow:hidden;border:1px solid var(--line);border-radius:11px;background:#101720}
+.horizon-divider img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:62% 74%;opacity:.62}
+.horizon-divider:after{position:absolute;inset:0;background:linear-gradient(90deg,rgba(var(--ink-rgb),.92),rgba(var(--ink-rgb),.50) 48%,rgba(var(--ink-rgb),.12));content:""}
+.horizon-divider figcaption{position:relative;z-index:1;display:flex;align-items:center;gap:10px;padding:7px 12px;color:var(--paper)}
+.horizon-divider figcaption span{color:var(--mint);font-size:8px;font-weight:800;letter-spacing:.14em}
+.horizon-divider figcaption strong{font-size:11px;font-weight:650;letter-spacing:.01em}
+@media(max-width:599px){.horizon-divider{min-height:42px;margin:13px 0 17px}.horizon-divider img{object-position:64% 76%}.horizon-divider figcaption{gap:8px;padding-inline:9px}}

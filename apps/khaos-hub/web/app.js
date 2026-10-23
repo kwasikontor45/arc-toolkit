@@ -137,7 +137,7 @@ document.querySelectorAll("[data-page]").forEach((button) => {
       if (selected) navigationButton.setAttribute("aria-current", "page");
       else navigationButton.removeAttribute("aria-current");
     });
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
   });
 });
 

@@ -55,10 +55,12 @@ class LibraryTests(unittest.TestCase):
         self.assertIn('/api/library/browser-import',js)
         self.assertIn('rows.slice(0, libraryVisibleLimit)',js)
         self.assertIn('library-load-more',js)
+        self.assertIn('prefers-reduced-motion: reduce',js)
         self.assertNotIn("history.",js)
         self.assertNotIn("document.cookie",js)
         css=(self.root/"apps/khaos-hub/web/app.css").read_text()
         self.assertIn(".library-form,.library-tools { padding: 13px; gap: 9px; border-radius: 14px; }",css)
+        self.assertIn('scroll-padding-bottom: calc(92px + env(safe-area-inset-bottom))',css)
 
     def test_batch_import_merges_normalized_urls_and_sources(self):
         self.hub.library_save({"title":"Keep my title","url":"https://EXAMPLE.org:443/","kind":"research","note":"curated"})

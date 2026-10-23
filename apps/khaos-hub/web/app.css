@@ -521,3 +521,8 @@ body { background:radial-gradient(ellipse at 72% 2%,rgba(var(--phase-rgb),.07),t
 .horizon-divider figcaption span{color:var(--mint);font-size:8px;font-weight:800;letter-spacing:.14em}
 .horizon-divider figcaption strong{font-size:11px;font-weight:650;letter-spacing:.01em}
 @media(max-width:599px){.horizon-divider{min-height:42px;margin:13px 0 17px}.horizon-divider img{object-position:64% 76%}.horizon-divider figcaption{gap:8px;padding-inline:9px}}
+
+@media (max-width:899px) {
+  html { scroll-padding-bottom: calc(92px + env(safe-area-inset-bottom)); }
+  .main-shell { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+}

@@ -62,6 +62,10 @@ class LibraryTests(unittest.TestCase):
         self.assertIn(".library-form,.library-tools { padding: 13px; gap: 9px; border-radius: 14px; }",css)
         self.assertIn('scroll-padding-bottom: calc(92px + env(safe-area-inset-bottom))',css)
         self.assertIn('scroll-margin-bottom: 104px',css)
+        garage=(self.root/"apps/surgery-workshop/garage.html").read_text()
+        garage_meta=next(line for line in garage.splitlines() if 'http-equiv="Content-Security-Policy"' in line)
+        self.assertNotIn('frame-ancestors',garage_meta)
+        self.assertIn("frame-ancestors 'none'",self.hub.garage_csp())
 
     def test_batch_import_merges_normalized_urls_and_sources(self):
         self.hub.library_save({"title":"Keep my title","url":"https://EXAMPLE.org:443/","kind":"research","note":"curated"})

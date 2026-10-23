@@ -525,4 +525,6 @@ body { background:radial-gradient(ellipse at 72% 2%,rgba(var(--phase-rgb),.07),t
 @media (max-width:899px) {
   html { scroll-padding-bottom: calc(92px + env(safe-area-inset-bottom)); }
   .main-shell { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+  .scenario-control,.status-card,.calendar-section button,.calendar-row,.library-actions button,
+  .library-card-actions button,.library-load-more { scroll-margin-bottom: 104px; }
 }

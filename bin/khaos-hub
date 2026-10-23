@@ -8,7 +8,9 @@ import os
 import re
 import secrets
 import sqlite3
+import tempfile
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +28,10 @@ PORT = 8766
 ORIGIN = f'http://127.0.0.1:{PORT}'
 TOKEN = secrets.token_urlsafe(32)
 LOCK = threading.Lock()
+LIBRARY_IMPORTS = {}
+LIBRARY_IMPORT_LIMIT = 10000
+LIBRARY_BODY_LIMIT = 8 * 1024 * 1024
+READING_FOLDER = re.compile(r'\b(read\s*later|reading\s*list|to\s*read|pocket|articles?)\b', re.I)
 
 
 def parse_date(prop, value):
@@ -172,6 +178,7 @@ def set_checked(data):
         return snapshot()
 
 
+@contextmanager
 def library_connection():
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = STATE / 'library.sqlite3'
@@ -185,22 +192,42 @@ def library_connection():
         "CREATE TABLE IF NOT EXISTS library ("
         "id TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT NOT NULL, "
         "kind TEXT NOT NULL, tags TEXT NOT NULL, note TEXT NOT NULL, "
-        "created TEXT NOT NULL, updated TEXT NOT NULL)"
+        "created TEXT NOT NULL, updated TEXT NOT NULL, sources TEXT NOT NULL DEFAULT '[]')"
     )
-    return db
+    columns = {row[1] for row in db.execute('PRAGMA table_info(library)')}
+    if 'sources' not in columns:
+        db.execute("ALTER TABLE library ADD COLUMN sources TEXT NOT NULL DEFAULT '[]'")
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def library_list():
     with library_connection() as db:
         rows = db.execute(
-            "SELECT id,title,url,kind,tags,note,created,updated "
+            "SELECT id,title,url,kind,tags,note,created,updated,sources "
             "FROM library ORDER BY updated DESC"
         ).fetchall()
-    keys = ('id', 'title', 'url', 'kind', 'tags', 'note', 'created', 'updated')
-    return {'items': [dict(zip(keys, row)) for row in rows]}
+    keys = ('id', 'title', 'url', 'kind', 'tags', 'note', 'created', 'updated', 'sources')
+    items = []
+    for row in rows:
+        item = dict(zip(keys, row))
+        try:
+            item['sources'] = json.loads(item['sources'])
+        except (TypeError, json.JSONDecodeError):
+            item['sources'] = []
+        items.append(item)
+    counts = {kind: sum(item['kind'] == kind for item in items) for kind in
+              ('bookmark', 'reading', 'tutorial', 'research', 'incident')}
+    return {'items': items, 'stats': {'total': len(items), **counts}}
 
 
-def library_save(data):
+def validate_library_item(data, allow_id=True):
     if not isinstance(data, dict):
         raise ValueError('Invalid item')
     fields = ('title', 'url', 'kind', 'tags', 'note')
@@ -215,18 +242,87 @@ def library_save(data):
         raise ValueError('Title required (180 characters max)')
     parsed = urlsplit(url) if url else None
     if len(url) > 2048 or (url and (
-        parsed.scheme not in ('http', 'https') or not parsed.hostname
+        parsed.scheme.lower() not in ('http', 'https') or not parsed.hostname
         or parsed.username or parsed.password
         or any(ord(char) < 32 for char in url)
     )):
         raise ValueError('Use a valid http or https URL without embedded credentials')
-    if kind not in ('bookmark', 'tutorial', 'research', 'incident'):
+    if kind not in ('bookmark', 'reading', 'tutorial', 'research', 'incident'):
         raise ValueError('Invalid library type')
     if len(tags) > 240 or len(note) > 4000:
         raise ValueError('Tags or note are too long')
-    item_id = data.get('id') or secrets.token_urlsafe(12)
-    if not isinstance(item_id, str) or len(item_id) > 40 or not item_id.replace('-', '').replace('_', '').isalnum():
+    item_id = data.get('id') if allow_id else None
+    if item_id is not None and (not isinstance(item_id, str) or len(item_id) > 40
+                                or not item_id.replace('-', '').replace('_', '').isalnum()):
         raise ValueError('Invalid item identifier')
+    return {'id': item_id, 'title': title, 'url': url, 'kind': kind, 'tags': tags, 'note': note}
+
+
+def normalized_library_url(url):
+    if not url:
+        return ''
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or '').lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return url
+    host = f'[{hostname}]' if ':' in hostname else hostname
+    if port and not ((scheme == 'http' and port == 80) or (scheme == 'https' and port == 443)):
+        host += f':{port}'
+    path = parsed.path or ''
+    if path == '/':
+        path = ''
+    return f'{scheme}://{host}{path}' + (f'?{parsed.query}' if parsed.query else '') + (f'#{parsed.fragment}' if parsed.fragment else '')
+
+
+def _source_record(value, fallback_title=''):
+    if not isinstance(value, dict):
+        return None
+    clean = {}
+    for key, limit in (('browser', 40), ('profile', 80), ('folder', 512), ('title', 180)):
+        item = value.get(key, '')
+        if not isinstance(item, str):
+            return None
+        clean[key] = item.strip()[:limit]
+    if not clean['browser']:
+        return None
+    if not clean['title']:
+        clean['title'] = fallback_title[:180]
+    return clean
+
+
+def library_backup():
+    source = STATE / 'library.sqlite3'
+    if not source.exists() or source.stat().st_size == 0:
+        return ''
+    backup_dir = STATE / 'backups'
+    backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(backup_dir, 0o700)
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    target = backup_dir / f'library-{stamp}-{secrets.token_hex(3)}.sqlite3'
+    src = sqlite3.connect(f'file:{source}?mode=ro', uri=True, timeout=5)
+    dst = sqlite3.connect(target, timeout=5)
+    try:
+        src.backup(dst)
+        check = dst.execute('PRAGMA quick_check').fetchone()
+        if not check or check[0] != 'ok':
+            raise sqlite3.DatabaseError('Library backup verification failed')
+    finally:
+        dst.close()
+        src.close()
+    os.chmod(target, 0o600)
+    backups = sorted(backup_dir.glob('library-*.sqlite3'), key=lambda item: item.stat().st_mtime, reverse=True)
+    for old in backups[5:]:
+        old.unlink(missing_ok=True)
+    return str(target)
+
+
+def library_save(data):
+    item = validate_library_item(data)
+    title, url, kind, tags, note = (item[key] for key in ('title', 'url', 'kind', 'tags', 'note'))
+    item_id = item['id'] or secrets.token_urlsafe(12)
     now = datetime.now(timezone.utc).isoformat(timespec='seconds')
     with library_connection() as db:
         exists = db.execute('SELECT 1 FROM library WHERE id=?', (item_id,)).fetchone()
@@ -237,10 +333,291 @@ def library_save(data):
             )
         else:
             db.execute(
-                'INSERT INTO library VALUES (?,?,?,?,?,?,?,?)',
-                (item_id, title, url, kind, tags, note, now, now),
+                'INSERT INTO library(id,title,url,kind,tags,note,created,updated,sources) VALUES (?,?,?,?,?,?,?,?,?)',
+                (item_id, title, url, kind, tags, note, now, now, '[]'),
             )
     return library_list()
+
+
+def library_import_items(items, source_label='JSON import'):
+    if not isinstance(items, list) or len(items) > LIBRARY_IMPORT_LIMIT:
+        raise ValueError(f'Import must contain at most {LIBRARY_IMPORT_LIMIT} items')
+    grouped = {}
+    blank_urls = []
+    duplicate_in_batch = 0
+    for raw in items:
+        item = validate_library_item(raw, allow_id=False)
+        source_values = raw.get('sources', []) if isinstance(raw, dict) else []
+        if not isinstance(source_values, list) or len(source_values) > 100:
+            raise ValueError('Invalid source details')
+        sources = [record for record in (_source_record(value, item['title']) for value in source_values) if record]
+        if source_label:
+            sources.append({'browser': source_label, 'profile': '', 'folder': '', 'title': item['title']})
+        key = normalized_library_url(item['url'])
+        if not key:
+            blank_urls.append((item, sources))
+            continue
+        if key in grouped:
+            duplicate_in_batch += 1
+            previous = grouped[key]
+            previous['sources'].extend(sources)
+            if item['kind'] == 'reading' and previous['item']['kind'] == 'bookmark':
+                previous['item']['kind'] = 'reading'
+        else:
+            grouped[key] = {'item': item, 'sources': sources}
+    now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    backup = library_backup()
+    added = merged = 0
+    with library_connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        rows = db.execute('SELECT id,title,url,kind,tags,note,created,updated,sources FROM library').fetchall()
+        existing = {normalized_library_url(row[2]): row for row in rows if row[2]}
+        for key, group in grouped.items():
+            item, sources = group['item'], group['sources']
+            if key in existing:
+                row = existing[key]
+                try:
+                    old_sources = json.loads(row[8])
+                except (TypeError, json.JSONDecodeError):
+                    old_sources = []
+                combined = []
+                seen = set()
+                for source in old_sources + sources:
+                    clean = _source_record(source)
+                    if not clean:
+                        continue
+                    marker = tuple(clean.values())
+                    if marker not in seen:
+                        combined.append(clean)
+                        seen.add(marker)
+                new_kind = 'reading' if item['kind'] == 'reading' and row[3] == 'bookmark' else row[3]
+                db.execute('UPDATE library SET sources=?,kind=?,updated=? WHERE id=?',
+                           (json.dumps(combined, ensure_ascii=False), new_kind, now, row[0]))
+                merged += 1
+            else:
+                item_id = secrets.token_urlsafe(12)
+                unique_sources = []
+                seen = set()
+                for source in sources:
+                    clean = _source_record(source, item['title'])
+                    if clean and tuple(clean.values()) not in seen:
+                        unique_sources.append(clean)
+                        seen.add(tuple(clean.values()))
+                db.execute('INSERT INTO library(id,title,url,kind,tags,note,created,updated,sources) VALUES (?,?,?,?,?,?,?,?,?)',
+                           (item_id, item['title'], item['url'], item['kind'], item['tags'], item['note'], now, now,
+                            json.dumps(unique_sources, ensure_ascii=False)))
+                added += 1
+        for item, sources in blank_urls:
+            item_id = secrets.token_urlsafe(12)
+            db.execute('INSERT INTO library(id,title,url,kind,tags,note,created,updated,sources) VALUES (?,?,?,?,?,?,?,?,?)',
+                       (item_id, item['title'], '', item['kind'], item['tags'], item['note'], now, now,
+                        json.dumps(sources, ensure_ascii=False)))
+            added += 1
+    return {'added': added, 'merged': merged, 'duplicates_in_batch': duplicate_in_batch,
+            'skipped': 0, 'backup_created': bool(backup), **library_list()}
+
+
+def _source_item(browser, profile, folder, title, url, reading=False):
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
+            return None
+    except (TypeError, ValueError):
+        return None
+    title = str(title or parsed.hostname).strip()
+    title = ''.join(char for char in title if ord(char) >= 32)[:180] or parsed.hostname
+    folder = str(folder or 'Bookmarks')[:512]
+    return {'title': title, 'url': url[:2048], 'kind': 'reading' if reading or READING_FOLDER.search(folder) else 'bookmark',
+            'tags': '', 'note': '', 'sources': [{'browser': browser, 'profile': profile,
+                                                  'folder': folder, 'title': title}]}
+
+
+def read_chromium_bookmarks(path, browser, profile):
+    path = Path(path)
+    with path.open('rb') as stream:
+        before = os.fstat(stream.fileno())
+        if before.st_size > 32 * 1024 * 1024:
+            raise ValueError('Bookmark file exceeds the 32 MiB safety limit')
+        raw = stream.read(32 * 1024 * 1024 + 1)
+        after = os.fstat(stream.fileno())
+    if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+        raise RuntimeError('Bookmark file changed during scan; preview again')
+    data = json.loads(raw)
+    items = []
+    roots = data.get('roots', {})
+    def walk(node, folders, reading=False):
+        if not isinstance(node, dict):
+            return
+        name = node.get('name', '')
+        kind = node.get('type')
+        if kind == 'url':
+            item = _source_item(browser, profile, ' / '.join(folders), node.get('name', ''), node.get('url', ''), reading)
+            if item:
+                items.append(item)
+            return
+        next_folders = folders + ([str(name)[:120]] if name and
+                                   (not folders or str(name).casefold() != folders[-1].casefold()) else [])
+        is_reading = reading or name.lower().replace('_', ' ') in ('reading list', 'read later')
+        children = node.get('children', [])
+        if isinstance(children, list):
+            for child in children:
+                walk(child, next_folders, is_reading)
+    for root_name, node in roots.items():
+        label = {'bookmark_bar': 'Bookmarks bar', 'other': 'Other bookmarks', 'synced': 'Synced bookmarks',
+                 'reading_list': 'Reading list'}.get(root_name, root_name.replace('_', ' ').title())
+        walk(node, [label], root_name == 'reading_list')
+    if len(items) > LIBRARY_IMPORT_LIMIT:
+        raise ValueError('Profile exceeds the 10,000 item safety limit')
+    return items
+
+
+def read_firefox_bookmarks(path, browser, profile):
+    path = Path(path)
+    if path.stat().st_size > 256 * 1024 * 1024:
+        raise ValueError('Places database exceeds the 256 MiB safety limit')
+    wal = Path(str(path) + '-wal')
+    if wal.exists() and wal.stat().st_size > 256 * 1024 * 1024:
+        raise ValueError('Places WAL exceeds the 256 MiB safety limit')
+    with tempfile.TemporaryDirectory(prefix='khaos-hub-places-') as temp:
+        copied = Path(temp) / 'places.sqlite'
+        source = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5)
+        snapshot = sqlite3.connect(copied, timeout=5)
+        try:
+            source.backup(snapshot)
+        finally:
+            snapshot.close()
+            source.close()
+        db = sqlite3.connect(f'file:{copied}?mode=ro', uri=True, timeout=5)
+        db.row_factory = sqlite3.Row
+        try:
+            db.execute('PRAGMA query_only=ON')
+            bookmarks = {row['id']: row for row in db.execute('SELECT id,parent,title,type,fk FROM moz_bookmarks')}
+            places = {row['id']: row for row in db.execute('SELECT id,url,title FROM moz_places')}
+            items = []
+            for bookmark in bookmarks.values():
+                if bookmark['type'] != 1 or bookmark['fk'] not in places:
+                    continue
+                place = places[bookmark['fk']]
+                folders = []
+                parent = bookmark['parent']
+                visited = set()
+                while parent in bookmarks and parent not in visited and len(folders) < 32:
+                    visited.add(parent)
+                    ancestor = bookmarks[parent]
+                    if ancestor['title']:
+                        folders.append(str(ancestor['title']))
+                    parent = ancestor['parent']
+                folder = ' / '.join(reversed(folders)) or 'Bookmarks'
+                item = _source_item(browser, profile, folder, bookmark['title'] or place['title'] or '', place['url'])
+                if item:
+                    items.append(item)
+                if len(items) > LIBRARY_IMPORT_LIMIT:
+                    raise ValueError('Profile exceeds the 10,000 item safety limit')
+            return items
+        finally:
+            db.close()
+
+
+def collect_browser_bookmarks():
+    home = Path.home()
+    roots = [
+        ('Brave', [home / '.config/BraveSoftware/Brave-Browser', home / '.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser']),
+        ('Chromium', [home / '.config/chromium', home / '.var/app/org.chromium.Chromium/config/chromium']),
+        ('Chrome', [home / '.config/google-chrome', home / '.var/app/com.google.Chrome/config/google-chrome']),
+        ('Vivaldi', [home / '.config/vivaldi']),
+        ('Edge', [home / '.config/microsoft-edge']),
+    ]
+    items, counts, errors = [], [], []
+    for browser, candidates in roots:
+        for root in candidates:
+            if not root.is_dir():
+                continue
+            try:
+                safe_root = root.resolve()
+                profiles = [root] if (root / 'Bookmarks').is_file() else sorted(
+                    path for path in root.iterdir() if path.is_dir() and (path / 'Bookmarks').is_file()
+                    and path.resolve().is_relative_to(safe_root)
+                )
+            except OSError:
+                errors.append(f'{browser}: profile directory unavailable')
+                continue
+            for index, profile_path in enumerate(profiles, 1):
+                label = 'Default' if profile_path.name == 'Default' else f'Profile {index}'
+                try:
+                    found = read_chromium_bookmarks(profile_path / 'Bookmarks', browser, label)
+                    items.extend(found)
+                    counts.append({'browser': browser, 'profile': label, 'count': len(found),
+                                   'reading': sum(item['kind'] == 'reading' for item in found)})
+                except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
+                    errors.append(f'{browser} {label}: {str(error)[:160]}')
+    firefox_root = home / '.mozilla/firefox'
+    if firefox_root.is_dir():
+        try:
+            profiles = sorted(path for path in firefox_root.iterdir() if path.is_dir()
+                              and (path / 'places.sqlite').is_file()
+                              and path.resolve().is_relative_to(firefox_root.resolve()))
+        except OSError:
+            profiles = []
+            errors.append('Firefox: profile directory unavailable')
+        for index, profile_path in enumerate(profiles, 1):
+            label = f'Profile {index}'
+            try:
+                found = read_firefox_bookmarks(profile_path / 'places.sqlite', 'Firefox', label)
+                items.extend(found)
+                counts.append({'browser': 'Firefox', 'profile': label, 'count': len(found),
+                               'reading': sum(item['kind'] == 'reading' for item in found)})
+            except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+                errors.append(f'Firefox {label}: {str(error)[:160]}')
+    if len(items) > LIBRARY_IMPORT_LIMIT:
+        raise ValueError('Combined browser bookmarks exceed the 10,000 item safety limit')
+    return items, counts, errors
+
+
+def library_browser_preview():
+    items, counts, errors = collect_browser_bookmarks()
+    existing = set()
+    with library_connection() as db:
+        existing = {normalized_library_url(row[0]) for row in db.execute('SELECT url FROM library WHERE url<>\'\'')}
+    seen = set()
+    matching = duplicate_in_scan = will_add = 0
+    for item in items:
+        key = normalized_library_url(item['url'])
+        if not key:
+            will_add += 1
+        elif key in seen:
+            duplicate_in_scan += 1
+        elif key in existing:
+            matching += 1
+        else:
+            will_add += 1
+        seen.add(key)
+    scan_id = secrets.token_urlsafe(20)
+    now = time.monotonic()
+    with LOCK:
+        for key, value in list(LIBRARY_IMPORTS.items()):
+            if now - value['created'] > 300:
+                del LIBRARY_IMPORTS[key]
+        LIBRARY_IMPORTS[scan_id] = {'created': now, 'items': items, 'counts': counts, 'errors': errors}
+    return {'scan_id': scan_id, 'counts': counts, 'total': len(items), 'errors': errors,
+            'will_add': will_add, 'matching': matching, 'duplicates_in_scan': duplicate_in_scan,
+            'message': 'Titles, URLs, and folder names stay on this computer.'}
+
+
+def library_browser_import(data):
+    if not isinstance(data, dict) or data.get('confirmed') is not True:
+        raise ValueError('Explicit confirmation is required')
+    scan_id = data.get('scan_id')
+    if not isinstance(scan_id, str) or len(scan_id) > 80:
+        raise ValueError('Preview expired; scan again')
+    with LOCK:
+        scan = LIBRARY_IMPORTS.pop(scan_id, None)
+    if not scan or time.monotonic() - scan['created'] > 300:
+        raise ValueError('Preview expired; scan again')
+    if scan['errors']:
+        raise ValueError('Some browser profiles could not be read. Review the preview and resolve those profiles before importing.')
+    result = library_import_items(scan['items'], source_label='')
+    result['sources_scanned'] = scan['counts']
+    return result
 
 
 def library_delete(data):
@@ -326,6 +703,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, snapshot())
             if path == '/api/library':
                 return self.reply(200, library_list())
+            if path == '/api/library/browser-preview':
+                return self.reply(200, library_browser_preview())
             if path == '/api/session':
                 return self.reply(200, {'token': TOKEN})
             assets = static_assets()
@@ -333,23 +712,33 @@ class Handler(BaseHTTPRequestHandler):
                 root, name, mime = assets[path]
                 return self.reply(200, (root / name).read_bytes(), mime)
             self.reply(404, {'error': 'Not found'})
-        except (OSError, sqlite3.Error):
+        except (OSError, sqlite3.Error, RuntimeError):
             self.reply(503, {'error': 'Calendar unavailable; retry shortly.'})
 
     def do_POST(self):
         if not self.allowed() or self.headers.get('X-Hub-Token') != TOKEN:
             return self.reply(403, {'error': 'Refresh your local Hub session'})
-        if self.path not in ('/api/calendar/check','/api/library/save','/api/library/delete'):
+        if self.path not in ('/api/calendar/check', '/api/library/save', '/api/library/delete',
+                             '/api/library/import', '/api/library/browser-import'):
             return self.reply(404, {'error': 'Not found'})
         try:
             length = int(self.headers.get('Content-Length', '0'))
-            limit = 2048 if self.path == '/api/calendar/check' else 8192
+            limit = 2048 if self.path == '/api/calendar/check' else (
+                LIBRARY_BODY_LIMIT if self.path in ('/api/library/import', '/api/library/browser-import') else 8192
+            )
             if not 0 < length <= limit or self.headers.get('Content-Type') != 'application/json':
                 raise ValueError('Invalid request')
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
                 raise ValueError('Invalid request')
-            result = set_checked(data) if self.path == '/api/calendar/check' else library_save(data) if self.path == '/api/library/save' else library_delete(data)
+            routes = {
+                '/api/calendar/check': set_checked,
+                '/api/library/save': library_save,
+                '/api/library/delete': library_delete,
+                '/api/library/import': lambda value: library_import_items(value.get('items'), 'JSON import'),
+                '/api/library/browser-import': library_browser_import,
+            }
+            result = routes[self.path](data)
             self.reply(200, result)
         except RuntimeError as e:
             self.reply(409, {'error': str(e)})

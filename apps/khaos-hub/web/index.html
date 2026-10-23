@@ -72,17 +72,19 @@
       </section>
 
       <section class="page page-library" data-view="library" aria-labelledby="library-title" hidden>
-        <div class="page-heading"><div><p class="eyebrow">PRIVATE INDEX <span>/</span> LOCAL ONLY</p><h1 id="library-title">Your field library.</h1><p class="lede">Save references you choose. Hub does not read browser history or fetch pages.</p></div></div>
+        <div class="page-heading"><div><p class="eyebrow">PRIVATE INDEX <span>/</span> LOCAL ONLY</p><h1 id="library-title">Your field library.</h1><p class="lede">Keep bookmarks and reading in one private place. Hub reads saved bookmarks only; it never reads history or opens pages.</p></div></div>
         <form id="library-form" class="library-form">
           <input type="hidden" id="library-id">
           <label>Title <input id="library-title-input" maxlength="180" required autocomplete="off"></label>
           <label>Page URL <input id="library-url-input" type="url" maxlength="2048" placeholder="https://…" autocomplete="url"></label>
-          <label>Type <select id="library-kind"><option value="bookmark">Bookmark</option><option value="tutorial">Tutorial</option><option value="research">Research</option><option value="incident">Incident reference</option></select></label>
+          <label>Type <select id="library-kind"><option value="bookmark">Bookmark</option><option value="reading">Reading list</option><option value="tutorial">Tutorial</option><option value="research">Research</option><option value="incident">Incident reference</option></select></label>
           <label>Tags <input id="library-tags" maxlength="240" placeholder="linux, incident-response"></label>
           <label class="library-note">Notes <textarea id="library-note" maxlength="4000" rows="3"></textarea></label>
-          <div class="library-actions"><button class="library-save" type="submit">Save reference</button><button id="library-cancel" type="button" hidden>Cancel edit</button><button id="library-export" type="button">Export library</button><label class="library-import">Import JSON<input id="library-import-file" type="file" accept="application/json,.json"></label></div><p id="library-state" role="status" aria-live="polite">Saved locally on this computer.</p>
+          <div class="library-actions"><button class="library-save" type="submit">Save reference</button><button id="library-cancel" type="button" hidden>Cancel edit</button><button id="library-export" type="button">Export library</button><button id="library-browser-scan" type="button">Find browser bookmarks</button><label class="library-import">Import JSON<input id="library-import-file" type="file" accept="application/json,.json"></label></div><p id="library-state" role="status" aria-live="polite">Saved locally on this computer.</p>
         </form>
-        <div class="library-tools"><label>Search saved items <input id="library-search" type="search" placeholder="Title, note, tag, URL"></label><label>Show <select id="library-filter"><option value="all">Everything</option><option value="bookmark">Bookmarks</option><option value="tutorial">Tutorials</option><option value="research">Research</option><option value="incident">Incident references</option></select></label></div>
+        <p id="library-import-preview" class="library-import-preview" role="status" aria-live="polite" hidden></p>
+        <div id="library-stats" class="library-stats" aria-label="Library totals"></div>
+        <div class="library-tools"><label>Search saved items <input id="library-search" type="search" placeholder="Title, note, tag, URL, source"></label><label>Show <select id="library-filter"><option value="all">Everything</option><option value="bookmark">Bookmarks</option><option value="reading">Reading list</option><option value="tutorial">Tutorials</option><option value="research">Research</option><option value="incident">Incident references</option></select></label></div>
         <div id="library-list" class="library-list" aria-live="polite"></div><p class="library-boundary">Private local index · explicit save only · saved page details are metadata and notes, not offline copies.</p>
       </section>
 

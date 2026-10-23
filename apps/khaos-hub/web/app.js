@@ -275,15 +275,237 @@ setInterval(refreshCalendar, 2000);
 document.addEventListener("visibilitychange", refreshCalendar);
 refreshCalendar();
 
-// Private Library: explicit saves only; never inspect browser history or fetch pages.
-let libraryToken="", libraryItems=[];
-async function libraryRequest(path,options={}){const response=await fetch(path,{cache:"no-store",...options});const data=await response.json();if(!response.ok)throw new Error(data.error||"Library unavailable");return data}
-async function loadLibrary(){try{libraryItems=(await libraryRequest("/api/library")).items;renderLibrary();document.querySelector("#library-state").textContent=libraryItems.length+" saved locally on this computer."}catch(error){document.querySelector("#library-state").textContent=error.message}}
-function renderLibrary(){const list=document.querySelector("#library-list"),query=document.querySelector("#library-search").value.trim().toLowerCase(),filter=document.querySelector("#library-filter").value,fragment=document.createDocumentFragment();const rows=libraryItems.filter(item=>(filter==="all"||item.kind===filter)&&[item.title,item.url,item.tags,item.note].join(" ").toLowerCase().includes(query));rows.forEach(item=>{const card=document.createElement("article");card.className="library-card";const type=document.createElement("p");type.className="eyebrow";type.textContent=item.kind.toUpperCase();const title=document.createElement(item.url?"a":"h2");if(item.url){title.href=item.url;title.target="_blank";title.rel="noopener noreferrer"}title.className="library-card-title";title.textContent=item.title;const note=document.createElement("p");note.textContent=item.note||"No notes yet.";const meta=document.createElement("p");meta.className="library-card-meta";meta.textContent=[item.tags,item.updated].filter(Boolean).join(" · ");const actions=document.createElement("div");actions.className="library-card-actions";const edit=document.createElement("button");edit.type="button";edit.textContent="Edit";edit.addEventListener("click",()=>{document.querySelector("#library-id").value=item.id;document.querySelector("#library-title-input").value=item.title;document.querySelector("#library-url-input").value=item.url;document.querySelector("#library-kind").value=item.kind;document.querySelector("#library-tags").value=item.tags;document.querySelector("#library-note").value=item.note;document.querySelector("#library-cancel").hidden=false;document.querySelector("#library-title-input").focus()});const del=document.createElement("button");del.type="button";del.textContent="Delete";del.addEventListener("click",async()=>{if(!confirm("Delete this local reference?"))return;try{await saveLibrary("/api/library/delete",{id:item.id})}catch(error){document.querySelector("#library-state").textContent=error.message}});actions.append(edit,del);card.append(type,title,note,meta,actions);fragment.append(card)});list.replaceChildren(fragment);if(!rows.length){const empty=document.createElement("p");empty.className="library-empty";empty.textContent=query?"No matching references.":"Your library is empty. Add a reference above.";list.append(empty)}}
-async function saveLibrary(path,payload){if(!libraryToken)libraryToken=(await libraryRequest("/api/session")).token;const data=await libraryRequest(path,{method:"POST",headers:{"Content-Type":"application/json","X-Hub-Token":libraryToken},body:JSON.stringify(payload)});libraryItems=data.items;renderLibrary();document.querySelector("#library-state").textContent=libraryItems.length+" saved locally on this computer."}
-document.querySelector("#library-form").addEventListener("submit",async event=>{event.preventDefault();const payload={id:document.querySelector("#library-id").value||undefined,title:document.querySelector("#library-title-input").value,url:document.querySelector("#library-url-input").value,kind:document.querySelector("#library-kind").value,tags:document.querySelector("#library-tags").value,note:document.querySelector("#library-note").value};try{await saveLibrary("/api/library/save",payload);event.currentTarget.reset();document.querySelector("#library-id").value="";document.querySelector("#library-cancel").hidden=true}catch(error){document.querySelector("#library-state").textContent=error.message}});
-document.querySelector("#library-cancel").addEventListener("click",()=>{document.querySelector("#library-form").reset();document.querySelector("#library-id").value="";document.querySelector("#library-cancel").hidden=true});
-document.querySelector("#library-search").addEventListener("input",renderLibrary);document.querySelector("#library-filter").addEventListener("change",renderLibrary);
-document.querySelector("#library-export").addEventListener("click",()=>{const blob=new Blob([JSON.stringify({version:1,items:libraryItems},null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="khaos-hub-library.json";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)});
-document.querySelector("#library-import-file").addEventListener("change",async event=>{const file=event.target.files?.[0];if(!file)return;try{const imported=JSON.parse(await file.text());if(imported.version!==1||!Array.isArray(imported.items)||imported.items.length>500)throw new Error("Unsupported file or item count.");for(const item of imported.items)await saveLibrary("/api/library/save",item);document.querySelector("#library-state").textContent="Imported "+imported.items.length+" references."}catch(error){document.querySelector("#library-state").textContent="Import stopped: "+error.message}event.target.value=""});
+// Private Library: saved references only; the import reads bookmark stores, never history or pages.
+let libraryToken = "";
+let libraryItems = [];
+let browserScan = null;
+const libraryKinds = {
+  bookmark: "Bookmark", reading: "Reading list", tutorial: "Tutorial",
+  research: "Research", incident: "Incident reference"
+};
+async function libraryRequest(path, options = {}) {
+  const response = await fetch(path, { cache: "no-store", ...options });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Library unavailable");
+  return data;
+}
+async function libraryPost(path, payload) {
+  if (!libraryToken) libraryToken = (await libraryRequest("/api/session")).token;
+  return libraryRequest(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Hub-Token": libraryToken },
+    body: JSON.stringify(payload)
+  });
+}
+function updateLibraryStats() {
+  const stats = document.querySelector("#library-stats");
+  const labels = [["total", "Saved"], ["bookmark", "Bookmarks"], ["reading", "Reading"],
+    ["tutorial", "Tutorials"], ["research", "Research"], ["incident", "Incidents"]];
+  const fragment = document.createDocumentFragment();
+  labels.forEach(([key, label]) => {
+    const pill = document.createElement("span");
+    pill.className = "library-stat";
+    const count = document.createElement("strong");
+    count.textContent = String(libraryItems.filter(item => key === "total" || item.kind === key).length);
+    pill.append(count, document.createTextNode(label));
+    fragment.append(pill);
+  });
+  stats.replaceChildren(fragment);
+}
+function renderLibrary() {
+  const list = document.querySelector("#library-list");
+  const query = document.querySelector("#library-search").value.trim().toLowerCase();
+  const filter = document.querySelector("#library-filter").value;
+  const fragment = document.createDocumentFragment();
+  updateLibraryStats();
+  const rows = libraryItems.filter(item => {
+    const sourceText = (item.sources || []).map(source =>
+      [source.browser, source.profile, source.folder, source.title].join(" ")).join(" ");
+    return (filter === "all" || item.kind === filter) &&
+      [item.title, item.url, item.tags, item.note, sourceText].join(" ").toLowerCase().includes(query);
+  });
+  rows.forEach(item => {
+    const card = document.createElement("article");
+    card.className = "library-card";
+    const type = document.createElement("p");
+    type.className = "eyebrow";
+    type.textContent = libraryKinds[item.kind] || item.kind.toUpperCase();
+    const title = document.createElement(item.url ? "a" : "h2");
+    if (item.url) { title.href = item.url; title.target = "_blank"; title.rel = "noopener noreferrer"; }
+    title.className = "library-card-title";
+    title.textContent = item.title;
+    const note = document.createElement("p");
+    note.textContent = item.note || "No notes yet.";
+    const meta = document.createElement("p");
+    meta.className = "library-card-meta";
+    meta.textContent = [item.tags, item.updated].filter(Boolean).join(" · ");
+    const actions = document.createElement("div");
+    actions.className = "library-card-actions";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", () => {
+      document.querySelector("#library-id").value = item.id;
+      document.querySelector("#library-title-input").value = item.title;
+      document.querySelector("#library-url-input").value = item.url;
+      document.querySelector("#library-kind").value = item.kind;
+      document.querySelector("#library-tags").value = item.tags;
+      document.querySelector("#library-note").value = item.note;
+      document.querySelector("#library-cancel").hidden = false;
+      document.querySelector("#library-title-input").focus();
+    });
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "Delete";
+    del.addEventListener("click", async () => {
+      if (!confirm("Delete this local reference?")) return;
+      try {
+        const data = await libraryPost("/api/library/delete", { id: item.id });
+        libraryItems = data.items;
+        renderLibrary();
+        document.querySelector("#library-state").textContent = "Reference removed from this computer.";
+      } catch (error) { document.querySelector("#library-state").textContent = error.message; }
+    });
+    actions.append(edit, del);
+    card.append(type, title, note, meta, actions);
+    if (item.sources?.length) {
+      const details = document.createElement("details");
+      details.className = "library-source";
+      const summary = document.createElement("summary");
+      summary.textContent = `Saved from ${item.sources.length} source${item.sources.length === 1 ? "" : "s"}`;
+      const sourceList = document.createElement("ul");
+      item.sources.forEach(source => {
+        const row = document.createElement("li");
+        row.textContent = [source.browser, source.profile, source.folder].filter(Boolean).join(" · ");
+        sourceList.append(row);
+      });
+      details.append(summary, sourceList);
+      card.append(details);
+    }
+    fragment.append(card);
+  });
+  list.replaceChildren(fragment);
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "library-empty";
+    empty.textContent = query ? "No matching references." : "Your library is empty. Add a reference above.";
+    list.append(empty);
+  }
+}
+async function loadLibrary() {
+  try {
+    libraryItems = (await libraryRequest("/api/library")).items;
+    renderLibrary();
+    document.querySelector("#library-state").textContent = `${libraryItems.length} saved locally on this computer.`;
+  } catch (error) { document.querySelector("#library-state").textContent = error.message; }
+}
+async function saveLibrary(path, payload) {
+  const data = await libraryPost(path, payload);
+  libraryItems = data.items;
+  renderLibrary();
+  document.querySelector("#library-state").textContent = `${libraryItems.length} saved locally on this computer.`;
+}
+document.querySelector("#library-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const payload = {
+    id: document.querySelector("#library-id").value || undefined,
+    title: document.querySelector("#library-title-input").value,
+    url: document.querySelector("#library-url-input").value,
+    kind: document.querySelector("#library-kind").value,
+    tags: document.querySelector("#library-tags").value,
+    note: document.querySelector("#library-note").value
+  };
+  try {
+    await saveLibrary("/api/library/save", payload);
+    event.currentTarget.reset();
+    document.querySelector("#library-id").value = "";
+    document.querySelector("#library-cancel").hidden = true;
+  } catch (error) { document.querySelector("#library-state").textContent = error.message; }
+});
+document.querySelector("#library-cancel").addEventListener("click", () => {
+  document.querySelector("#library-form").reset();
+  document.querySelector("#library-id").value = "";
+  document.querySelector("#library-cancel").hidden = true;
+});
+document.querySelector("#library-search").addEventListener("input", renderLibrary);
+document.querySelector("#library-filter").addEventListener("change", renderLibrary);
+document.querySelector("#library-export").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify({ version: 1, items: libraryItems }, null, 2)], { type: "application/json" });
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(blob);
+  anchor.download = "khaos-hub-library.json";
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(anchor.href), 1000);
+});
+document.querySelector("#library-import-file").addEventListener("change", async event => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    if (file.size > 8 * 1024 * 1024) throw new Error("File is over the 8 MiB import limit.");
+    const imported = JSON.parse(await file.text());
+    if (imported.version !== 1 || !Array.isArray(imported.items) || imported.items.length > 10000)
+      throw new Error("Unsupported file or item count.");
+    if (!confirm(`Import ${imported.items.length} references into this computer's local library?`)) return;
+    const result = await libraryPost("/api/library/import", { items: imported.items });
+    libraryItems = result.items;
+    renderLibrary();
+    document.querySelector("#library-state").textContent =
+      `Imported: ${result.added} new · ${result.merged} matched and merged · ${result.duplicates_in_batch} duplicates consolidated.`;
+  } catch (error) { document.querySelector("#library-state").textContent = `Import stopped: ${error.message}`; }
+  finally { event.target.value = ""; }
+});
+function showBrowserPreview(preview) {
+  const box = document.querySelector("#library-import-preview");
+  const fragment = document.createDocumentFragment();
+  const summary = document.createElement("p");
+  summary.textContent = `${preview.total} saved bookmark entries found in ${preview.counts.length} profiles. Estimate: add ${preview.will_add}, merge ${preview.matching} existing links, consolidate ${preview.duplicates_in_scan} repeats. Titles, links, and folder names stay on this computer; browsing history and page contents are not read.`;
+  fragment.append(summary);
+  preview.counts.forEach(source => {
+    const row = document.createElement("p");
+    row.textContent = `${source.browser} · ${source.profile}: ${source.count} saved · ${source.reading} marked as reading`;
+    fragment.append(row);
+  });
+  if (preview.errors.length) {
+    const warning = document.createElement("p");
+    warning.textContent = `Could not read every profile: ${preview.errors.join("; ")}. Fix or close the affected browser profile, then scan again.`;
+    fragment.append(warning);
+  }
+  const proceed = document.createElement("button");
+  proceed.type = "button";
+  proceed.textContent = "Import and merge duplicates";
+  proceed.disabled = preview.errors.length > 0 || preview.total === 0;
+  proceed.addEventListener("click", async () => {
+    if (!browserScan || !confirm(`Import ${preview.total} saved browser bookmarks into the local Library? Duplicates will merge and originals will remain unchanged.`)) return;
+    proceed.disabled = true;
+    document.querySelector("#library-state").textContent = "Importing local bookmarks…";
+    try {
+      const result = await libraryPost("/api/library/browser-import", { scan_id: browserScan, confirmed: true });
+      libraryItems = result.items;
+      renderLibrary();
+      document.querySelector("#library-state").textContent =
+        `Added ${result.added} · merged ${result.merged} existing links · consolidated ${result.duplicates_in_batch} repeats. Local backup created: ${result.backup_created ? "yes" : "not needed"}.`;
+      box.hidden = true;
+      browserScan = null;
+    } catch (error) {
+      document.querySelector("#library-state").textContent = error.message;
+      proceed.disabled = false;
+    }
+  });
+  if (!preview.errors.length) fragment.append(proceed);
+  box.replaceChildren(fragment);
+  box.hidden = false;
+}
+document.querySelector("#library-browser-scan").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  browserScan = null;
+  document.querySelector("#library-state").textContent = "Scanning saved browser bookmarks on this computer…";
+  try {
+    const preview = await libraryRequest("/api/library/browser-preview");
+    browserScan = preview.scan_id;
+    showBrowserPreview(preview);
+    document.querySelector("#library-state").textContent = preview.message;
+  } catch (error) { document.querySelector("#library-state").textContent = error.message; }
+  finally { button.disabled = false; }
+});
 loadLibrary();

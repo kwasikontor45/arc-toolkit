@@ -11,7 +11,7 @@ import tempfile
 import time
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(os.environ.get('PANEL_ROOT', str(Path(__file__).resolve().parents[1])))
 sys.path.insert(0, str(ROOT / 'bin'))
@@ -22,6 +22,59 @@ panel = importlib.util.module_from_spec(spec)
 loader.exec_module(panel)
 
 class Controls(unittest.TestCase):
+    def test_sudo_packet_auth_ignores_cache_without_invalidating_it(self):
+        with patch.object(panel.subprocess, 'run', return_value=NS(returncode=0)) as run:
+            self.assertTrue(panel.verify_sudo_password('fixture-only-secret'))
+        argv = run.call_args.args[0]
+        options = run.call_args.kwargs
+        self.assertEqual(argv, ['sudo', '-S', '-k', '-v', '-p', ''])
+        self.assertEqual(options['input'], 'fixture-only-secret\n')
+        self.assertIs(options['stdout'], panel.subprocess.DEVNULL)
+        self.assertIs(options['stderr'], panel.subprocess.DEVNULL)
+        self.assertEqual(options['timeout'], 30)
+        self.assertFalse(options['check'])
+
+    def test_policy_packet_is_not_opened_until_sudo_auth_succeeds(self):
+        for answer, accepted, expected in ((None, False, False),
+                                           ('wrong-fixture', False, False),
+                                           ('right-fixture', True, True)):
+            with self.subTest(accepted=accepted, cancelled=answer is None):
+                displayed, logs = [], []
+                view = NS(
+                    accept_var=NS(set=Mock()),
+                    docs_read=set(),
+                    doc_hashes={'stale': 'hash'},
+                    app=NS(root=object(), console=NS(log=lambda *args: logs.append(args))),
+                )
+                view._authenticate_policy_read = lambda: panel.SopView._authenticate_policy_read(view)
+                view._display_policy_packet = lambda paths: displayed.append(paths)
+                with patch.object(panel.simpledialog, 'askstring', return_value=answer), \
+                     patch.object(panel, 'verify_sudo_password', return_value=accepted) as verify:
+                    panel.SopView._read_policy_packet(view)
+                self.assertEqual(bool(displayed), expected)
+                self.assertEqual(verify.called, answer is not None)
+                self.assertFalse(view.docs_read)
+                self.assertFalse(view.doc_hashes)
+
+    def test_sudo_packet_auth_fails_closed_on_timeout_or_denial(self):
+        with patch.object(panel.subprocess, 'run', return_value=NS(returncode=1)):
+            self.assertFalse(panel.verify_sudo_password('fixture-only-secret'))
+        with patch.object(panel.subprocess, 'run', side_effect=subprocess.TimeoutExpired('sudo', 30)):
+            self.assertFalse(panel.verify_sudo_password('fixture-only-secret'))
+
+    def test_policy_packet_stays_closed_if_password_prompt_is_unavailable(self):
+        logs = []
+        view = NS(app=NS(root=object(), console=NS(log=lambda *args: logs.append(args))))
+        with patch.object(panel.simpledialog, 'askstring', side_effect=panel.tk.TclError):
+            self.assertFalse(panel.SopView._authenticate_policy_read(view))
+        self.assertEqual(len(logs), 1)
+
+    def test_legacy_policy_reader_also_requires_auth_before_dialog(self):
+        view = NS(_authenticate_policy_read=lambda: False)
+        with patch.object(panel, 'Dialog') as dialog:
+            panel.SopView._read_doc(view, 'SOT', Path('/unused'))
+        dialog.assert_not_called()
+
     def test_explicit_detached_confirmation_and_recheck(self):
         launched, dialogs, checks = [], [], []
         class Dialog:

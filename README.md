@@ -29,7 +29,13 @@ acceptance.
 The Khaos Lab panel checks that same session-scoped gate before running action buttons, opening the
 inventory editor, or clearing logs. Read-only dashboards and document views stay available while
 locked. The SOP workspace can read the latest GAMEPLAN/SOT, run compliance checks, and use
-`arc sop start "<task>"` to log and acknowledge the session.
+`arc sop start "<task>"` to log and acknowledge the session. Opening the full GAMEPLAN/SOT/MO
+packet first asks for the sudo password in a masked dialog. The check forces fresh authentication
+while ignoring the cached ticket; it runs no privileged command, stores or logs no password, and
+leaves the normal sudo timestamp unchanged. Cancel, rejection, or timeout prevents the panel from
+opening or reading the packet. This is a Khaos Lab reader gate, not filesystem encryption: the
+signed-in workstation account can still access policy files through ordinary OS tools and
+permissions.
 
 ## Using it
 

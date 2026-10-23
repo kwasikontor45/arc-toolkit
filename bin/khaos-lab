@@ -59,7 +59,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, simpledialog
 import traceback
 import webbrowser
 import urllib.request
@@ -1290,6 +1290,25 @@ def panel_preflight_command(cmd):
 def panel_command_allowed(cmd, gate_open):
     """Allow SOP recovery/readiness actions while locked; gate every other command."""
     return gate_open or panel_preflight_command(cmd)
+
+
+def verify_sudo_password(password, timeout=30):
+    """Validate a freshly entered sudo password without running a privileged command."""
+    if not isinstance(password, str) or not password:
+        return False
+    try:
+        result = subprocess.run(
+            ["sudo", "-S", "-k", "-v", "-p", ""],
+            input=password + "\n",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def check_sop_gate(timeout=5):
@@ -4823,7 +4842,7 @@ class SopView(View):
         docs.pack(fill="x", padx=8, pady=(0, 8))
         tk.Label(docs, text="1  ·  REVIEW THE CURRENT POLICY", font=f.small, bg=SURFACE,
                  fg=self.app.phase_accent, anchor="w").pack(fill="x", padx=12, pady=(9, 2))
-        tk.Label(docs, text="GAMEPLAN · SOT · all current MOs · read-only",
+        tk.Label(docs, text="GAMEPLAN · SOT · all current MOs · sudo check before read",
                  font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w").pack(fill="x", padx=12)
         ui.button(docs, "open policy packet", command=self._read_policy_packet,
                   font=f.small, bg=OVERLAY, fg=GOLD, hover_bg=BG,
@@ -4897,11 +4916,41 @@ class SopView(View):
         self.accept_var.set(False)
         self.docs_read.clear()
         self.doc_hashes.clear()
+        if not self._authenticate_policy_read():
+            return
         paths = (
             ("gameplan", "GAMEPLAN · current work context", HOME / "dev-notes/intel-ops/GAMEPLAN.md"),
             ("sot", "SOURCE OF TRUTH · SOT.md", HOME / "dev-notes/intel-ops/SOT.md"),
             ("mo", "OPERATING PRINCIPLES · all current MOs", HOME / "dev-notes/intel-ops/MO.md"),
         )
+        self._display_policy_packet(paths)
+
+    def _authenticate_policy_read(self):
+        try:
+            password = simpledialog.askstring(
+                "SOP policy access",
+                "Enter your sudo password to open the current policy packet.\n"
+                "A fresh check is required; the normal sudo ticket is left untouched.",
+                show="*",
+                parent=self.app.root,
+            )
+        except tk.TclError:
+            self.app.console.log("Sudo prompt unavailable; policy packet remains closed.", ROSE)
+            return False
+        if password is None:
+            self.app.console.log("SOP packet closed; no policy files were opened.", FG_MUTED)
+            return False
+        try:
+            authorized = verify_sudo_password(password)
+        finally:
+            password = None
+        if not authorized:
+            self.app.console.log("Sudo authentication failed; policy packet remains closed.", ROSE)
+            return False
+        return True
+
+    def _display_policy_packet(self, paths):
+        """Read and display policy documents only after sudo authentication."""
         d = Dialog(self.app, "policy packet · read before operations", resizable=True, geometry="940x700")
         frame = tk.Frame(d.shell, bg=SURFACE)
         frame.pack(fill="both", expand=True, padx=14, pady=(12, 8))
@@ -5005,6 +5054,8 @@ class SopView(View):
             self.app.run_async(command, timeout=20, on_done=self.refresh_gate)
 
     def _read_doc(self, title, path, tail=None, read_key=None):
+        if not self._authenticate_policy_read():
+            return
         d = Dialog(self.app, title, resizable=True, geometry="940x650")
         tk.Label(d.shell, text=f"read-only source  ·  {path}", font=self.app.f.small,
                  bg=SURFACE, fg=FG_MUTED, anchor="w").pack(fill="x", padx=14, pady=(12, 5))

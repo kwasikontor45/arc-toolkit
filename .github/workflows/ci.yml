@@ -21,6 +21,9 @@ jobs:
       - name: check out source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      - name: install Tk bindings for panel tests
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y python3-tk
+
       - name: check tracked shell syntax
         shell: bash
         run: |

@@ -324,6 +324,9 @@ _arc_greeting_phase_watch() {
       "${_ARC_GREETING_RADAR_LABEL:-LOCAL_RADAR}" \
       "${_ARC_GREETING_SESSION_STATE:-[ STATION_READY ]}"
   fi
+  if [[ -n "${_ARC_GREETING_RADAR_LOCAL_IP:-}" ]]; then
+    _arc_greeting_radar_line "$_phase" 'LOCAL_IP' "$_ARC_GREETING_RADAR_LOCAL_IP"
+  fi
 }
 
 # Show the provider's human-readable city/country, never its server identifier.
@@ -364,29 +367,81 @@ _arc_greeting_vpn_location() {
   fi
   _location=$(LC_ALL=C printf '%s' "$_location" | LC_ALL=C tr -cd '[:alnum:],. -')
   (( ${#_location} >= 1 && ${#_location} <= 80 )) || return 0
+  # ProtonVPN reports locations as "City, Country". Put the country first,
+  # while retaining any state/region between the city and country.
+  if [[ "$_location" == *,* ]]; then
+    local _place="${_location%,*}" _country="${_location##*,}"
+    _place="${_place% }"; _country="${_country# }"
+    [[ -z "$_place" || -z "$_country" ]] || _location="$_country, $_place"
+  fi
   printf '%s\n' "$_location"
 }
 
+# Read Arc Heal's owner-only, local IP-check result. Never trigger a check or
+# expose route details here; stale, missing, or unrecognized reports fail closed.
+_arc_greeting_ip_check() {
+  local _file="$HOME/khaos-lab/arc-heal-log/home-ip-latest.md"
+  local _modified='' _now='' _age=0 _minutes=0 _hours=0 _age_text='' _line='' _line_lower='' _state='unavailable' _reason=''
+  [[ -f "$_file" && ! -L "$_file" && -O "$_file" && -r "$_file" ]] || {
+    printf 'unavailable\n'; return 0
+  }
+  _modified=$(stat -c '%Y' -- "$_file" 2>/dev/null) || _modified=''
+  _now=$(date +%s 2>/dev/null) || _now=''
+  [[ "$_modified" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]] || {
+    printf 'unavailable\n'; return 0
+  }
+  _age=$((_now - _modified))
+  (( _age >= 0 )) || { printf 'unavailable\n'; return 0; }
+  _minutes=$((_age / 60))
+  _hours=$((_age / 3600))
+  if (( _hours > 0 )); then _age_text="${_hours}h"
+  else _age_text="${_minutes}m"; fi
+  # Arc Heal's guarded home-IP check runs on a three-hour cadence.
+  if (( _age > 14400 )); then
+    printf 'stale · checked %s ago\n' "$_age_text"
+    return 0
+  fi
+  _line=$(awk '/aws-lab-ip/ { sub(/^.*—[[:space:]]*/, ""); print; exit }' "$_file" 2>/dev/null)
+  case "$_line" in
+    *deferred*|*DEFERRED*)
+      _state='deferred'
+      # Translate Arc Heal's detailed guard note into a short, safe explanation.
+      # Do not print interface names, addresses, SSIDs, or the raw report text.
+      _line_lower=$(printf '%s' "$_line" | tr '[:upper:]' '[:lower:]')
+      case "$_line_lower" in
+        *vpn*|*tunnel*|*proxy*) _reason='VPN/tunnel active' ;;
+        *ssid*|*gateway*|*pinned\ home*) _reason='not on saved home Wi-Fi' ;;
+        *not\ confirmed\ as\ wi-fi*|*default\ route*) _reason='direct Wi-Fi unavailable' ;;
+        *custom\ dns*|*nextdns*|*loopback\ resolver*) _reason='custom DNS active' ;;
+        *home\ network\ identity*|*not\ configured*) _reason='home network not configured' ;;
+        *no\ active\ ipv4\ route*|*no\ active\ route*) _reason='no active network route' ;;
+        *terraform*|*source\ absent*) _reason='IP-check source unavailable' ;;
+        *) _reason='safety guard active' ;;
+      esac
+      ;;
+    *HEALED*|*healed*) _state='healed' ;;
+    *FLAGGED*|*flagged*|*⚠*) _state='attention' ;;
+    *✅*|*'check passed'*) _state='healthy' ;;
+    *) _state='unavailable' ;;
+  esac
+  if [[ -n "$_reason" ]]; then
+    printf '%s · %s · checked %s ago\n' "$_state" "$_reason" "$_age_text"
+  else
+    printf '%s · checked %s ago\n' "$_state" "$_age_text"
+  fi
+}
+
 _arc_greeting_motto_body() {
-  local _phase="$1" _rose='\033[38;2;245;198;215m' _glint _reset='\033[0m'
-  local _width _line _before _pad _body='E Pluribus Unum  · ☠️💀☠️  · In God We Trust' _glints='✧'
+  local _phase="$1" _rose='\033[38;2;245;198;215m' _reset='\033[0m'
+  local _width _line _pad _body='E Pluribus Unum  · ☠️💀☠️  · In God We Trust'
   _width=$(_arc_greeting_width)
-  (( _width < 52 )) || _glints='✧ ✧'
-  _arc_greeting_phase_colors "$_phase"
-  _glint="$_ARC_GREETING_PHASE_BEAD"
   if ! _arc_greeting_has_color; then
-    _rose=''; _glint=''; _reset=''
+    _rose=''; _reset=''
   fi
   while IFS= read -r _line; do
     _pad=$(( (_width - ${#_line} - 2) / 2 )); (( _pad >= 2 )) || _pad=2
-    printf '%*s' "$_pad" ''
-    if [[ "$_line" == *'✧'* ]]; then
-      _before=${_line%%✧*}
-      printf '%b%s%b%b%s%b\n' "$_rose" "$_before" "$_reset" "$_glint" "${_line#"$_before"}" "$_reset"
-    else
-      printf '%b%s%b\n' "$_rose" "$_line" "$_reset"
-    fi
-  done < <(_arc_greeting_wrap "$_body $_glints" "$((_width - 4))")
+    printf '%*s%b%s%b\n' "$_pad" '' "$_rose" "$_line" "$_reset"
+  done < <(_arc_greeting_wrap "$_body" "$((_width - 4))")
 }
 
 # One bounded, left-aligned divider for the complete greeting.
@@ -542,6 +597,7 @@ _arc_greeting_collect_rows() {
 
   local profile="${ARC_GREETING_PROFILE:-station}" host_name login_name now session_state radar_label origin_name
   local SYSTEM_BULLET=''
+  _ARC_GREETING_RADAR_LOCAL_IP=''
   [[ -n "$N" ]] && SYSTEM_BULLET="$_ARC_GREETING_DESIRE_COLOR"
   host_name=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'unknown-node')
   login_name=$(id -un 2>/dev/null || printf '%s' "${USER:-unknown-user}")
@@ -757,6 +813,14 @@ except Exception:
   fi
   _ARC_GREETING_SESSION_STATE="$session_state"
 
+  local local_ip_display='' ip_check_status=''
+  if [[ "$profile" != cloud ]]; then
+    local_ip_display="$local_ip"
+    ip_check_status=$(_arc_greeting_ip_check)
+    [[ -n "$ip_check_status" ]] || ip_check_status='unavailable'
+  fi
+  _ARC_GREETING_RADAR_LOCAL_IP="${local_ip_display}${ip_check_status:+ · IP_CHECK $ip_check_status}"
+
   # Storage checks include actual mount I/O to avoid reporting a stale mount as healthy.
   local usb_text fortress_text uu uf fu ff
   if timeout 0.3s mountpoint -q /mnt/storage 2>/dev/null && timeout 0.3s ls /mnt/storage/ >/dev/null 2>&1; then
@@ -813,13 +877,12 @@ except Exception:
   [[ "$ufw_text$f2b_text$aa_text" != *"?"* ]] || security_color="$Y"
   [[ "$luks_text" == stale ]] && security_color="$R"
   _arc_greeting_capture_row 'SEC' "UFW ${ufw_text} · F2B ${f2b_text} · AA ${aa_text} · LUKS ${luks_text}" "$security_color" "$SYSTEM_BULLET"
-  _arc_greeting_capture_row 'LOCAL_IP' "$local_ip" "$TEXT" "$SYSTEM_BULLET"
   local storage_color="$C"
   [[ "$usb_color" == "$Y" || "$fortress_color" == "$Y" ]] && storage_color="$Y"
   [[ "$usb_color" == "$D" && "$fortress_color" == "$D" ]] && storage_color="$D"
   _arc_greeting_capture_row 'STORE' "USB ${usb_text} · Fortress ${fortress_text}" "$storage_color" "$SYSTEM_BULLET"
   _arc_greeting_capture_row 'HOST' "swap ${sw_used}/${sw_total} · shell ${shell_name} ${shell_ver}${omz_tag}" "$TEXT" "$SYSTEM_BULLET"
-  _arc_greeting_capture_footer "$_phase" "$radar_label" "$session_state" "$routePairOne" "$routePairTwo" "$now" "$C"
+  _arc_greeting_capture_footer "$_phase" "$radar_label" "$session_state" "$routePairOne" "$routePairTwo" "$now" "$C" "$local_ip_display" "$ip_check_status"
 }
 
 _arc_greeting_word() {
@@ -874,7 +937,7 @@ _arc_greeting() {
   _terminalWidth=$(_arc_greeting_width)
   _node=${HOSTNAME:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'unknown-node')}
   _login=$(id -un 2>/dev/null || printf '%s' "${USER:-unknown-user}")
-  _key="cockpit-v2|$_day|$(_arc_greeting_current_phase)|$_terminalWidth|${TERM:-dumb}|$_ARC_GREETING_COLOR|$ARC_GREETING_STYLE|$_ascii|$_node|$_login"
+  _key="cockpit-v3|$_day|$(_arc_greeting_current_phase)|$_terminalWidth|${TERM:-dumb}|$_ARC_GREETING_COLOR|$ARC_GREETING_STYLE|$_ascii|$_node|$_login"
   _cacheRoot="${XDG_CACHE_HOME:-$HOME/.cache}/arc"
   _cacheDir="$_cacheRoot/greeting-snapshots"
   _cache="$_cacheDir/station"
@@ -899,6 +962,7 @@ _arc_greeting() {
              IFS= read -r _ARC_GREETING_RADAR_ROUTE_ONE &&
              IFS= read -r _ARC_GREETING_RADAR_ROUTE_TWO &&
              IFS= read -r _ARC_GREETING_RADAR_DNS_LABEL &&
+             IFS= read -r _ARC_GREETING_RADAR_LOCAL_IP &&
              [[ "$_ARC_GREETING_PHASE" == nyx || "$_ARC_GREETING_PHASE" == choice ||
                 "$_ARC_GREETING_PHASE" == desire || "$_ARC_GREETING_PHASE" == still-pine ]]; then
             _ARC_GREETING_OBSERVED_AT="$_stamp"
@@ -933,7 +997,7 @@ _arc_greeting() {
       _cacheTemp=$(umask 077; mktemp "$_cacheDir/.station.XXXXXXXX" 2>/dev/null) || _cacheTemp=''
       if [[ -n "$_cacheTemp" ]]; then
         if {
-          printf '%s\n' "$_now" "$_key" "${_ARC_GREETING_PHASE:-nyx}" "${_ARC_GREETING_RADAR_LABEL:-LOCAL_RADAR}" "${_ARC_GREETING_SESSION_STATE:-[ UNKNOWN ]}" "${_ARC_GREETING_RADAR_ROUTE_ONE:-}" "${_ARC_GREETING_RADAR_ROUTE_TWO:-}" "${_ARC_GREETING_RADAR_DNS_LABEL:-DNS_RADAR}"
+          printf '%s\n' "$_now" "$_key" "${_ARC_GREETING_PHASE:-nyx}" "${_ARC_GREETING_RADAR_LABEL:-LOCAL_RADAR}" "${_ARC_GREETING_SESSION_STATE:-[ UNKNOWN ]}" "${_ARC_GREETING_RADAR_ROUTE_ONE:-}" "${_ARC_GREETING_RADAR_ROUTE_TWO:-}" "${_ARC_GREETING_RADAR_DNS_LABEL:-DNS_RADAR}" "${_ARC_GREETING_RADAR_LOCAL_IP:-}"
           while IFS= read -r _payload; do printf '%s\n' "$_payload"; done < "$_temp"
         } > "$_cacheTemp" 2>/dev/null; then
           mv -f -- "$_cacheTemp" "$_cache" 2>/dev/null || rm -f -- "$_cacheTemp"
@@ -959,8 +1023,9 @@ _arc_greeting_capture_footer() {
   _arc_greeting_capture_section 'RADAR & NAV'
   _arc_greeting_capture_row "$2" "$3${4:+ · $4}"
   [[ -z "$5" ]] || _arc_greeting_capture_row DNS_RADAR "$3 · $5"
+  [[ -z "${8:-}" ]] || _arc_greeting_capture_row LOCAL_IP "${8}${9:+ · IP_CHECK $9}" "$TEXT" "$SYSTEM_BULLET"
   _arc_greeting_capture_row LOCAL_TIME "$6 · $1"
-  _arc_greeting_capture_row '@MOTTO' 'E Pluribus Unum · ☠️💀☠️ · In God We Trust ✧ ✧'
+  _arc_greeting_capture_row '@MOTTO' 'E Pluribus Unum · ☠️💀☠️ · In God We Trust'
 }
 _arc_greeting_uncached() {
   local _rows _width _color=0 _result=0
@@ -984,6 +1049,7 @@ width=max(24,min(96,int(widthText))); color=colorText=="1"; plain=style=="plain"
 palette={"nyx":(234,154,151),"choice":(94,200,237),"desire":(246,193,119),"still-pine":(196,167,231)}
 phaseColor=palette.get(phase,palette["nyx"]); sage=(164,194,139); white=(226,229,233); dim=(112,124,132)
 rose=(245,198,215); red=(255,68,92); green=(134,210,160); amber=(246,193,119)
+methodColor=(94,200,237); quoteColor=(246,193,119)
 def paint(s,c,bold=False):
  return ("\x1b["+("1;" if bold else "")+"38;2;%d;%d;%d"%c+"m"+s+"\x1b[0m") if color and s else s
 def cells(s):return sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in ("W","F") else 1 for c in s)
@@ -1023,7 +1089,7 @@ sunTzuQuotes=(
  "Appear weak when you are strong.",
 )
 sunTzuQuote=sunTzuQuotes[(date.today().toordinal()-1)%len(sunTzuQuotes)]
-groups.setdefault("OPERATIONS",[]).append(("SUN TZU","“"+sunTzuQuote+"”",phaseColor))
+if words:words.append(("SUN TZU","“"+sunTzuQuote+"”",quoteColor))
 values={k:t for records in groups.values() for k,t,_ in records}
 def emit(s=""):print("  "+s if s else "")
 def emit_center(s):
@@ -1077,21 +1143,25 @@ for key,text,base in groups.get("RADAR",[]):
   suffix=" · "+phase
   stamp=text[:-len(suffix)] if text.endswith(suffix) else text
   badge="[ "+phase.upper()+" ]"
-  labelWidth=min(11,max(4,limit//3));available=max(8,limit-labelWidth-4)
-  chunks=wrap(stamp,available)
-  if cells(chunks[-1])+2+cells(badge)<=available:chunks[-1]+="  "+badge
-  for i,chunk in enumerate(chunks):
-   prefix="  "+paint(key.ljust(labelWidth),dim)+"  " if i==0 else "  "+" "*labelWidth+"  "
-   if chunk.endswith(badge):
-    stampPart=chunk[:-len(badge)].rstrip()
-    print(prefix+paint(stampPart,base)+"  "+paint(badge,phaseColor,True))
-   else:print(prefix+paint(chunk,base))
-  if not chunks[-1].endswith(badge):emit(paint(badge,phaseColor,True))
+  chunks=wrap(key+"   "+stamp,limit)
+  if cells(chunks[-1])+2+cells(badge)<=limit:chunks[-1]+="  "+badge
+  else:chunks.append(badge)
+  for chunk in chunks:
+   if chunk==badge:
+    emit_center(paint(badge,phaseColor,True))
+   elif chunk.startswith(key+"   "):
+    emit_center(paint(key,dim)+"   "+paint(chunk[len(key)+3:],base)+("  "+paint(badge,phaseColor,True) if chunk.endswith(badge) else ""))
+   elif chunk.endswith(badge):
+    emit_center(paint(chunk[:-len(badge)].rstrip(),base)+"  "+paint(badge,phaseColor,True))
+   else:emit_center(paint(chunk,base))
  elif key=="@MOTTO":
   for chunk in wrap(text,limit):emit_center(paint(chunk,rose))
 # WOD keeps its four established content colors, while the phase remains ambient.
 if words:divider("WOD · INTERCEPT")
-for _,text,_base in words:
+for key,text,_base in words:
+ if key=="SUN TZU":
+  for chunk in wrap("SUN TZU  "+text,limit):emit(paint(chunk,quoteColor))
+  continue
  parts=re.split(r"( / | · )",text);colored=""
  for i,part in enumerate(parts):colored+=paint(part,dim if part.strip() in ("/","·") else list(palette.values())[min(i//2,3)])
  if cells(text)<=limit:emit(colored)
@@ -1103,11 +1173,12 @@ for key,text,base in groups.get("COMMAND",[]):
  if key=="IDENTITY":text=f"lt · {node} · arc"
  elif key=="USER":text=values.get("USER","unknown-user")
  if key=="METHOD":
-  colored=re.sub(r" > "," "+paint(">",sage,True)+" ",text)
+  colored=re.sub(r" > "," "+paint(">",methodColor,True)+" ",text)
   if cells(text)+13<=limit:emit("  "+paint(key.ljust(9),dim)+"  "+colored)
   else:
    emit("  "+paint(key,dim))
-   for chunk in wrap(text,max(5,limit-6)):emit("    "+re.sub(r" > "," "+paint(">",sage,True)+" ",chunk))
+   for chunk in wrap(text,max(5,limit-6)):
+    emit("    "+re.sub(r" > "," "+paint(">",methodColor,True)+" ",chunk))
   continue
  for line in record(key,text,base):emit(line)
 for title,name in (("OPERATIONS","OPERATIONS"),("SYSTEMS","SYSTEMS")):

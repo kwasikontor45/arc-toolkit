@@ -21,7 +21,7 @@ class GreetingTests(unittest.TestCase):
    "mountpoint":"[ \"$TEST_STATE\" = up ]",
    "ls":"[ \"$TEST_STATE\" = up ]",
    "arc":"[ \"$TEST_STATE\" != missing ] && printf 'austere / aw-steer · adjective · plain, restrained, and without excess\\n'",
-   "protonvpn":"[ \"$TEST_STATE\" != up ] || printf 'Server: US#1\\n'",
+   "protonvpn":"[ \"$TEST_STATE\" != up ] || printf 'Server: US#1 in Seattle, United States\\n'",
    "nmcli":"exit 1",
    "curl":"exit 99"}
   for name,body in bodies.items():
@@ -116,7 +116,10 @@ class GreetingTests(unittest.TestCase):
   self.assertGreater(len(brand)-len(brand.lstrip()),25)
   time_line=next(line for line in out.splitlines() if "LOCAL_TIME" in line)
   self.assertRegex(time_line,r"\[ (?:NYX|CHOICE|DESIRE|STILL-PINE) \]")
+  self.assertGreater(len(time_line)-len(time_line.lstrip()),10)
   self.assertNotRegex(time_line,r"· still-pine$")
+  self.assertIn("METHOD",out)
+  self.assertIn("Recognize > construct > visualize > analyze > interpret",out)
   self.assertIn("⌜ OPERATIONS",out);self.assertIn("⌜ SYSTEMS",out)
   self.assertIn("⌜ KHAOS-LAB",out)
   self.assertIn("DEV-STUDIO",out)
@@ -125,8 +128,21 @@ class GreetingTests(unittest.TestCase):
   sunTzuQuotes=("All warfare is based on deception.","Attack him where he is unprepared.","Appear weak when you are strong.")
   self.assertIn("SUN TZU",out)
   self.assertIn(sunTzuQuotes[(date.today().toordinal()-1)%len(sunTzuQuotes)],out)
+  self.assertRegex(out,r"LOCAL_IP\s+192\.0\.2\.2 · IP_CHECK unavailable")
+  self.assertIn("United States, Seattle",out);self.assertNotIn("ISP_EXT",out)
+  radar=next(i for i,line in enumerate(out.splitlines()) if "LOCAL_RADAR" in line)
+  dns=next(i for i,line in enumerate(out.splitlines()) if "DNS_RADAR" in line)
+  local_ip=next(i for i,line in enumerate(out.splitlines()) if "LOCAL_IP" in line)
+  local_time=next(i for i,line in enumerate(out.splitlines()) if "LOCAL_TIME" in line)
+  self.assertLess(local_time,radar);self.assertLess(radar,dns);self.assertLess(dns,local_ip)
+  wod=next(i for i,line in enumerate(out.splitlines()) if "WOD · INTERCEPT" in line)
+  quote=next(i for i,line in enumerate(out.splitlines()) if "SUN TZU" in line)
+  command=next(i for i,line in enumerate(out.splitlines()) if "COMMAND" in line)
+  self.assertLess(wod,quote);self.assertLess(quote,command)
+  self.assertFalse(any("SUN TZU" in line for line in out.splitlines() if "OPERATIONS" in line))
   motto=next(line for line in out.splitlines() if "E Pluribus" in line)
   self.assertIn("☠️💀☠️",motto)
+  self.assertNotIn("✧",motto)
   import unicodedata
   motto_width=sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in ("W","F") else 1 for c in motto.strip())
   self.assertEqual(len(motto)-len(motto.lstrip()),2+(92-motto_width)//2)
@@ -162,9 +178,51 @@ class GreetingTests(unittest.TestCase):
    self.assertEqual(result.returncode,0,result.stderr)
    self.assertEqual(result.stdout.strip(),phase)
 
+ def test_ip_check_reports_guarded_and_stale_health(self):
+  report=self.home/"khaos-lab/arc-heal-log/home-ip-latest.md"
+  report.parent.mkdir(parents=True)
+  cases=[
+   ("VPN, tunnel, or proxy detected (route proton0; interfaces tun0); deferred without reading or changing AWS rules","VPN/tunnel active",("proton0","tun0")),
+   ("current Wi-Fi SSID/gateway does not match the pinned home eero network; deferred","not on saved home Wi-Fi",("eero","SSID","gateway")),
+   ("custom DNS is active (NextDNS or loopback resolver); deferred until plain Wi-Fi with custom DNS off","custom DNS active",("NextDNS","127.0.0.1")),
+   ("default route is not confirmed as Wi-Fi (wlan0, type unknown); deferred","direct Wi-Fi unavailable",("wlan0","unknown")),
+   ("home network identity is not configured; deferred","home network not configured",()),
+   ("no active IPv4 route; deferred until the home Wi-Fi path is available","no active network route",()),
+   ("Terraform source absent; deferred","IP-check source unavailable",()),
+  ]
+  for reason,label,hidden in cases:
+   with self.subTest(reason=reason):
+    report.write_text("# arc-heal\nRun took 0s · 1 ok · 0 healed · 0 flagged\n\n- ✅ **aws-lab-ip** — "+reason+"\n")
+    recent=self.runGreeting(ARC_GREETING_CACHE="0")
+    self.assertRegex(recent,r"LOCAL_IP\s+192\.0\.2\.2 · IP_CHECK deferred · "+re.escape(label)+r" · checked \d+m ago")
+    local_line=next(line for line in recent.splitlines() if "LOCAL_IP" in line)
+    for private_detail in hidden:
+     self.assertNotIn(private_detail,local_line)
+  old=time.time()-18000
+  os.utime(report,(old,old))
+  stale=self.runGreeting(ARC_GREETING_CACHE="0")
+  self.assertIn("IP_CHECK stale · checked 5h ago",stale)
+
+ def test_local_time_stays_centered_as_it_wraps(self):
+  import unicodedata
+  rows=self.root/"centered-time-fixture.tsv"
+  rows.write_text("@SECTION\tRADAR & NAV\nLOCAL_TIME\tThu, 22 Oct 2026 · 04:31:00 PDT · NYX\t\\033[38;2;226;229;233m\n@MOTTO\tE Pluribus Unum · ☠️💀☠️ · In God We Trust\n")
+  for width in (24,40,52,80,96):
+   code="source "+SOURCE+"; _arc_greeting_cockpit_render \""+str(rows)+"\" "+str(width)+" nyx 0 cockpit"
+   result=subprocess.run(["bash","-c",code],env=self.env,capture_output=True,text=True,timeout=5)
+   self.assertEqual(result.returncode,0,result.stderr)
+   lines=result.stdout.splitlines()
+   start=next(i for i,line in enumerate(lines) if "LOCAL_TIME" in line)
+   end=next(i for i,line in enumerate(lines[start+1:],start+1) if "E Pluribus" in line)
+   for line in lines[start:end]:
+    visible=line.strip()
+    cells=sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in ("W","F") else 1 for c in visible)
+    expected=2+max(0,((width-4)-cells)//2)
+    self.assertEqual(len(line)-len(line.lstrip()),expected,(width,line))
+
  def test_circadian_color_is_limited_to_live_phase_signals(self):
   rows=self.root/"circadian-fixture.tsv"
-  fixture="WOD\tgossamer / gos-uh-mer · noun · a very light, delicate material or thread\n@SECTION\tOPERATIONS\nRAM\t3.3Gi/7.7Gi used · 4.4Gi free\t\\033[38;2;226;229;233m\n@SECTION\tSYSTEMS\nHOST\tswap 0B/7.9Gi · shell zsh 5.9/omz\t\\033[38;2;226;229;233m\n@SECTION\tRADAR & NAV\nLOCAL_TIME\tSun, 18 Oct 2026 · 05:55:45 PDT · PHASE\t\\033[38;2;226;229;233m\n@MOTTO\tE Pluribus Unum · ☠️💀☠️ · In God We Trust ✧ ✧\n"
+  fixture="WOD\tgossamer / gos-uh-mer · noun · a very light, delicate material or thread\n@SECTION\tIDENTITY & INTENT\nMETHOD\tRecognize > construct > visualize > analyze > interpret\n@SECTION\tOPERATIONS\nRAM\t3.3Gi/7.7Gi used · 4.4Gi free\t\\033[38;2;226;229;233m\n@SECTION\tSYSTEMS\nHOST\tswap 0B/7.9Gi · shell zsh 5.9/omz\t\\033[38;2;226;229;233m\n@SECTION\tRADAR & NAV\nLOCAL_TIME\tSun, 18 Oct 2026 · 05:55:45 PDT · PHASE\t\\033[38;2;226;229;233m\n@MOTTO\tE Pluribus Unum · ☠️💀☠️ · In God We Trust\n"
   palette={"nyx":"234;154;151","choice":"94;200;237","desire":"246;193;119","still-pine":"196;167;231"}
   for phase,rgb in palette.items():
    rows.write_text(fixture.replace("PHASE",phase))
@@ -177,8 +235,11 @@ class GreetingTests(unittest.TestCase):
    self.assertIn("\x1b[38;2;164;194;139mRIG ",result.stdout)
    self.assertIn("\x1b[1;38;2;255;68;92m418\x1b[0m",result.stdout)
    self.assertIn("\x1b[1;38;2;"+rgb+"m[ "+phase.upper()+" ]",result.stdout)
+   self.assertIn("\x1b[1;38;2;94;200;237m>\x1b[0m",result.stdout)
+   self.assertIn("\x1b[38;2;246;193;119mSUN TZU “",result.stdout)
    self.assertIn("\x1b[38;2;234;154;151mgossamer",result.stdout)
    self.assertIn("\x1b[38;2;245;198;215mE Pluribus",result.stdout)
+   self.assertNotIn("✧",plain_output)
    self.assertNotIn("LOAD",result.stdout)
    self.assertIn("⌜ WOD · INTERCEPT",plain_output)
    self.assertNotIn("//",plain_output)

@@ -506,6 +506,7 @@ body { background:radial-gradient(ellipse at 72% 2%,rgba(var(--phase-rgb),.07),t
 .library-source summary{cursor:pointer;min-height:26px}
 .library-source ul{margin:6px 0;padding-left:18px}
 .library-source li{margin:4px 0;overflow-wrap:anywhere}
+.library-load-more{grid-column:1/-1;justify-self:center;min-height:38px;padding:8px 15px;border:1px solid var(--line-bright);border-radius:999px;background:rgba(var(--surface-rgb),.75);color:var(--paper);font:inherit;cursor:pointer}
 @media (prefers-reduced-motion: no-preference) {
   .rail-link,.mobile-link,.scenario,.library-card { transition: color .16s ease,border-color .16s ease,background .16s ease,transform .16s ease; }
   .rail-link:hover,.mobile-link:hover { border-color: var(--line); transform: translateY(-1px); }

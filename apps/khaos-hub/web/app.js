@@ -279,6 +279,7 @@ refreshCalendar();
 let libraryToken = "";
 let libraryItems = [];
 let browserScan = null;
+let libraryVisibleLimit = 36;
 const libraryKinds = {
   bookmark: "Bookmark", reading: "Reading list", tutorial: "Tutorial",
   research: "Research", incident: "Incident reference"
@@ -324,7 +325,7 @@ function renderLibrary() {
     return (filter === "all" || item.kind === filter) &&
       [item.title, item.url, item.tags, item.note, sourceText].join(" ").toLowerCase().includes(query);
   });
-  rows.forEach(item => {
+  rows.slice(0, libraryVisibleLimit).forEach(item => {
     const card = document.createElement("article");
     card.className = "library-card";
     const type = document.createElement("p");
@@ -362,6 +363,7 @@ function renderLibrary() {
       try {
         const data = await libraryPost("/api/library/delete", { id: item.id });
         libraryItems = data.items;
+        libraryVisibleLimit = 36;
         renderLibrary();
         document.querySelector("#library-state").textContent = "Reference removed from this computer.";
       } catch (error) { document.querySelector("#library-state").textContent = error.message; }
@@ -385,6 +387,14 @@ function renderLibrary() {
     fragment.append(card);
   });
   list.replaceChildren(fragment);
+  if (rows.length > libraryVisibleLimit) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "library-load-more";
+    more.textContent = `Show next 36 · ${rows.length - libraryVisibleLimit} remaining`;
+    more.addEventListener("click", () => { libraryVisibleLimit += 36; renderLibrary(); });
+    list.append(more);
+  }
   if (!rows.length) {
     const empty = document.createElement("p");
     empty.className = "library-empty";
@@ -395,6 +405,7 @@ function renderLibrary() {
 async function loadLibrary() {
   try {
     libraryItems = (await libraryRequest("/api/library")).items;
+    libraryVisibleLimit = 36;
     renderLibrary();
     document.querySelector("#library-state").textContent = `${libraryItems.length} saved locally on this computer.`;
   } catch (error) { document.querySelector("#library-state").textContent = error.message; }
@@ -402,6 +413,7 @@ async function loadLibrary() {
 async function saveLibrary(path, payload) {
   const data = await libraryPost(path, payload);
   libraryItems = data.items;
+  libraryVisibleLimit = 36;
   renderLibrary();
   document.querySelector("#library-state").textContent = `${libraryItems.length} saved locally on this computer.`;
 }
@@ -427,8 +439,8 @@ document.querySelector("#library-cancel").addEventListener("click", () => {
   document.querySelector("#library-id").value = "";
   document.querySelector("#library-cancel").hidden = true;
 });
-document.querySelector("#library-search").addEventListener("input", renderLibrary);
-document.querySelector("#library-filter").addEventListener("change", renderLibrary);
+document.querySelector("#library-search").addEventListener("input", () => { libraryVisibleLimit = 36; renderLibrary(); });
+document.querySelector("#library-filter").addEventListener("change", () => { libraryVisibleLimit = 36; renderLibrary(); });
 document.querySelector("#library-export").addEventListener("click", () => {
   const blob = new Blob([JSON.stringify({ version: 1, items: libraryItems }, null, 2)], { type: "application/json" });
   const anchor = document.createElement("a");
@@ -448,6 +460,7 @@ document.querySelector("#library-import-file").addEventListener("change", async 
     if (!confirm(`Import ${imported.items.length} references into this computer's local library?`)) return;
     const result = await libraryPost("/api/library/import", { items: imported.items });
     libraryItems = result.items;
+    libraryVisibleLimit = 36;
     renderLibrary();
     document.querySelector("#library-state").textContent =
       `Imported: ${result.added} new · ${result.merged} matched and merged · ${result.duplicates_in_batch} duplicates consolidated.`;
@@ -481,6 +494,7 @@ function showBrowserPreview(preview) {
     try {
       const result = await libraryPost("/api/library/browser-import", { scan_id: browserScan, confirmed: true });
       libraryItems = result.items;
+      libraryVisibleLimit = 36;
       renderLibrary();
       document.querySelector("#library-state").textContent =
         `Added ${result.added} · merged ${result.merged} existing links · consolidated ${result.duplicates_in_batch} repeats. Local backup created: ${result.backup_created ? "yes" : "not needed"}.`;

@@ -53,6 +53,8 @@ class LibraryTests(unittest.TestCase):
         self.assertIn('title.textContent = item.title',js)
         self.assertIn('/api/library/save',js)
         self.assertIn('/api/library/browser-import',js)
+        self.assertIn('rows.slice(0, libraryVisibleLimit)',js)
+        self.assertIn('library-load-more',js)
         self.assertNotIn("history.",js)
         self.assertNotIn("document.cookie",js)
         css=(self.root/"apps/khaos-hub/web/app.css").read_text()

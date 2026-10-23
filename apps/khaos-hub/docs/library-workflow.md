@@ -13,3 +13,5 @@ The importer reads local Brave, Chromium, Chrome, Vivaldi, Edge, and Firefox boo
 Links are matched after normalizing scheme/host case, default ports, and an empty root path. Query strings and fragments are preserved. Existing Library titles, notes, and tags stay as authored; imported browser/profile/folder/title provenance is merged into the source details. Reading-list labels are recognized only when present in a browser bookmark tree or folder. No dedicated reading-list items were present in the workstation profiles inspected on 2026-10-23.
 
 JSON export/import is available for moving this local index. Imports are size-limited, validated as `http`/`https` references, and applied in one transaction. Never place credentials or private access URLs in the Library.
+
+The Library renders references in small batches so a large collection does not turn into a long, heavy page. Search and type filters start at the first batch; **Show next** reveals more without losing the current filter.

@@ -49,7 +49,10 @@ class GarageRouteChecks(unittest.TestCase):
         self.assertIn(base64.b64encode(wallpaper.read_bytes()).decode(), self.body)
         self.assertIn("connect-src 'none'", self.body)
         self.assertIn("default-src 'none'", self.body)
-        self.assertIn("frame-ancestors 'none'", self.body)
+        # frame-ancestors is enforced by the HTTP response header; browsers
+        # ignore it in a CSP meta element. The response-header check below
+        # verifies the real protection.
+        self.assertNotIn("frame-ancestors 'none'", self.body)
         self.assertIn("no host access", self.body)
         for context in ("Calendar looks stale", "A task was checked", "A status tile looks wrong"):
             self.assertIn(context, self.body)

@@ -39,6 +39,12 @@ jobs:
       - name: test calendar state
         run: python3 -m unittest discover -s tests -p 'test_hub_calendar.py' -v
 
+      - name: test Garage health and report sanitization
+        run: python3 -m unittest discover -s tests -p 'test_garage_health.py' -v
+
+      - name: test Garage route and CSP
+        run: python3 -m unittest discover -s tests -p 'test_hub_garage_routes.py' -v
+
       - name: test notification audio
         run: python3 -m unittest discover -s tests -p 'test_notification_audio.py' -v
 

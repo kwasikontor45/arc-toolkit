@@ -79,6 +79,7 @@ class GarageRouteChecks(unittest.TestCase):
         self.assertIn("default-src 'none'", headers["Content-Security-Policy"])
         self.assertIn("img-src data:", headers["Content-Security-Policy"])
         self.assertIn("connect-src 'none'", headers["Content-Security-Policy"])
+        self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
         for tag in ("style", "script"):
             inline = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", self.body, re.S).group(1)
             digest = base64.b64encode(hashlib.sha256(inline.encode()).digest()).decode()

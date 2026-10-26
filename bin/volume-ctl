@@ -8,10 +8,8 @@
 # else was grabbing these keys -- confirmed live, no XF86Audio* entries existed
 # anywhere in xfce4-keyboard-shortcuts before this). Talks to the default sink
 # directly via pactl (PipeWire's pulse-compat layer, confirmed live on this
-# system) rather than pulling in a whole extra daemon. Shows a progress-bar
-# style OSD via notify-send's "value" hint, which xfce4-notifyd (already
-# running) renders as a real popup -- same visual language a native
-# volume-key daemon would give, without needing one.
+# system) rather than pulling in a whole extra daemon. Volume keys are quiet;
+# the panel volume control remains available when the level needs checking.
 #
 # Deliberately does NOT touch @DEFAULT_SOURCE@ (the mic) -- that's a separate,
 # explicit privacy default handled by arc-mic / mic-default-mute.desktop, see
@@ -22,12 +20,9 @@
 set -euo pipefail
 umask 077
 
-# Keep rapid key presses serialized and reuse one notification.  Xfce's
-# notify daemon does not implement Ubuntu's x-canonical-private-synchronous
-# hint, so relying on that hint stacks a bubble for every 5% step.
+# Keep rapid key presses serialized so key-repeat events cannot race.
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 LOCK_FILE="$RUNTIME_DIR/volume-ctl.lock"
-NOTIFY_ID_FILE="$RUNTIME_DIR/volume-ctl-notification-id"
 exec 9>"$LOCK_FILE"
 flock -x 9
 
@@ -50,27 +45,3 @@ case "${1:-}" in
   mute) pactl set-sink-mute @DEFAULT_SINK@ toggle ;;
   *)    echo "usage: volume-ctl up|down|mute" >&2; exit 1 ;;
 esac
-
-MUTED=$(pactl get-sink-mute @DEFAULT_SINK@ | awk '{print $2}')
-PCT=$(pactl get-sink-volume @DEFAULT_SINK@ | grep -oP '\d+(?=%)' | head -1)
-
-if [[ "$MUTED" == "yes" ]]; then
-  MESSAGE="Volume muted"
-  ICON=audio-volume-muted
-else
-  MESSAGE="Volume ${PCT}%"
-  ICON=audio-volume-high
-fi
-
-# Xfce supports the standard replaces_id field. Reusing the daemon-issued ID
-# turns a burst of key-repeat events into one updating OSD instead of a stack.
-NOTIFY_ID=0
-if [[ -r "$NOTIFY_ID_FILE" ]]; then
-  IFS= read -r NOTIFY_ID < "$NOTIFY_ID_FILE" || NOTIFY_ID=0
-  [[ "$NOTIFY_ID" =~ ^[0-9]+$ ]] || NOTIFY_ID=0
-fi
-NEW_NOTIFY_ID=$(notify-send --print-id --replace-id="$NOTIFY_ID" --expire-time=1400 \
-  -a volume -h "int:value:${PCT:-0}" -i "$ICON" "$MESSAGE" 2>/dev/null || true)
-if [[ "$NEW_NOTIFY_ID" =~ ^[0-9]+$ ]]; then
-  printf '%s\n' "$NEW_NOTIFY_ID" > "$NOTIFY_ID_FILE"
-fi

@@ -104,8 +104,22 @@ class NotificationAudio(unittest.TestCase):
             worker.join(timeout=1)
             self.assertFalse(worker.is_alive())
             install.assert_called_once_with()
-            emit.assert_called_once_with(None, 'test speech', 50)
+            emit.assert_called_once_with(None, 'test speech', 50, None, 1.10)
             self.assertNotIn(worker, pine._AUDIO_THREADS)
+
+    def test_speech_level_and_pace_do_not_change_alert_chime(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(pine, 'DATA_DIR', Path(directory)), \
+             patch.object(pine, '_wake_sink', return_value=True), \
+             patch.object(pine, 'play_sound') as play, \
+             patch.object(pine, '_duck_other_streams', return_value=[13]), \
+             patch.object(pine, 'speak') as speak, \
+             patch.object(pine, '_restore_ducked') as restore:
+            pine.emit_audio('alert.oga', 'soft spoken alert', 90, 58, 1.10)
+        play.assert_called_once_with('alert.oga', 90)
+        speak.assert_called_once_with('soft spoken alert', 58,
+                                      sink_ready=True, length_scale=1.10)
+        restore.assert_called_once_with([13])
 
     def test_upgraded_orage_identity_inherits_but_explicit_override_wins(self):
         cfg = {'app_rules': {'orage': {'speak': True}}}

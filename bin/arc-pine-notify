@@ -86,6 +86,8 @@ def main():
     audio_thread = pine.emit_audio_async(
         sound_file, speak_text,
         cfg.get("audio_volume_percent", cfg.get("sound_volume_percent", 50)),
+        cfg.get("speech_volume_percent", 58),
+        cfg.get("speech_length_scale", 1.10),
     )
 
     # Snooze is the stronger, deliberate "leave me alone right now" --

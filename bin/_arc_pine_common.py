@@ -62,6 +62,10 @@ DEFAULT_CONFIG = {
     "sound_enabled": True,
     "sound_file": "/usr/share/sounds/freedesktop/stereo/bell.oga",
     "audio_volume_percent": 50,
+    # Speech has its own restrained level and cadence. Keep alert chimes on
+    # audio_volume_percent so the spoken-style change cannot soften alarms.
+    "speech_volume_percent": 58,
+    "speech_length_scale": 1.10,
     "speak_enabled": True,
     "app_rules": {"arc-break": {"speak": True}, "orage": {"speak": True}},
     "bubble_theme": "circadian",
@@ -425,7 +429,7 @@ def _wake_sink():
             Path(path).unlink(missing_ok=True)
 
 
-def speak(text, volume_percent=50, *, sink_ready=False):
+def speak(text, volume_percent=50, *, sink_ready=False, length_scale=1.10):
     if not PIPER_BIN.exists() or not PIPER_VOICE.exists():
         logging.warning('Arc Pine speech unavailable: Piper binary or voice missing')
         return
@@ -439,8 +443,15 @@ def speak(text, volume_percent=50, *, sink_ready=False):
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             wav_path = tmp.name
+        # Piper's length scale is bounded so a malformed preference cannot
+        # produce an extreme or impractically slow notification.
+        try:
+            pace = max(0.90, min(1.35, float(length_scale)))
+        except (TypeError, ValueError):
+            pace = 1.10
         subprocess.run(
-            [str(PIPER_BIN), "-m", str(PIPER_VOICE), "-f", wav_path],
+            [str(PIPER_BIN), "-m", str(PIPER_VOICE), "-f", wav_path,
+             "--length-scale", f"{pace:.2f}"],
             input=text.encode(), capture_output=True, timeout=15, check=True,
         )
         if Path(wav_path).stat().st_size <= 44:
@@ -461,7 +472,8 @@ def speak(text, volume_percent=50, *, sink_ready=False):
                 pass
 
 
-def emit_audio(sound_file, speak_text, audio_volume_percent=50):
+def emit_audio(sound_file, speak_text, audio_volume_percent=50,
+               speech_volume_percent=None, speech_length_scale=1.10):
     """Play Arc Pine's short chime on its own stream without muting other
     applications. Speech retains the older duck/restore behavior so spoken
     alerts remain clear; the finally path restores every stream Arc Pine muted."""
@@ -482,14 +494,18 @@ def emit_audio(sound_file, speak_text, audio_volume_percent=50):
             if speak_text:
                 muted = _duck_other_streams()
                 try:
-                    speak(speak_text, audio_volume_percent, sink_ready=True)
+                    speech_volume = (audio_volume_percent if speech_volume_percent is None
+                                     else speech_volume_percent)
+                    speak(speak_text, speech_volume, sink_ready=True,
+                          length_scale=speech_length_scale)
                 finally:
                     _restore_ducked(muted)
         finally:
             fcntl.flock(guard, fcntl.LOCK_UN)
 
 
-def emit_audio_async(sound_file, speak_text, audio_volume_percent=50):
+def emit_audio_async(sound_file, speak_text, audio_volume_percent=50,
+                     speech_volume_percent=None, speech_length_scale=1.10):
     """Fire emit_audio() in a background thread and return it -- both
     callers need this (arc-pined so a slow duck/play never blocks the
     D-Bus loop, arc-pine-notify so it can still join before exiting, since
@@ -501,7 +517,8 @@ def emit_audio_async(sound_file, speak_text, audio_volume_percent=50):
 
     def run_audio_job():
         try:
-            emit_audio(sound_file, speak_text, audio_volume_percent)
+            emit_audio(sound_file, speak_text, audio_volume_percent,
+                       speech_volume_percent, speech_length_scale)
         finally:
             with _AUDIO_THREADS_LOCK:
                 _AUDIO_THREADS.discard(threading.current_thread())

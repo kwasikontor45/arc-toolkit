@@ -107,19 +107,28 @@ class NotificationAudio(unittest.TestCase):
             emit.assert_called_once_with(None, 'test speech', 50, None, 1.10)
             self.assertNotIn(worker, pine._AUDIO_THREADS)
 
-    def test_speech_level_and_pace_do_not_change_alert_chime(self):
+    def test_speech_is_prepared_before_chime_and_levels_stay_separate(self):
+        events = []
         with tempfile.TemporaryDirectory() as directory, \
              patch.object(pine, 'DATA_DIR', Path(directory)), \
-             patch.object(pine, '_wake_sink', return_value=True), \
-             patch.object(pine, 'play_sound') as play, \
-             patch.object(pine, '_duck_other_streams', return_value=[13]), \
-             patch.object(pine, 'speak') as speak, \
-             patch.object(pine, '_restore_ducked') as restore:
+             patch.object(pine, '_wake_sink', side_effect=lambda: events.append('wake')), \
+             patch.object(pine, 'play_sound', side_effect=lambda *args: events.append('chime')) as play, \
+             patch.object(pine, '_synthesize_speech',
+                          side_effect=lambda *args: (events.append('synthesize') or str(Path(directory) / 'speech.wav'))) as synthesize, \
+             patch.object(pine, '_duck_other_streams',
+                          side_effect=lambda: (events.append('duck') or [13])), \
+             patch.object(pine, '_play_speech_file', side_effect=lambda *args: events.append('speech')) as speak, \
+             patch.object(pine, '_restore_ducked', side_effect=lambda _ids: events.append('restore')) as restore:
             pine.emit_audio('alert.oga', 'soft spoken alert', 90, 58, 1.10)
         play.assert_called_once_with('alert.oga', 90)
-        speak.assert_called_once_with('soft spoken alert', 58,
-                                      sink_ready=True, length_scale=1.10)
+        synthesize.assert_called_once_with('soft spoken alert', 1.10)
+        speak.assert_called_once_with(str(Path(directory) / 'speech.wav'), 58)
         restore.assert_called_once_with([13])
+        self.assertEqual(events, ['wake', 'synthesize', 'chime', 'duck', 'speech', 'restore'])
+
+    def test_volume_control_notifications_are_muted_by_observed_xfce_identity(self):
+        cfg = {'app_rules': {'Xfce volume control': {'mute': True}}}
+        self.assertTrue(pine.is_muted(cfg, 'Xfce volume control'))
 
     def test_upgraded_orage_identity_inherits_but_explicit_override_wins(self):
         cfg = {'app_rules': {'orage': {'speak': True}}}

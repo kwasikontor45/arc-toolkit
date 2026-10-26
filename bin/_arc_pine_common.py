@@ -429,16 +429,12 @@ def _wake_sink():
             Path(path).unlink(missing_ok=True)
 
 
-def speak(text, volume_percent=50, *, sink_ready=False, length_scale=1.10):
+def _synthesize_speech(text, length_scale=1.10):
     if not PIPER_BIN.exists() or not PIPER_VOICE.exists():
         logging.warning('Arc Pine speech unavailable: Piper binary or voice missing')
-        return
+        return None
     if not text.strip():
-        return
-    wake_thread = None
-    if not sink_ready:
-        wake_thread = threading.Thread(target=_wake_sink, daemon=True)
-        wake_thread.start()
+        return None
     wav_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -456,20 +452,42 @@ def speak(text, volume_percent=50, *, sink_ready=False, length_scale=1.10):
         )
         if Path(wav_path).stat().st_size <= 44:
             raise RuntimeError('Speech synthesis produced no audio')
-        if wake_thread is not None:
-            # Keep Piper synthesis parallel with the wake, but never race the
-            # actual speech against a sink that has not finished waking.
-            wake_thread.join()
-        stream_name = f"Arc Pine speech {os.getpid()}-{threading.get_ident()}"
-        _paplay_force_unmuted(wav_path, _volume_arg(volume_percent), stream_name)
+        return wav_path
     except Exception as error:
         logging.warning('Arc Pine speech failed: %s', type(error).__name__)
-    finally:
         if wav_path:
             try:
                 Path(wav_path).unlink(missing_ok=True)
             except Exception:
                 pass
+        return None
+
+
+def _play_speech_file(wav_path, volume_percent=50):
+    stream_name = f"Arc Pine speech {os.getpid()}-{threading.get_ident()}"
+    _paplay_force_unmuted(wav_path, _volume_arg(volume_percent), stream_name)
+
+
+def speak(text, volume_percent=50, *, sink_ready=False, length_scale=1.10):
+    wake_thread = None
+    if not sink_ready:
+        wake_thread = threading.Thread(target=_wake_sink, daemon=True)
+        wake_thread.start()
+    wav_path = _synthesize_speech(text, length_scale)
+    if not wav_path:
+        if wake_thread is not None:
+            wake_thread.join()
+        return
+    try:
+        if wake_thread is not None:
+            # Keep Piper synthesis parallel with the wake, but never race the
+            # actual speech against a sink that has not finished waking.
+            wake_thread.join()
+        _play_speech_file(wav_path, volume_percent)
+    except Exception as error:
+        logging.warning('Arc Pine speech playback failed: %s', type(error).__name__)
+    finally:
+        Path(wav_path).unlink(missing_ok=True)
 
 
 def emit_audio(sound_file, speak_text, audio_volume_percent=50,
@@ -482,25 +500,32 @@ def emit_audio(sound_file, speak_text, audio_volume_percent=50,
     DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     with _AUDIO_LOCK, (DATA_DIR / 'audio.lock').open('a') as guard:
         fcntl.flock(guard, fcntl.LOCK_EX)
+        speech_path = None
         try:
             has_sound = bool(sound_file and Path(sound_file).exists())
             if has_sound or speak_text:
                 _wake_sink()
+            # Prepare speech before the chime. Piper synthesis can take a
+            # moment; placing the beep first makes it sound like an alert
+            # followed by a failure or dropped notification.
+            if speak_text:
+                speech_path = _synthesize_speech(speak_text, speech_length_scale)
             if sound_file:
                 try:
                     play_sound(sound_file, audio_volume_percent)
                 except Exception:
                     pass
-            if speak_text:
+            if speech_path:
                 muted = _duck_other_streams()
                 try:
                     speech_volume = (audio_volume_percent if speech_volume_percent is None
                                      else speech_volume_percent)
-                    speak(speak_text, speech_volume, sink_ready=True,
-                          length_scale=speech_length_scale)
+                    _play_speech_file(speech_path, speech_volume)
                 finally:
                     _restore_ducked(muted)
         finally:
+            if speech_path:
+                Path(speech_path).unlink(missing_ok=True)
             fcntl.flock(guard, fcntl.LOCK_UN)
 
 

@@ -3101,7 +3101,7 @@ class CalendarView(View):
                  font=self.app.f.label).pack(anchor='w', padx=16, pady=(14, 7))
         tk.Label(self.frame, text='Appointments, events, and to-dos stay grouped. Repeating tasks are checked one occurrence at a time; completed items can be tucked away without deleting them.',
                  wraplength=520, justify='left', bg=SURFACE, fg=FG_MUTED).pack(anchor='w', padx=16)
-        ui.button(self.frame, 'Open Khaos Hub', command=lambda: webbrowser.open('http://127.0.0.1:8766/'),
+        ui.button(self.frame, 'Open Khaos Hub · app window', command=self.open_khaos_hub,
                   font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
                   padx=13, pady=5).pack(anchor='w', padx=16, pady=9)
         self.message = tk.Label(self.frame, text='Loading calendar…', bg=SURFACE, fg=FG_MUTED)
@@ -3113,6 +3113,19 @@ class CalendarView(View):
         self.expanded_rows = set()
         self.poll('calendar-live', 2000, self.read_calendar, self.apply_calendar)
 
+
+    def open_khaos_hub(self):
+        launcher = shutil.which('khaos-hub-window')
+        if not launcher:
+            self.app.console.log('Khaos Hub native window is unavailable; no browser opened', GOLD)
+            return
+        try:
+            subprocess.Popen([launcher], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             close_fds=True, start_new_session=True)
+            self.app.console.log('Opening Khaos Hub · native app window', TEAL)
+        except OSError as error:
+            self.app.console.log(f'Khaos Hub window did not start: {error}', GOLD)
     def _set_checks_enabled(self, enabled):
         for check in self.checks:
             try:

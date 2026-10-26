@@ -1,4 +1,4 @@
-# Khaos Hub · Source Workbench
+# Khaos Hub · Personal Workspace
 
 Local calendar and systems preview for Khaos Lab.
 
@@ -14,13 +14,18 @@ Repeated event occurrences have separate marks. Check marks are Hub/Lab tracking
 state in `~/.local/share/khaos-hub/checks.db`; they do not change Orage STATUS,
 appointments, native task completion or reminder alarms. Descriptions are not exposed.
 
+The desktop Workbench uses a circular Kimi mark and a subdued local Memento-glass backdrop. Its two image routes are explicitly allowlisted by the loopback service; arbitrary filesystem paths are never served. Reduced-transparency settings switch the glass cards to opaque surfaces.
+
 Only the calendar is live. The seven system tiles remain clearly labeled samples.
-The Garage link serves the same single-file offline guide as Khaos Lab → Garage.
-It explains calendar refresh, check-mark boundaries, and fixture-only system
-tiles, with a searchable day-one source-tracing bench. The guide is static and
-offline: it does not inspect binaries, execute code, make network calls, or read
-host data. Its portable source is
-`../surgery-workshop/garage.html`.
+The Hub's **Map** route (`/garage/`) opens the single-file offline source map
+inside the native Khaos Hub window. Opening its loopback URL from a regular
+browser still uses that browser; launch Khaos Hub from the app menu to keep the
+map in the isolated, browser-chrome-free window. The separate **Garage ·
+Operations Room** remains the quality-assurance workspace in Khaos Lab Control
+Panel → Garage. The map explains calendar refresh, check-mark boundaries, and
+fixture-only system tiles, with a searchable day-one source-tracing bench. It
+does not inspect binaries, execute code, make network calls, or read host data.
+Its portable source is `../surgery-workshop/garage.html`.
 This local browser app is separate from the permission-free Android fixture
 preview in `~/khaos-lab/android-mobile-ios/apps/khaos-hub-mobile`. It does not enable phone or Waydroid
 network access or change Tailscale policy.

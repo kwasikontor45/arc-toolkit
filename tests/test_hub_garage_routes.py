@@ -49,10 +49,8 @@ class GarageRouteChecks(unittest.TestCase):
         self.assertIn(base64.b64encode(wallpaper.read_bytes()).decode(), self.body)
         self.assertIn("connect-src 'none'", self.body)
         self.assertIn("default-src 'none'", self.body)
-        # frame-ancestors is enforced by the HTTP response header; browsers
-        # ignore it in a CSP meta element. The response-header check below
-        # verifies the real protection.
-        self.assertNotIn("frame-ancestors 'none'", self.body)
+        # Browsers ignore frame-ancestors in a CSP meta element; enforce it on the response.
+        self.assertNotIn("frame-ancestors", self.body)
         self.assertIn("no host access", self.body)
         for context in ("Calendar looks stale", "A task was checked", "A status tile looks wrong"):
             self.assertIn(context, self.body)
@@ -79,6 +77,7 @@ class GarageRouteChecks(unittest.TestCase):
         self.assertIn("default-src 'none'", headers["Content-Security-Policy"])
         self.assertIn("img-src data:", headers["Content-Security-Policy"])
         self.assertIn("connect-src 'none'", headers["Content-Security-Policy"])
+        self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
         self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
         for tag in ("style", "script"):
             inline = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", self.body, re.S).group(1)

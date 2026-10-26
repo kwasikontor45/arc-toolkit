@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Dedicated native WebKit window, isolated local profile, fail-closed loopback network.
+set -euo pipefail
+
+readonly package_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly data_root="${XDG_DATA_HOME:-$HOME/.local/share}/khaos-hub-native"
+readonly cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/khaos-hub-native"
+readonly unit="khaos-hub-native-${BASHPID}"
+download_root="$(xdg-user-dir DOWNLOAD 2>/dev/null || printf '%s' "$HOME/Downloads")"
+
+umask 077
+install -d -m 700 "$data_root/profile" "$cache_root"
+
+escape_unit_path() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value// /\\x20}"
+  printf '%s' "$value"
+}
+
+read_write_paths="$(escape_unit_path "$data_root/profile") $(escape_unit_path "$cache_root")"
+if [[ -d "$download_root" ]]; then
+  read_write_paths+=" $(escape_unit_path "$download_root")"
+fi
+
+if [[ ! -r "$package_dir/app.py" || ! -r "$package_dir/runtime/girepository-1.0/WebKit2-4.1.typelib" ]]; then
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send --app-name='Khaos Hub' --urgency=critical 'Khaos Hub could not start' 'The native window package is incomplete.' || true
+  fi
+  exit 1
+fi
+
+launch_log="$(mktemp --tmpdir khaos-hub-native.XXXXXX)"
+chmod 600 "$launch_log"
+if /usr/bin/systemd-run --user --quiet --collect --service-type=exec --unit="$unit" \
+  --property=NoNewPrivileges=yes \
+  --property=ProtectSystem=strict \
+  --property=ProtectHome=read-only \
+  --property=PrivateTmp=yes \
+  --property="ReadWritePaths=$read_write_paths" \
+  --property=RestrictSUIDSGID=yes \
+  --property=LockPersonality=yes \
+  --property=IPAddressDeny=any \
+  --property=IPAddressAllow=127.0.0.1/32 \
+  --property=IPAddressAllow=::1/128 \
+  --setenv=GSETTINGS_BACKEND=memory \
+  --setenv=GIO_USE_VFS=local \
+  --setenv="XDG_CACHE_HOME=$cache_root" \
+  -- "$package_dir/app.py" 2>"$launch_log"; then
+  rm -f -- "$launch_log"
+  exit 0
+else
+  status=$?
+  detail="$(head -c 420 "$launch_log" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g')"
+  rm -f -- "$launch_log"
+  detail="${detail:-The local app sandbox could not be started.}"
+  printf 'Khaos Hub launch blocked: %s\n' "$detail" >&2
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send --app-name='Khaos Hub' --urgency=critical 'Khaos Hub stayed closed' "$detail" 2>/dev/null || true
+  fi
+  exit "$status"
+fi

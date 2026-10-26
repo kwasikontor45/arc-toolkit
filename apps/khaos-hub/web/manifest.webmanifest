@@ -1,7 +1,7 @@
 {
-  "name": "Khaos Hub \u00b7 Source Workbench",
+  "name": "Khaos Hub · Personal Workspace",
   "short_name": "Khaos Hub",
-  "description": "Private local calendar and Khaos Lab Source Workbench, with clearly labeled sample system tiles.",
+  "description": "A private local workspace for Khaos Lab projects, references, and calendar.",
   "start_url": "/",
   "scope": "./",
   "display": "standalone",
@@ -9,7 +9,7 @@
   "theme_color": "#080b10",
   "icons": [
     {
-      "src": "khaos-lab-mark-round-512.png",
+      "src": "icon-kimi-round-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"

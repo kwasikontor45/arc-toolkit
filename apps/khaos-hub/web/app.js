@@ -346,6 +346,9 @@ function renderLibrary() {
     edit.type = "button";
     edit.textContent = "Edit";
     edit.addEventListener("click", () => {
+      const editor = document.querySelector("#library-editor");
+      editor.open = true;
+      document.querySelector("#library-editor-label").textContent = "Edit reference";
       document.querySelector("#library-id").value = item.id;
       document.querySelector("#library-title-input").value = item.title;
       document.querySelector("#library-url-input").value = item.url;
@@ -398,7 +401,7 @@ function renderLibrary() {
   if (!rows.length) {
     const empty = document.createElement("p");
     empty.className = "library-empty";
-    empty.textContent = query ? "No matching references." : "Your library is empty. Add a reference above.";
+    empty.textContent = query ? "No matching references." : "Your library is empty. Open Add a reference to begin.";
     list.append(empty);
   }
 }
@@ -432,12 +435,16 @@ document.querySelector("#library-form").addEventListener("submit", async event =
     event.currentTarget.reset();
     document.querySelector("#library-id").value = "";
     document.querySelector("#library-cancel").hidden = true;
+    document.querySelector("#library-editor").open = false;
+    document.querySelector("#library-editor-label").textContent = "Add a reference";
   } catch (error) { document.querySelector("#library-state").textContent = error.message; }
 });
 document.querySelector("#library-cancel").addEventListener("click", () => {
   document.querySelector("#library-form").reset();
   document.querySelector("#library-id").value = "";
   document.querySelector("#library-cancel").hidden = true;
+  document.querySelector("#library-editor").open = false;
+  document.querySelector("#library-editor-label").textContent = "Add a reference";
 });
 document.querySelector("#library-search").addEventListener("input", () => { libraryVisibleLimit = 36; renderLibrary(); });
 document.querySelector("#library-filter").addEventListener("change", () => { libraryVisibleLimit = 36; renderLibrary(); });
@@ -523,3 +530,109 @@ document.querySelector("#library-browser-scan").addEventListener("click", async 
   finally { button.disabled = false; }
 });
 loadLibrary();
+
+// Local Dewey shelf: catalog metadata only; documents stay in their project homes.
+let deweyCatalog = null;
+let deweyFilter = "all";
+function renderDeweyShelf() {
+  const nav = document.querySelector("#dewey-classes");
+  const list = document.querySelector("#dewey-list");
+  const state = document.querySelector("#dewey-state");
+  const query = document.querySelector("#dewey-search").value.trim().toLowerCase();
+  const fragment = document.createDocumentFragment();
+  const counts = Object.fromEntries(deweyCatalog.classes.map(group => [group.code, 0]));
+  const visible = deweyCatalog.items.filter(item => {
+    const text = [item.dewey, item.title, item.kind, item.summary].join(" ").toLowerCase();
+    const matches = text.includes(query) && (deweyFilter === "all" || item.dewey === deweyFilter);
+    if (matches) counts[item.dewey] = (counts[item.dewey] || 0) + 1;
+    return matches;
+  });
+  const filters = [["all", "All subjects", visible.length],
+    ...deweyCatalog.classes.map(group => [group.code, group.title, counts[group.code] || 0])];
+  filters.forEach(([code, label, count]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "dewey-filter";
+    button.textContent = `${code === "all" ? "DDC" : code} · ${label} · ${count}`;
+    button.setAttribute("aria-pressed", String(deweyFilter === code));
+    button.addEventListener("click", () => { deweyFilter = code; renderDeweyShelf(); });
+    fragment.append(button);
+  });
+  nav.replaceChildren(fragment);
+
+  const groups = document.createDocumentFragment();
+  deweyCatalog.classes.filter(group => deweyFilter === "all" || group.code === deweyFilter).forEach(group => {
+    const rows = visible.filter(item => item.dewey === group.code);
+    if (!rows.length) return;
+    const section = document.createElement("details");
+    section.className = "dewey-group";
+    section.open = Boolean(query) || deweyFilter === group.code;
+    const summary = document.createElement("summary");
+    const heading = document.createElement("strong");
+    heading.textContent = `${group.code} · ${group.title}`;
+    const description = document.createElement("span");
+    description.textContent = `${rows.length} item${rows.length === 1 ? "" : "s"} · ${group.description}`;
+    summary.append(heading, description);
+    section.append(summary);
+    rows.forEach(item => {
+      const card = document.createElement("article");
+      card.className = "dewey-item";
+      const title = document.createElement("h3");
+      title.textContent = item.title;
+      const meta = document.createElement("p");
+      meta.className = "library-card-meta";
+      meta.textContent = `${item.kind} · Dewey ${item.dewey}`;
+      const description = document.createElement("p");
+      description.textContent = item.summary;
+      card.append(title, meta, description);
+      item.files.forEach(file => {
+        const row = document.createElement("div");
+        row.className = "dewey-file";
+        const path = document.createElement("code");
+        path.textContent = `~/khaos-lab/${file.path}`;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "dewey-copy";
+        button.textContent = file.available === false ? "Missing" : `Copy ${file.label}`;
+        button.disabled = file.available === false;
+        button.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(path.textContent);
+            document.querySelector("#dewey-state").textContent = `Copied path: ${path.textContent}`;
+          } catch {
+            document.querySelector("#dewey-state").textContent = `Select and copy this path: ${path.textContent}`;
+          }
+        });
+        row.append(path, button);
+        card.append(row);
+      });
+      section.append(card);
+    });
+    groups.append(section);
+  });
+  list.replaceChildren(groups);
+  if (!visible.length) {
+    const empty = document.createElement("p");
+    empty.className = "library-empty";
+    empty.textContent = query ? "No study items match this search." : "No study items in this subject yet.";
+    list.append(empty);
+  }
+  state.textContent = `${visible.length} indexed item${visible.length === 1 ? "" : "s"} · original files remain in place.`;
+}
+async function loadDeweyShelf() {
+  const state = document.querySelector("#dewey-state");
+  try {
+    const response = await fetch("/api/library/dewey-catalog", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || data.version !== 1 || !Array.isArray(data.classes) || !Array.isArray(data.items))
+      throw new Error(data.error || "Catalog format not supported.");
+    deweyCatalog = data;
+    document.querySelector("#dewey-count").textContent = `${data.items.length} indexed`;
+    renderDeweyShelf();
+    document.querySelector("#dewey-search").addEventListener("input", renderDeweyShelf);
+  } catch (error) {
+    document.querySelector("#dewey-count").textContent = "Unavailable";
+    state.textContent = `Study shelf unavailable: ${error.message}. Saved web references still work.`;
+  }
+}
+loadDeweyShelf();

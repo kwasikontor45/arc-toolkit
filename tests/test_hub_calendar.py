@@ -48,6 +48,8 @@ END:VCALENDAR
             '/icon-kimi-512.png': 'image/png',
             '/kimi-khaos-hub.png': 'image/png',
             '/kimi-wallpaper.jpg': 'image/jpeg',
+            '/icon-kimi-round-512.png': 'image/png',
+            '/memento-glass-backdrop.jpg': 'image/jpeg',
             '/favicon.ico': 'image/png',
         }
         for route, mime in expected.items():

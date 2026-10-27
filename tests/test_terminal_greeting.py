@@ -33,6 +33,22 @@ class GreetingTests(unittest.TestCase):
   r=subprocess.run([shell,"-f","-c",self.code],env={**self.env,**env},capture_output=True,text=True,timeout=8)
   self.assertEqual(r.returncode,0,r.stderr);self.assertEqual(r.stderr,"")
   return r.stdout
+ def test_sun_tzu_complete_rotation(self):
+  from datetime import datetime,timedelta
+  source=pathlib.Path(SOURCE).read_text()
+  block=source[source.index("sunTzuQuotes=("):source.index("sunTzuQuote=sunTzuQuoteAt")]
+  namespace={};exec(block,namespace)
+  quotes=namespace["sunTzuQuotes"];pick=namespace["sunTzuQuoteAt"]
+  self.assertGreater(len(quotes),350)
+  self.assertEqual(len(quotes),len(set(quotes)))
+  self.assertIn("All warfare is based on deception.",quotes)
+  base=datetime(2026,10,25)
+  for hour in (0,8,16):
+   self.assertEqual(pick(base+timedelta(hours=hour)),pick(base+timedelta(hours=hour+7,minutes=59,seconds=59)))
+   self.assertNotEqual(pick(base+timedelta(hours=hour+7,minutes=59,seconds=59)),pick(base+timedelta(hours=hour+8)))
+  self.assertEqual(len({pick(base+timedelta(hours=8*i)) for i in range(len(quotes))}),len(quotes))
+  self.assertEqual(pick(base),pick(base+timedelta(hours=8*len(quotes))))
+
  def test_cache(self):
   a=self.runGreeting(); first=self.log.read_text()
   b=self.runGreeting()
@@ -114,26 +130,24 @@ class GreetingTests(unittest.TestCase):
   self.assertGreater(len(header)-len(header.lstrip()),15)
   brand=next(line for line in out.splitlines() if "KHAOS-LAB" in line)
   self.assertGreater(len(brand)-len(brand.lstrip()),25)
-  time_line=next(line for line in out.splitlines() if "LOCAL_TIME" in line)
+  time_line=next(line for line in out.splitlines() if re.search(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),? \d",line))
   self.assertRegex(time_line,r"\[ (?:NYX|CHOICE|DESIRE|STILL-PINE) \]")
   self.assertGreater(len(time_line)-len(time_line.lstrip()),10)
   self.assertNotRegex(time_line,r"· still-pine$")
+  self.assertNotIn("LOCAL_TIME",time_line)
   self.assertIn("METHOD",out)
   self.assertIn("Recognize > construct > visualize > analyze > interpret",out)
   self.assertIn("⌜ OPERATIONS",out);self.assertIn("⌜ SYSTEMS",out)
   self.assertIn("⌜ KHAOS-LAB",out)
   self.assertIn("DEV-STUDIO",out)
   self.assertNotIn("KATALEYA",out);self.assertNotIn("COMPANION",out)
-  from datetime import date
-  sunTzuQuotes=("All warfare is based on deception.","Attack him where he is unprepared.","Appear weak when you are strong.")
   self.assertIn("SUN TZU",out)
-  self.assertIn(sunTzuQuotes[(date.today().toordinal()-1)%len(sunTzuQuotes)],out)
   self.assertRegex(out,r"LOCAL_IP\s+192\.0\.2\.2 · IP_CHECK unavailable")
   self.assertIn("United States, Seattle",out);self.assertNotIn("ISP_EXT",out)
   radar=next(i for i,line in enumerate(out.splitlines()) if "LOCAL_RADAR" in line)
   dns=next(i for i,line in enumerate(out.splitlines()) if "DNS_RADAR" in line)
   local_ip=next(i for i,line in enumerate(out.splitlines()) if "LOCAL_IP" in line)
-  local_time=next(i for i,line in enumerate(out.splitlines()) if "LOCAL_TIME" in line)
+  local_time=next(i for i,line in enumerate(out.splitlines()) if re.search(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),? \d",line))
   self.assertLess(local_time,radar);self.assertLess(radar,dns);self.assertLess(dns,local_ip)
   wod=next(i for i,line in enumerate(out.splitlines()) if "WOD · INTERCEPT" in line)
   quote=next(i for i,line in enumerate(out.splitlines()) if "SUN TZU" in line)
@@ -212,7 +226,7 @@ class GreetingTests(unittest.TestCase):
    result=subprocess.run(["bash","-c",code],env=self.env,capture_output=True,text=True,timeout=5)
    self.assertEqual(result.returncode,0,result.stderr)
    lines=result.stdout.splitlines()
-   start=next(i for i,line in enumerate(lines) if "LOCAL_TIME" in line)
+   start=next(i for i,line in enumerate(lines) if "22 Oct 2026" in line)
    end=next(i for i,line in enumerate(lines[start+1:],start+1) if "E Pluribus" in line)
    for line in lines[start:end]:
     visible=line.strip()
@@ -230,7 +244,7 @@ class GreetingTests(unittest.TestCase):
    result=subprocess.run(["bash","-c",code],env={**self.env,"NO_COLOR":"","_ARC_GREETING_COLOR":"1"},capture_output=True,text=True,timeout=5)
    self.assertEqual(result.returncode,0,result.stderr)
    plain_output=re.sub(r"\x1b\[[0-9;]*m","",result.stdout)
-   time_line=next(line for line in plain_output.splitlines() if "LOCAL_TIME" in line)
+   time_line=next(line for line in plain_output.splitlines() if "18 Oct 2026" in line)
    self.assertIn("[ "+phase.upper()+" ]",time_line)
    self.assertIn("\x1b[38;2;164;194;139mRIG ",result.stdout)
    self.assertIn("\x1b[1;38;2;255;68;92m418\x1b[0m",result.stdout)
@@ -245,7 +259,7 @@ class GreetingTests(unittest.TestCase):
    self.assertNotIn("//",plain_output)
    plain=re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]","",result.stdout)
    lines=plain.splitlines(); motto=next(i for i,line in enumerate(lines) if "E Pluribus" in line)
-   self.assertTrue(lines[motto-1].strip().startswith("LOCAL_TIME"))
+   self.assertIn("18 Oct 2026",lines[motto-1])
 
  def test_unicode_focus_cells(self):
   import unicodedata

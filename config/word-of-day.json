@@ -29,6 +29,9 @@
     {"word":"ephemeral","pronunciation":"ih-fem-er-ul","part_of_speech":"adjective","definition":"lasting for only a short time"},
     {"word":"plumb","pronunciation":"plum","part_of_speech":"verb","definition":"to explore or measure the depth of something"},
     {"word":"staccato","pronunciation":"stuh-kah-toh","part_of_speech":"adjective","definition":"made of brief, distinct parts"},
-    {"word":"mendicant","pronunciation":"men-di-kunt","part_of_speech":"noun","definition":"a person who lives by asking for help"}
+    {"word":"mendicant","pronunciation":"men-di-kunt","part_of_speech":"noun","definition":"a person who lives by asking for help"},
+    {"word":"soignee","pronunciation":"swahn-yay","part_of_speech":"adjective","definition":"elegant, polished, and carefully finished"},
+    {"word":"peruse","pronunciation":"puh-rooz","part_of_speech":"verb","definition":"to read or examine with care"},
+    {"word":"candescent","pronunciation":"kan-des-uhnt","part_of_speech":"adjective","definition":"glowing or becoming bright, especially from heat"}
   ]
 }

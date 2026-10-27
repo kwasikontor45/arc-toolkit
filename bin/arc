@@ -1147,14 +1147,20 @@ cmd_restart() {
   echo ""
   if mountpoint -q /mnt/storage 2>/dev/null; then
     echo -e "  ${C}backing up before unmount...${N}"
-    cmd_backup
+    if ! cmd_backup; then
+      echo -e "  ${R}✗  backup failed — storage remains mounted; aborting reboot${N}"
+      return 1
+    fi
     echo ""
     _kill_storage_blockers
     echo -e "  ${C}unmounting storage drive...${N}"
     if sudo umount /mnt/storage 2>/dev/null; then
       echo -e "  ${G}✓${N}  /mnt/storage unmounted"
-      sudo cryptsetup close storage_crypt 2>/dev/null && \
-        echo -e "  ${G}✓${N}  LUKS container closed"
+      if ! sudo cryptsetup close storage_crypt 2>/dev/null; then
+        echo -e "  ${R}✗  LUKS close failed — aborting reboot${N}"
+        return 1
+      fi
+      echo -e "  ${G}✓${N}  LUKS container closed"
     else
       echo -e "  ${R}✗${N}  unmount failed — check: lsof +D /mnt/storage"
       echo -e "  ${R}aborting restart${N}"
@@ -1193,14 +1199,20 @@ cmd_safe_reboot() {
   echo ""
   if mountpoint -q /mnt/storage 2>/dev/null; then
     echo -e "  ${C}backing up before unmount...${N}"
-    cmd_backup
+    if ! cmd_backup; then
+      echo -e "  ${R}✗  backup failed — storage remains mounted; aborting reboot${N}"
+      return 1
+    fi
     echo ""
     _kill_storage_blockers
     echo -e "  ${C}unmounting storage drive...${N}"
     if sudo umount /mnt/storage 2>/dev/null; then
       echo -e "  ${G}✓${N}  /mnt/storage unmounted"
-      sudo cryptsetup close storage_crypt 2>/dev/null && \
-        echo -e "  ${G}✓${N}  LUKS container closed"
+      if ! sudo cryptsetup close storage_crypt 2>/dev/null; then
+        echo -e "  ${R}✗  LUKS close failed — aborting reboot${N}"
+        return 1
+      fi
+      echo -e "  ${G}✓${N}  LUKS container closed"
     else
       echo -e "  ${R}✗${N}  unmount failed — check: lsof +D /mnt/storage"
       echo -e "  ${R}aborting reboot${N}"

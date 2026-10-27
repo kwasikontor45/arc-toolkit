@@ -48,9 +48,11 @@ class NotificationAudio(unittest.TestCase):
     def test_restore_runs_even_when_speech_fails(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(pine, 'DATA_DIR', Path(directory)), \
              patch.object(pine, '_wake_sink', return_value=True), \
+             patch.object(pine, '_synthesize_speech', return_value=str(Path(directory) / 'speech.wav')), \
              patch.object(pine, '_duck_other_streams', return_value=[10, 11]), \
-             patch.object(pine, 'speak', side_effect=RuntimeError('test failure')), \
+             patch.object(pine, '_play_speech_file', side_effect=RuntimeError('test failure')), \
              patch.object(pine, '_restore_ducked') as restore:
+            (Path(directory) / 'speech.wav').write_bytes(b'fixture')
             with self.assertRaises(RuntimeError):
                 pine.emit_audio(None, 'test')
             restore.assert_called_once_with([10, 11])

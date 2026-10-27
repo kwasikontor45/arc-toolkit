@@ -54,6 +54,9 @@ jobs:
       - name: test SOP banner
         run: python3 -m unittest discover -s tests -p 'test_sop_banner.py' -v
 
+      - name: test SOP workflows
+        run: python3 -m unittest discover -s tests -p 'test_sop*.py' -v
+
       - name: test timer recovery
         run: python3 -m unittest discover -s tests -p 'test_timer_recovery.py' -v
 

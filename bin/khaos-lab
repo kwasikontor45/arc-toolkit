@@ -97,12 +97,13 @@ MOBILE_ACCESS_GUIDE = MOBILE_ACCESS_DIR / "md-s" / "mobile-access-operator-2026-
 WORKBENCH_DRILL_DIR = HOME / "khaos-lab/local-cloud-hub/operations/workbench/17oct2026-drills"
 WORKBENCH_DRILL_INDEX = WORKBENCH_DRILL_DIR / "README.md"
 IPHONE_PRIVACY_CARD = WORKBENCH_DRILL_DIR / "iphone-cleanup-privacy-card.md"
-HEADER_ICON_PATH = HOME / ".local/share/khaos-lab/header-icon.png"
+CONTROL_CENTER_ICON_DIR = Path(__file__).resolve().parent.parent / "assets/khaos-lab"
+HEADER_ICON_PATH = CONTROL_CENTER_ICON_DIR / "control-center-round-64.png"
 HEADER_BG_PATH   = Path(__file__).resolve().parent.parent / "apps/surgery-workshop/horizon-panel.png"
 SIDEBAR_BG_PATH  = HOME / ".local/share/khaos-lab/sidebar-bg.png"
 SIDEBAR_ICON_PATH = HOME / ".local/share/khaos-lab/sidebar-icon.png"
 CONTENT_BG_PATH  = HOME / ".local/share/khaos-lab/content-bg.png"
-TASKBAR_ICON_PATH = HOME / ".local/share/khaos-lab/taskbar-icon.png"
+TASKBAR_ICON_PATH = CONTROL_CENTER_ICON_DIR / "control-center-round-48.png"
 
 # Embedded Garage mark: self-contained with the control-panel script.
 GARAGE_FLAMINGO_PNG = (

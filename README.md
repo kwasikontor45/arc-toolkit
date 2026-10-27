@@ -14,18 +14,16 @@ fragments live under `/etc`, root-owned) — those need an explicit `arc sot sna
 
 `arc day` gives a short startup reminder when today's SOP acknowledgment is missing, then continues
 the readiness checks without waiting for keyboard input. Start each work session with
-`arc-sop start "<task>"`. If the session is new or policy changed, the gate shows the exact current
-SHA-256 acceptance command after the full GAMEPLAN, SOT, and MO have been read. Reuse that printed
-digest exactly; an older digest is explained as stale and cannot unlock the session. The accepted
-task is logged before work begins. Interactive Bash/zsh terminals use the shared shell guard;
-Codex uses its PreToolUse hook, and the Khaos Lab panel checks the same session-scoped gate.
-In Konsole, tabs in one running app instance share the same human acceptance; closing and
-reopening Konsole or restarting the workstation starts a fresh session. A locked shell prints a
-short prompt. `arc-sop start "<task>"` shows the policy file paths and a dark, paged `batcat`
-reader command; the complete GAMEPLAN, SOT, and all current MOs still need to be read before
-accepting. The gate no longer dumps policy text into terminal scrollback. Its title, local time,
-and lock state are separate, color-coded lines; the full MO sequence appears automatically after
-acceptance.
+`arc-sop start "<task>"`. In an interactive terminal, choose `r` to review the current GAMEPLAN,
+SOT, and all MOs, then `y` to accept or `n` to leave the gate locked. No fingerprint needs to be
+copied. Non-interactive adapters receive a session-bound `SOP_FINGERPRINT` and exact retry command;
+that path records fingerprint acceptance, not a claim that the adapter read the sources. A changed
+or stale fingerprint cannot unlock the session. The accepted task is logged before work begins.
+Interactive Bash/zsh terminals use the shared shell guard; Codex uses its PreToolUse hook, and the
+Khaos Lab panel checks the same session-scoped gate. In Konsole, tabs in one running app instance
+share the same human acceptance; closing and reopening Konsole or restarting the workstation starts
+a fresh session. The terminal gate does not dump policy text into scrollback; after acceptance it
+shows a compact, color-coded MO index with the canonical source path.
 The Khaos Lab panel checks that same session-scoped gate before running action buttons, opening the
 inventory editor, or clearing logs. Read-only dashboards and document views stay available while
 locked. The SOP workspace can read the latest GAMEPLAN/SOT, run compliance checks, and use

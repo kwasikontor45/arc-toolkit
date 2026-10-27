@@ -135,6 +135,17 @@ def init_db():
             file_path TEXT UNIQUE,
             file_hash TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS policy_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            event TEXT NOT NULL CHECK (event IN ('read', 'accepted', 'denied')),
+            source_path TEXT,
+            source_sha256 TEXT,
+            policy_sha256 TEXT
+        );
         """
     )
     conn.commit()
@@ -383,45 +394,44 @@ def current_mo_sections():
 
 
 def print_current_mos(sections):
-    """Display the exact current MO text, in order, after fresh acceptance."""
+    """Show a compact acknowledgment; the full packet was already reviewed."""
     phase_inks = ("38;2;94;200;237", "38;2;246;193;119", "38;2;196;167;231",
                   "38;2;234;154;151", "38;5;45", "38;5;220", "38;5;183")
     color = bool(getattr(sys.stdout, "isatty", lambda: False)()) and "NO_COLOR" not in os.environ
     def ink(value, code):
         return f"\033[{code}m{value}{N}" if color else value
 
-    print(f"\n{ink('OPERATING PRINCIPLES · CURRENT MO SEQUENCE', '1;36')}")
-    for index, (heading, body) in enumerate(sections):
-        print(f"\n  {ink(heading, '1;' + phase_inks[index % len(phase_inks)])}")
-        for line in body.splitlines():
-            print(f"    {line}" if line else "")
-    print(f"\n  {ink('Full source: ' + str(MO_FILE), '2')}")
+    print(f"\n{ink('CURRENT OPERATING PRINCIPLES · IN ORDER', '1;36')}")
+    for index, (heading, _body) in enumerate(sections, start=1):
+        code = phase_inks[(index - 1) % len(phase_inks)]
+        print(f"  {ink(f'{index}. {heading}', '1;' + code)}")
+    print(ink(f"Full text: {MO_FILE}", "2"))
 
 
 def cmd_ack():
     """Refuse unversioned acknowledgments; they cannot satisfy the gate."""
     print(f"{R}✗{N}  bare acknowledgment cannot unlock operations.")
     print_reading_guide()
-    print('After reading, enter a short non-empty task description:')
-    print('  arc-sop start "task description" --accept-policy <digest-shown-by-start>')
+    print('Start a task, then use [r] to review and [y] to accept:')
+    print('  arc-sop start "short task"')
     return 2
 
 
 def print_reading_guide(stream=None, reader_hint=True):
-    """Point directly to the authoritative files, with an optional reader hint."""
+    """Give the operator one short, ordered route through the current policy."""
     stream = sys.stdout if stream is None else stream
-    print("read · full policy", file=stream)
+    print("SOP ACCESS · 1 OF 3  REVIEW THESE SOURCES", file=stream)
     print(f"  1 · {INTEL_OPS / 'GAMEPLAN.md'}", file=stream)
     print(f"  2 · {SOT_FILE}", file=stream)
     print(f"  3 · {MO_FILE}", file=stream)
     if not reader_hint:
         return
     if shutil.which("batcat"):
-        print("Reader: batcat <path>  ·  less <path>", file=stream)
+        print("Open a source: batcat <full-path>  ·  press q to close", file=stream)
     elif shutil.which("bat"):
-        print("Reader: bat <path>  ·  less <path>", file=stream)
+        print("Open a source: bat <full-path>  ·  press q to close", file=stream)
     else:
-        print("Reader: less <path>  ·  cat <path>", file=stream)
+        print("Open a source: less <full-path>  ·  press q to close", file=stream)
 
 
 def cmd_ack_auto(script_name: str):
@@ -486,6 +496,66 @@ def _policy_digest() -> str:
     return h.hexdigest()
 
 
+def _interactive_policy_acceptance(description: str, expected_digest: str):
+    """Offer a short y/n/r gate; policy fingerprint stays inside arc-sop."""
+    sources = (INTEL_OPS / "GAMEPLAN.md", SOT_FILE, MO_FILE)
+    reviewed = False
+    reviewed_hashes = {str(source): hashlib.sha256(source.read_bytes()).hexdigest() for source in sources}
+    print("\nSOP REVIEW · " + description)
+    print("Current GAMEPLAN history, SOT, and every MO are the review packet.")
+    while True:
+        try:
+            choice = input("[y] accept after review  [n] deny  [r] read packet: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nSOP review cancelled; gate remains locked.")
+            return False
+        if choice == "n":
+            _record_policy_event("denied", session_id(), agent_id(), policy_digest=expected_digest)
+            print("SOP review declined; nothing was logged and the gate stays locked.")
+            return False
+        if choice == "r":
+            pager = shutil.which("batcat") or shutil.which("bat")
+            less = shutil.which("less")
+            for source in sources:
+                print(f"\nREVIEW · {source}")
+                if pager:
+                    subprocess.run([pager, "--paging=always", "--style=plain", str(source)], check=False)
+                elif less:
+                    subprocess.run([less, "-FRX", str(source)], check=False)
+                else:
+                    with source.open("r", encoding="utf-8") as stream:
+                        sys.stdout.write(stream.read())
+                    input("[enter] next source")
+            reviewed = True
+            current_hashes = {str(source): hashlib.sha256(source.read_bytes()).hexdigest() for source in sources}
+            if _policy_digest() != expected_digest or current_hashes != reviewed_hashes:
+                print("Policy changed during review. Start again; no acceptance was recorded.")
+                return None
+            for source in sources:
+                _record_policy_event("read", session_id(), agent_id(), source_path=str(source),
+                                     source_sha256=current_hashes[str(source)],
+                                     policy_digest=expected_digest)
+            continue
+        if choice == "y":
+            if not reviewed:
+                print("Read the current packet first with [r], then acknowledge with [y].")
+                continue
+            current_hashes = {str(source): hashlib.sha256(source.read_bytes()).hexdigest() for source in sources}
+            if _policy_digest() != expected_digest or current_hashes != reviewed_hashes:
+                print("Policy changed during review. Start again; no acceptance was recorded.")
+                return None
+            return reviewed_hashes
+        print("Choose y, n, or r.")
+
+
+def _record_policy_event(event: str, sid: str, aid: str, source_path=None,
+                         source_sha256=None, policy_digest=None) -> None:
+    """Record review/accept/deny actions without overstating what was read."""
+    db_insert("policy_events", timestamp=now(), agent_id=aid, session_id=sid,
+              event=event, source_path=source_path, source_sha256=source_sha256,
+              policy_sha256=policy_digest)
+
+
 def cmd_start(description: str, accepted_digest: str = ""):
     """Present current policy and require explicit, version-bound acceptance
     before logging the task or opening the operations gate."""
@@ -493,9 +563,9 @@ def cmd_start(description: str, accepted_digest: str = ""):
     gp = INTEL_OPS / "GAMEPLAN.md"
     description = description.strip()
     if not description:
-        print(f"{R}✗{N}  task description must not be empty; no task was logged and the gate stays locked")
+        print(f"{R}✗{N}  enter a short task name; nothing was logged and the gate stays locked")
         print_gate_banner(False, compact=True)
-        print_reading_guide()
+        print('Next: arc-sop start "short task name"')
         return 2
 
     # Keep the command compact. The gate requires the operator to read the
@@ -520,6 +590,7 @@ def cmd_start(description: str, accepted_digest: str = ""):
         prior_ack and prior_ack[0].get("ack_type") == f"sop-policy-sha256:{current_digest}"
     )
     mo_sections = None
+    reviewed_hashes = None
     if not already_accepted:
         try:
             mo_sections = current_mo_sections()
@@ -532,24 +603,40 @@ def cmd_start(description: str, accepted_digest: str = ""):
     # One explicit policy acceptance covers task starts in the same live
     # session. A changed policy digest or a fresh session still requires a new
     # explicit acceptance; an explicitly supplied stale digest always fails.
-    if accepted_digest != current_digest and not (not accepted_digest and already_accepted):
-        for path in (SOT_FILE, MO_FILE):
-            if not path.is_file():
-                print(f"{R}✗{N} required policy file missing: {path}")
-                return 1
-        stale_digest = bool(accepted_digest and accepted_digest != current_digest)
+    if accepted_digest and accepted_digest != current_digest:
         print_gate_banner(False, compact=True)
-        if stale_digest:
-            print(f"{Y}That digest is out of date for this session. Nothing was accepted.{N}")
-            print("Read the current files below, then use the refreshed command.")
+        print(f"{Y}Policy changed. Nothing was accepted; the gate stays locked.{N}")
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            print(f"SOP_FINGERPRINT={current_digest}")
         else:
-            print("Read the current files below before accepting this session's policy.")
-        print_reading_guide()
-        print("\naccept · copy the current fingerprint exactly:")
-        print(f"  arc-sop start {shlex.quote(description)} --accept-policy {current_digest}")
-        print("Fingerprint changes with SOT/MO or session; old acceptance stays closed.")
+            print('Retry with: arc-sop start "short task"')
         return 2
-    print(f"{G}✓{N}  current SOT + all MOs accepted for this exact session ({current_digest})")
+
+    if not already_accepted:
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        if interactive:
+            reviewed_hashes = _interactive_policy_acceptance(description, current_digest)
+            if not reviewed_hashes:
+                return 2
+        elif accepted_digest == current_digest:
+            # Non-interactive adapters can pass the live, session-bound digest.
+            # This confirms the fingerprint; it does not claim the files were read.
+            pass
+        else:
+            for path in (SOT_FILE, MO_FILE):
+                if not path.is_file():
+                    print(f"{R}✗{N} required policy file missing: {path}")
+                    return 1
+            print_gate_banner(False, compact=True)
+            print("No task was logged. Review the current policy, then confirm once.")
+            print_reading_guide()
+            print("\nSOP ACCESS · SESSION CONFIRMATION REQUIRED")
+            print(f"SOP_FINGERPRINT={current_digest}")
+            print(f"Non-interactive adapter: arc-sop start {shlex.quote(description)} --accept-policy {current_digest}")
+            print("In an interactive terminal, use [r] to review and [y] to accept; no token copy is needed.")
+            print("Until confirmed: operations stay locked.")
+            return 2
+    print(f"{G}✓{N}  current SOT + all MOs accepted for this session")
 
     # 2. Log every accepted task before it can operate. Exact duplicate retries
     # in the same session are idempotent; a second task gets its own entry.
@@ -572,27 +659,33 @@ def cmd_start(description: str, accepted_digest: str = ""):
 
     print(f"{G}✓{N}  GAMEPLAN.md: logged today's [STARTING] entry")
     return _finish_start(sid, aid, current_digest, already_accepted=already_accepted,
-                         mo_sections=mo_sections)
+                         mo_sections=mo_sections, reviewed_hashes=reviewed_hashes)
 
 
 def _finish_start(sid: str, aid: str, policy_digest: str,
-                  already_accepted: bool = False, mo_sections=None) -> int:
+                  already_accepted: bool = False, mo_sections=None, reviewed_hashes=None) -> int:
     """Shared tail of cmd_start: ack + unlock, used whether or not a fresh
     GAMEPLAN entry was written this call."""
     print_gate_banner(True)
     if already_accepted:
-        print(f"{G}✓{N}  current policy acceptance reused for this live session")
+        print(f"{G}✓{N}  current policy already accepted for this session")
     else:
         ts = now()
         db_insert("acks", timestamp=ts, agent_id=aid, session_id=sid,
                   ack_type=f"sop-policy-sha256:{policy_digest}")
         who_label = "Agent" if is_agent_id(aid) else "User"
-        print(f"{G}✓{N}  {who_label} {Y}{aid}{N} explicitly accepted current SOT + all MOs")
-        print(f"{D}   policy sha256: {policy_digest}{N}")
+        if reviewed_hashes is not None:
+            print(f"{G}✓{N}  {who_label} {Y}{aid}{N} reviewed and accepted current policy")
+            for source in (INTEL_OPS / "GAMEPLAN.md", SOT_FILE, MO_FILE):
+                digest = reviewed_hashes[str(source)]
+                print(f"  read · {source.name} · sha256:{digest[:12]}")
+        else:
+            print(f"{G}✓{N}  {who_label} {Y}{aid}{N} accepted current policy fingerprint")
+        _record_policy_event("accepted", sid, aid, policy_digest=policy_digest)
         _notify("SOP acknowledged", f"{who_label} {aid} acknowledged all SOPs -- session unlocked", urgency="normal")
         print_current_mos(mo_sections or [])
 
-    print(f"\n{G}✓ unlocked{N}")
+    print(f"\n{G}✓ ready for today's work{N} · task logged")
     return 0
 
 
@@ -763,7 +856,7 @@ def hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
-SOP_EXCLUDE_DIRS = {"inventory"}
+SOP_EXCLUDE_DIRS = {"inventory", ".source-workbench"}
 
 
 def sop_files():
@@ -774,9 +867,9 @@ def sop_files():
         rel = f.relative_to(INTEL_OPS)
         if not f.is_file() or ".git/" in str(rel):
             continue
-        # inventory/ has its own integrity mechanism (git history + arc-inv's hash-chained ledger,
-        # `arc inv verify`), and ledger.jsonl is appended by every 30-min scan -- hashing it here
-        # would leave the SOP baseline permanently "stale" and train everyone to ignore it.
+        # These subtrees have their own integrity/storage lifecycle. Inventory uses Git plus
+        # arc-inv's hash-chained ledger; .source-workbench is an append-only SQLite revision store.
+        # Hashing live state here makes the policy baseline drift during normal app operation.
         if rel.parts and rel.parts[0] in SOP_EXCLUDE_DIRS:
             continue
         yield rel, f
@@ -864,21 +957,24 @@ def cmd_verify():
 
 
 def cmd_done_balance() -> bool:
-    """Check that every today [STARTING] entry has a paired [DONE]."""
+    """Check today's GAMEPLAN task headings for paired STARTING/DONE records."""
     gp = INTEL_OPS / "GAMEPLAN.md"
     if not gp.exists():
         print(f"{Y}!{N}  GAMEPLAN.md not found")
         return True
     content = gp.read_text()
     today = datetime.now().strftime("%Y-%m-%d")
-    lines = content.splitlines()
-    starts = [l.strip() for l in lines if today in l and "[STARTING]" in l]
-    dones  = [l.strip() for l in lines if today in l and "[DONE]" in l]
+    # Accept both legacy [DONE] and the current descriptive [DONE · title]
+    # heading style. Match dated headings only, not mentions in entry bodies.
+    marker = re.compile(rf"^\s*##\s+{re.escape(today)}\b.*\[(STARTING|DONE)(?:\]|\s[·:—-])")
+    starts = [line.strip() for line in content.splitlines() if (m := marker.search(line)) and m.group(1) == "STARTING"]
+    dones = [line.strip() for line in content.splitlines() if (m := marker.search(line)) and m.group(1) == "DONE"]
     if len(starts) > len(dones):
         unmatched = len(starts) - len(dones)
-        print(f"{Y}!{N}  {unmatched} task(s) have no [DONE] entry today")
-        for s in starts:
-            print(f"  {D}  {s}{N}")
+        print(f"{Y}!{N}  {unmatched} more STARTING than DONE records today")
+        print(f"  {D}Today's STARTING headings (context only; counts are not paired by task ID):{N}")
+        for start in starts:
+            print(f"  {D}  {start}{N}")
         return False
     print(f"{G}✓{N}  All today's tasks closed  {D}({len(dones)}/{len(starts)}){N}")
     return True
@@ -1067,6 +1163,13 @@ def cmd_status():
     for c in checks:
         sym = f"{G}✓{N}" if c["passed"] else f"{R}✗{N}"
         print(f"    {sym}  {c['timestamp']} · {c['check_name']}: {c['message']}")
+    events = db_query("SELECT timestamp, agent_id, session_id, event, source_path, source_sha256, policy_sha256 FROM policy_events ORDER BY id DESC LIMIT 8")
+    if events:
+        print("\n  Recent policy gate events:")
+        for event in reversed(events):
+            detail = (f"{event['source_path']} · sha256:{event['source_sha256'][:12]}"
+                      if event["source_path"] else f"policy sha256:{(event['policy_sha256'] or '')[:12]}")
+            print(f"    {event['timestamp']} · {event['agent_id']} · {event['session_id']} · {event['event']} · {detail}")
 
 
 def cmd_bundle():

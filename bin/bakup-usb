@@ -178,4 +178,5 @@ echo -e "  ${D}stamped: $(cat "$STAMP")${N}"
 if (( ${#FAILED[@]} > 0 )); then
   "$HOME/.local/bin/arc-pine-notify" critical bakup-usb "backup FAILED" \
     "$(IFS=', '; echo "${FAILED[*]}") — check disk space / USB health, then re-run: bakup-usb" 2>/dev/null
+  exit 1
 fi

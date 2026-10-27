@@ -998,8 +998,10 @@ cmd_backup() {
     return 1
   fi
 
-  bash "$BAKUP_SCRIPT"
+  local backup_status=0
+  bash "$BAKUP_SCRIPT" || backup_status=$?
   echo -e "$HR"
+  return "$backup_status"
 }
 
 # ── Sync ───────────────────────────────────────────────────────────────────────

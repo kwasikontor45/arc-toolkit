@@ -65,7 +65,7 @@ DEFAULT_CONFIG = {
     "audio_volume_percent": 50,
     # Speech has its own restrained level and cadence. Keep alert chimes on
     # audio_volume_percent so the spoken-style change cannot soften alarms.
-    "speech_volume_percent": 58,
+    "speech_volume_percent": 85,
     "speech_length_scale": 1.10,
     "speak_enabled": True,
     "app_rules": {"arc-break": {"speak": True}, "orage": {"speak": True}},
@@ -562,7 +562,7 @@ def warm_speech_async(length_scale=1.10):
     def warm():
         path = _synthesize_speech_resident("Ready.", length_scale)
         if path:
-            path.unlink(missing_ok=True)
+            Path(path).unlink(missing_ok=True)
     _PIPER_WARM_THREAD = threading.Thread(target=warm, name="arc-pine-piper-warm", daemon=True)
     _PIPER_WARM_THREAD.start()
 

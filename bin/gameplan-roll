@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""gameplan-roll — monthly rollover for the GAMEPLAN task log.
+
+Archives the oldest fully-past month's entries from GAMEPLAN.md into
+GAMEPLAN-archive-YYYY-MM.md (same directory), rewrites the live file with a
+compact header + current-month entries. Idempotent: exits clean when there is
+nothing to roll. Use --dry-run to preview.
+
+Standalone object: no imports from other arc tools, no shared state.
+"""
+import re
+import sys
+from datetime import date
+from pathlib import Path
+
+INTEL = Path.home() / "dev-notes" / "intel-ops"
+GAMEPLAN = INTEL / "GAMEPLAN.md"
+ARCHIVE_RE = re.compile(r"^GAMEPLAN-archive-(\d{4})-(\d{2})\.md$")
+ENTRY_RE = re.compile(r"^## (\d{4})-(\d{2})-\d{2} ")
+
+HEADER = """# GAMEPLAN — rolling task log
+
+**MO:** WWSJD · right and tight · no holes line up · trust but verify · operate in the LIGHT · leave it cleaner
+
+---
+_Live window: current month. Monthly rollover on the 1st (arc-gameplan-roll.timer → gameplan-roll). Archives: {archives}. Full history is also in git._
+
+"""
+
+
+def fail(msg):
+    print(f"gameplan-roll: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def archive_index():
+    found = sorted(
+        (f.name, m.group(1), m.group(2))
+        for f in INTEL.glob("GAMEPLAN-archive-*.md")
+        for m in [ARCHIVE_RE.match(f.name)]
+        if m
+    )
+    return found
+
+
+def main():
+    dry = "--dry-run" in sys.argv[1:]
+    if not GAMEPLAN.exists():
+        fail(f"no GAMEPLAN at {GAMEPLAN}")
+
+    lines = GAMEPLAN.read_text().splitlines(keepends=True)
+    idx = [i for i, l in enumerate(lines) if ENTRY_RE.match(l)]
+    if not idx:
+        print("gameplan-roll: no dated entries; nothing to do")
+        return
+
+    months = []
+    for i in idx:
+        m = ENTRY_RE.match(lines[i])
+        months.append((int(m.group(1)), int(m.group(2))))
+    if any(months[i] > months[i + 1] for i in range(len(months) - 1)):
+        fail("entries are not in chronological order; refusing to roll — tidy by hand")
+
+    today = date.today()
+    cur = (today.year, today.month)
+
+    # group boundaries: start of each month in entry-header terms
+    groups = []  # (y, m, first_idx, last_idx_exclusive)
+    g = 0
+    while g < len(idx):
+        y, m = months[g]
+        h = g
+        while h + 1 < len(idx) and months[h + 1] == (y, m):
+            h += 1
+        end = idx[h + 1] if h + 1 < len(idx) else len(lines)
+        groups.append((y, m, idx[g], end))
+        g = h + 1
+
+    archived_names = {n for n, _, _ in archive_index()}
+    past = [gr for gr in groups if (gr[0], gr[1]) < cur]
+    stale = [gr for gr in past
+             if f"GAMEPLAN-archive-{gr[0]:04d}-{gr[1]:02d}.md" in archived_names]
+    if stale:
+        fail("past-month entries are still live but their archive already exists "
+             "(inconsistent state) — tidy by hand")
+    todo = past
+    if not todo:
+        print("gameplan-roll: nothing to roll")
+        return
+
+    for y, m, start, end in todo:
+        name = f"GAMEPLAN-archive-{y:04d}-{m:02d}.md"
+        if start == idx[0]:
+            start = 0  # include any preamble above the very first entry
+        block = lines[start:end]
+        if dry:
+            print(f"would write {INTEL / name} ({len(block)} lines)")
+        else:
+            (INTEL / name).write_text("".join(block))
+            print(f"archived {name} ({len(block)} lines)")
+
+    cut = max(gr[3] for gr in todo)
+    kept = lines[cut:]
+    if not any(ENTRY_RE.match(l) for l in kept):
+        fail("refusing to roll: no dated entries would remain in the live file")
+
+    archives = " · ".join(
+        f"`{n}`" for n, _, _ in archive_index()
+    ) or "(none yet)"
+    header = HEADER.format(archives=archives)
+    if dry:
+        print(f"would rewrite {GAMEPLAN}: header + {len(kept)} lines kept")
+    else:
+        tmp = GAMEPLAN.with_suffix(".md.tmp")
+        tmp.write_text(header + "".join(l for l in kept))
+        tmp.replace(GAMEPLAN)
+        GAMEPLAN.chmod(0o600)
+        print(f"live GAMEPLAN.md: {cut} lines archived, {len(kept)} lines kept")
+
+
+if __name__ == "__main__":
+    main()

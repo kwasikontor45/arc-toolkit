@@ -23,7 +23,7 @@ Method (standard asset-management / bookkeeping practice, made mechanical):
   ATTEST      probes can't check accounts, domains, tokens: those carry
               `reviewed` + `review_every_days` and `expires_on`, so they surface
               as "review due" / "expiring" instead of silently going stale.
-  REPORTS     ~/khaos-lab/inventory/inventory.{json,md} regenerated every scan;
+  REPORTS     ~/khaos-lab/local-cloud-hub/operations/current/inventory/inventory.{json,md} regenerated every scan;
               the notes site and master book render from them (nothing hand-kept).
 
 State (observed, per-asset streaks) lives in ~/.local/state/arc-inv/state.json --
@@ -64,7 +64,7 @@ REGISTRY = INV_DIR / "registry.toml"
 LEDGER = INV_DIR / "ledger.jsonl"
 STATE_DIR = Path(_SANDBOX) / "state" if _SANDBOX else HOME / ".local" / "state" / "arc-inv"
 STATE = STATE_DIR / "state.json"
-OUT_DIR = Path(_SANDBOX) / "out" if _SANDBOX else HOME / "khaos-lab" / "inventory"
+OUT_DIR = Path(_SANDBOX) / "out" if _SANDBOX else HOME / "khaos-lab" / "local-cloud-hub" / "operations" / "current" / "inventory"
 
 DEFAULT_REGION = "us-east-1"
 OK_OBS = {                      # desired status -> observed values that are healthy
@@ -543,14 +543,53 @@ class Ledger:
         with open(self.path) as f:
             return [json.loads(l) for l in f if l.strip()]
 
+    def _closings(self):
+        p = INV_DIR / "ledger-closings.json"
+        if not p.exists():
+            return []
+        try:
+            return json.loads(p.read_text()).get("closings", [])
+        except Exception:
+            return []
+
     def verify(self):
+        """Walk the live chain, anchored at the newest ledger closing when one
+        exists. Every closing is re-validated: archive file sha256, end-record
+        hash, and seq continuity between closings. Returns (ok, total_or_error)."""
         prev = "0" * 64
-        for i, e in enumerate(self.entries(), 1):
+        expect_seq = 1
+        archived = 0
+        last_seq = 0
+        for c in self._closings():
+            arc = INV_DIR / c["file"]
+            if not arc.exists():
+                return False, f"closing archive missing: {c['file']}"
+            if hashlib.sha256(arc.read_bytes()).hexdigest() != c["sha256"]:
+                return False, f"archive {c['file']} sha256 mismatch (tampered?)"
+            last = None
+            with open(arc) as f:
+                for last in f:
+                    pass
+            if not last:
+                return False, f"archive {c['file']} is empty"
+            d = json.loads(last)
+            if d["hash"] != c["hash"] or d["seq"] != c["seq"]:
+                return False, f"archive {c['file']} end does not match closing"
+            if c["seq"] <= last_seq:
+                return False, f"closing seq regression at seq {c['seq']}"
+            last_seq = c["seq"]
+            prev = c["hash"]
+            expect_seq = c["seq"] + 1
+            archived = c["seq"]
+        total = archived
+        for e in self.entries():
             body = {k: v for k, v in e.items() if k not in ("prev", "hash")}
-            if e["prev"] != prev or e["seq"] != i or e["hash"] != self._h(prev, body):
-                return False, i
+            if e["prev"] != prev or e["seq"] != expect_seq or e["hash"] != self._h(prev, body):
+                return False, f"broken at live seq {e.get('seq')}"
             prev = e["hash"]
-        return True, i if self.path.exists() else 0
+            expect_seq += 1
+            total += 1
+        return True, total
 
 
 # ── state + reconciliation ───────────────────────────────────────────────────
@@ -947,8 +986,84 @@ def cmd_history(b, args):
 
 def cmd_verify(b, args):
     ok, n = b.ledger.verify()
-    print(f"  ledger: {n} entries, chain " + ("INTACT" if ok else f"BROKEN at entry {n}"))
+    live = len(b.ledger.entries())
+    arch = n - live if ok else 0
+    if ok:
+        print(f"  ledger: {n} entries ({arch} archived + {live} live), chain INTACT")
+    else:
+        print(f"  ledger: chain BROKEN — {n}")
     sys.exit(0 if ok else 1)
+
+
+def cmd_rotate_ledger(b, args):
+    ledger = b.ledger
+    ok, info = ledger.verify()
+    if not ok:
+        print(f"  refusing to rotate: {info}")
+        sys.exit(1)
+    if args.month:
+        try:
+            y, m = map(int, args.month.split("-"))
+            cutoff = date(y, m, 1)
+        except Exception:
+            print("  --month must be YYYY-MM")
+            sys.exit(2)
+    else:
+        today = date.today()
+        cutoff = date(today.year, today.month, 1)
+    es = ledger.entries()
+    cut = 0
+    for e in es:
+        if datetime.fromisoformat(e["ts"]).date() < cutoff:
+            cut = e["seq"]
+        elif e["seq"] > cut:
+            break
+    if any(datetime.fromisoformat(e["ts"]).date() < cutoff for e in es if e["seq"] > cut):
+        print("  refusing to rotate: records are not in chronological order")
+        sys.exit(1)
+    rest = [e for e in es if e["seq"] > cut]
+    if cut == 0:
+        print(f"  nothing to rotate: no records before {cutoff.isoformat()}")
+        return
+    seg = [e for e in es if e["seq"] <= cut]
+    first_ts, last_ts = seg[0]["ts"][:10], seg[-1]["ts"][:10]
+    if args.dry_run:
+        print(f"  would archive {len(seg)} records ({first_ts} → {last_ts}) to ledger-archive.jsonl")
+        print(f"  would append closing seq={cut} hash={seg[-1]['hash'][:16]}…")
+        print(f"  live ledger would keep {len(rest)} records (from {rest[0]['ts'][:10]})")
+        return
+    arc = INV_DIR / "ledger-archive.jsonl"
+    if arc.exists() and arc.stat().st_size:
+        last = None
+        with open(arc) as f:
+            for last in f:
+                pass
+        if json.loads(last)["seq"] + 1 != seg[0]["seq"]:
+            print("  refusing to rotate: archive does not border the live segment (gap or overlap)")
+            sys.exit(1)
+    with open(arc, "a") as f:
+        for e in seg:
+            f.write(json.dumps(e, sort_keys=True) + "\n")
+    closing = {"file": arc.name,
+               "sha256": hashlib.sha256(arc.read_bytes()).hexdigest(),
+               "seq": cut, "hash": seg[-1]["hash"],
+               "records": len(seg), "from": first_ts, "to": last_ts,
+               "rotated": iso(), "actor": "rotate-ledger"}
+    cp = INV_DIR / "ledger-closings.json"
+    data = json.loads(cp.read_text()) if cp.exists() else {"closings": []}
+    data["closings"].append(closing)
+    cp.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n")
+    arc.chmod(0o640)
+    cp.chmod(0o640)
+    tmp = ledger.path.with_suffix(".jsonl.tmp")
+    with open(tmp, "w") as f:
+        for e in rest:
+            f.write(json.dumps(e, sort_keys=True) + "\n")
+    tmp.replace(ledger.path)
+    ledger.path.chmod(0o640)
+    ok, total = ledger.verify()
+    print(f"  archived {len(seg)} records ({first_ts} → {last_ts}); live ledger: {len(rest)} records")
+    print(f"  closing recorded (seq {cut}); verify after rotate: " + ("INTACT" if ok else f"BROKEN — {total}"))
 
 
 def main():
@@ -970,11 +1085,12 @@ def main():
     s.add_argument("--note", required=True)
     s.add_argument("--reason", required=True)
     s = sub.add_parser("history"); s.add_argument("id", nargs="?")
+    s = sub.add_parser("rotate-ledger"); s.add_argument("--month"); s.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     if args.cmd in (None, "help"):
         if args.cmd is None and STATE.exists():
             Books().summary()
-            print("  arc inv help | scan | list | show <id> | drift | untracked | adopt | ignore | retire | review | set-status | set-cloudflare-probe | history\n")
+            print("  arc inv help | scan | list | show <id> | drift | untracked | adopt | ignore | retire | review | set-status | set-cloudflare-probe | history | verify | rotate-ledger\n")
         else:
             print(__doc__)
         return
@@ -992,7 +1108,7 @@ def main():
          "ignore": cmd_ignore, "retire": cmd_retire, "review": cmd_review, "history": cmd_history,
          "set-status": cmd_set_status,
          "set-cloudflare-probe": cmd_set_cloudflare_probe,
-         "verify": cmd_verify}[args.cmd](b, args)
+         "verify": cmd_verify, "rotate-ledger": cmd_rotate_ledger}[args.cmd](b, args)
 
 
 if __name__ == "__main__":

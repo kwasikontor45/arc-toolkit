@@ -156,8 +156,7 @@ class DialArea(Gtk.DrawingArea):
         pat = cairo.RadialGradient(cx - R*0.3, cy - R*0.35, R*0.1, cx, cy, R)
         pat.add_color_stop_rgba(0, *self._col(face_surface, 1))
         pat.add_color_stop_rgba(1, *self._col(face_bg, 1))
-        cr.set_source(pat); cr.fill_preserve()
-        cr.set_source_rgba(*self._col("#3A414B", .9)); cr.set_line_width(2.5); cr.stroke()
+        cr.set_source(pat); cr.fill()
         # soft sheen across the glass
         sheen = cairo.LinearGradient(cx - R, cy - R, cx + R*0.4, cy + R*0.5)
         sheen.add_color_stop_rgba(0, 1, 1, 1, .10)

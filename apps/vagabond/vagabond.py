@@ -65,8 +65,6 @@ class DialArea(Gtk.DrawingArea):
         self._color_hex = ACCENT
         self._phase_text = ""
         self._time_text = ""
-        self._lid = 0.0
-        self._lid_target = 0.0
         self.connect("draw", self._draw)
         GLib.timeout_add(80, self._sweep)
 
@@ -75,13 +73,9 @@ class DialArea(Gtk.DrawingArea):
         self._color_hex = color_hex
         self._phase_text = phase_text
         self._time_text = time_text
-        self._lid_target = 1.0 if progress > 0 else 0.0
         self.queue_draw()
 
     def _sweep(self):
-        if abs(self._lid - self._lid_target) > 0.008:
-            step = 0.05 if self._lid_target > self._lid else -0.05
-            self._lid = max(0.0, min(1.0, self._lid + step))
         if self.get_mapped():
             self.queue_draw()
         return True
@@ -151,103 +145,39 @@ class DialArea(Gtk.DrawingArea):
         pal = ui.circadian()
         face_bg = pal.get("bg", BG); face_surface = pal.get("surface", SURFACE)
         face_fg = pal.get("fg", TEXT)
-        # 3D: drop shadow lifting the watch off the desk (renders in the band
-        # between bezel and window edge; the shape covers it)
+        phase_name = str(pal.get("phase", "")).upper().replace("-", " ")
+        phase_accent = ui.PHASE_ACCENT.get(str(pal.get("phase", "")), "#9FB4BE")
+
+        # drop shadow lifting the movement off the desk
         sh = cairo.RadialGradient(cx, cy + 5, R*0.92, cx, cy + 5, R + 18)
         sh.add_color_stop_rgba(0, 0, 0, 0, .55)
         sh.add_color_stop_rgba(0.75, 0, 0, 0, .28)
         sh.add_color_stop_rgba(1, 0, 0, 0, 0)
         cr.set_source(sh)
         cr.arc(cx, cy + 5, R + 18, 0, 6.2832); cr.fill()
-        # face — tinted by the live circadian engine
+
+        # face
         cr.arc(cx, cy, R, 0, 6.2832)
         pat = cairo.RadialGradient(cx - R*0.3, cy - R*0.35, R*0.1, cx, cy, R)
         pat.add_color_stop_rgba(0, *self._col(face_surface, 1))
         pat.add_color_stop_rgba(1, *self._col(face_bg, 1))
         cr.set_source(pat); cr.fill()
-        # soft sheen across the glass
-        sheen = cairo.LinearGradient(cx - R, cy - R, cx + R*0.4, cy + R*0.5)
-        sheen.add_color_stop_rgba(0, 1, 1, 1, .10)
-        sheen.add_color_stop_rgba(0.5, 1, 1, 1, .02)
-        sheen.add_color_stop_rgba(1, 1, 1, 1, .07)
-        cr.arc(cx, cy, R - 10, 0, 6.2832)
-        cr.set_source(sheen); cr.fill()
-        # minute track + roman numerals
+
+        # minute track, tucked at the rim
         for i in range(60):
             a = i * 6.2832 / 60 - 1.5708
             big = i % 5 == 0
-            r0 = R - 14; r1 = R - (30 if big else 22)
-            cr.set_source_rgba(*(self._col("#D4B27A", .85) if big else self._col("#96A0AC", .45)))
-            cr.set_line_width(2 if big else 1)
+            r0 = R - 12; r1 = R - (24 if big else 19)
+            cr.set_source_rgba(*(self._col("#D4B27A", .7) if big else self._col("#96A0AC", .35)))
+            cr.set_line_width(1.6 if big else 1)
             cr.move_to(cx + r0*math.cos(a), cy + r0*math.sin(a))
             cr.line_to(cx + r1*math.cos(a), cy + r1*math.sin(a)); cr.stroke()
-        cr.select_font_face("DejaVu Serif", 0, 1)
-        for i, num in enumerate(self.ROMAN):
-            a = i * 6.2832 / 12 - 1.5708
-            rr = R - 56
-            x, y = cx + rr*math.cos(a), cy + rr*math.sin(a)
-            cr.set_font_size(20)
-            ext = cr.text_extents(num)
-            cr.set_source_rgba(*self._col(face_fg, .9))
-            cr.move_to(x - ext.width/2 - ext.x_bearing, y - ext.height/2 - ext.y_bearing)
-            cr.show_text(num)
-        # chapter ring: minute figures every five, tucked and quiet
-        cr.select_font_face("DejaVu Serif", 0, 0)
-        cr.set_font_size(10)
-        for i in range(12):
-            a = i * 6.2832 / 12 - 1.5708
-            rr = R - 70
-            label = f"{(i*5) if i else 60:02d}"
-            ext = cr.text_extents(label)
-            cr.set_source_rgba(*self._col("#8E8468", .5))
-            cr.move_to(cx + rr*math.cos(a) - ext.width/2 - ext.x_bearing,
-                       cy + rr*math.sin(a) - ext.height/2 - ext.y_bearing)
-            cr.show_text(label)
-        # phase complication — a mechanical sub-dial at 3 o'clock, the way a
-        # real movement would carry the hour of day: one small hand, four stops
-        order = ["choice", "desire", "still-pine", "nyx"]
-        phase = str(pal.get("phase", "nyx"))
-        pidx = order.index(phase) if phase in order else 3
-        sx = cx + (R - 104); sy = cy
-        sr = 21
-        cr.arc(sx, sy, sr, 0, 6.2832)
-        cr.set_source_rgba(*self._col("#A88452", .8)); cr.set_line_width(2); cr.stroke()
-        cr.arc(sx, sy, sr - 3, 0, 6.2832)
-        cr.set_source_rgba(*self._col(face_bg, .9)); cr.set_line_width(1); cr.fill()
-        for i in range(4):
-            a = i * 1.5708 - 1.5708
-            big = i == pidx
-            cr.arc(sx + (sr-7)*math.cos(a), sy + (sr-7)*math.sin(a), 2.6 if big else 1.5, 0, 6.2832)
-            cr.set_source_rgba(*(self._col("#D4B27A", .95) if big else self._col("#6E6858", .7)))
-            cr.fill()
-        # roman stop labels I–IV
-        cr.select_font_face("DejaVu Serif", 0, 1)
-        cr.set_font_size(7.5)
-        for i, lab in enumerate(("I", "II", "III", "IV")):
-            a = i * 1.5708 - 1.5708
-            lx, ly = sx + (sr+7)*math.cos(a), sy + (sr+7)*math.sin(a)
-            ext = cr.text_extents(lab)
-            cr.set_source_rgba(*self._col("#8E8468", .75))
-            cr.move_to(lx - ext.width/2 - ext.x_bearing, ly - ext.height/2 - ext.y_bearing)
-            cr.show_text(lab)
-        # the phase hand
-        pa = pidx * 1.5708 - 1.5708
-        cr.set_source_rgba(*self._col("#E8A33D" if self._progress > 0 else "#9A917E"))
-        cr.set_line_width(2); cr.set_line_cap(cairo.LINE_CAP_ROUND)
-        cr.move_to(sx - 5*math.cos(pa), sy - 5*math.sin(pa))
-        cr.line_to(sx + (sr-10)*math.cos(pa), sy + (sr-10)*math.sin(pa)); cr.stroke()
-        cr.arc(sx, sy, 2.6, 0, 6.2832)
-        cr.set_source_rgba(*self._col("#D4B27A")); cr.fill()
-        # filigree arcs flanking the hinge — baroque whisper, not noise
-        for sgn in (-1, 1):
-            cr.arc(cx, cy, R - 34, 1.5708 + sgn*0.55 - 0.38, 1.5708 + sgn*0.55 + 0.38)
-            cr.set_source_rgba(*self._col("#A88452", .4))
-            cr.set_line_width(1.4); cr.stroke()
-        # the shell — three great gears meshed as the window's outside outline.
-        # No ring, no arcs: the case IS the train, each wheel turning.
-        def big_gear(gx, gy, gr, ang, teeth=22):
+
+        # THE SHELL — three wheels meshed as one movement, each carrying 1-12.
+        def big_gear(gx, gy, gr, ang):
             cr.save()
             cr.translate(gx, gy); cr.rotate(ang)
+            teeth = 20
             cr.set_source_rgba(*self._col("#454E5A"))
             for i in range(teeth):
                 a = i * 6.2832 / teeth
@@ -256,36 +186,78 @@ class DialArea(Gtk.DrawingArea):
                 cr.fill()
                 cr.restore()
             cr.arc(0, 0, gr - 4, 0, 6.2832)
-            cr.set_source_rgba(*self._col("#272D36", .96)); cr.fill_preserve()
-            cr.set_source_rgba(*self._col("#59636F", .95)); cr.set_line_width(2.2); cr.stroke()
-            cr.arc(0, 0, gr - 13, 0, 6.2832)
-            cr.set_source_rgba(*self._col("#454E5A", .5)); cr.set_line_width(1.2); cr.stroke()
-            for i in range(6):
-                a = i * 6.2832 / 6
+            cr.set_source_rgba(*self._col("#272D36", .95)); cr.fill_preserve()
+            cr.set_source_rgba(*self._col("#59636F", .9)); cr.set_line_width(2); cr.stroke()
+            for i in range(5):
+                a = i * 6.2832 / 5
                 cr.set_source_rgba(*self._col("#3E4650", .85))
-                cr.set_line_width(3.6)
+                cr.set_line_width(3.4)
                 cr.move_to(0, 0)
-                cr.line_to((gr - 16)*math.cos(a), (gr - 16)*math.sin(a)); cr.stroke()
-            cr.arc(0, 0, 9, 0, 6.2832)
+                cr.line_to((gr - 14)*math.cos(a), (gr - 14)*math.sin(a)); cr.stroke()
+            cr.arc(0, 0, 8, 0, 6.2832)
             cr.set_source_rgba(*self._col("#59636F")); cr.fill()
-            cr.arc(0, 0, 4.5, 0, 6.2832)
+            cr.arc(0, 0, 4, 0, 6.2832)
             cr.set_source_rgba(*self._col("#20252C")); cr.fill()
             cr.restore()
+            # the wheel's own 1-12 chapter, upright, quiet
+            cr.select_font_face("DejaVu Sans", 0, 0)
+            cr.set_font_size(9.5)
+            for i in range(12):
+                a = i * 6.2832 / 12 - 1.5708
+                lab = str(12 if i == 0 else i)
+                lx = gx + (gr - 22)*math.cos(a); ly = gy + (gr - 22)*math.sin(a)
+                ext = cr.text_extents(lab)
+                cr.set_source_rgba(*self._col(face_fg, .5))
+                cr.move_to(lx - ext.width/2 - ext.x_bearing, ly - ext.height/2 - ext.y_bearing)
+                cr.show_text(lab)
+
         tt2 = time.time()
-        mesh = 0.22  # rad/s at the pitch circle; adjacent wheels counter-rotate
+        mesh = 0.22
         for gi in range(3):
-            ga = gi * 2.0944 - 1.5708  # 120° apart, one at 12 o'clock
-            gxr = R*0.66
+            ga = gi * 2.0944 - 1.5708
+            gxr = R*0.52
             gx = cx + gxr*math.cos(ga); gy = cy + gxr*math.sin(ga)
-            gr = R*0.40
+            gr = R*0.46
             big_gear(gx, gy, gr, (1 if gi % 2 == 0 else -1) * tt2 * mesh + gi * 0.31)
-        # real clock hands: hour, minute, sweeping second
+
+        # phase complication at 3 o'clock — the hour of day, mechanically
+        order = ["choice", "desire", "still-pine", "nyx"]
+        phase = str(pal.get("phase", "nyx"))
+        pidx = order.index(phase) if phase in order else 3
+        sx = cx + (R - 96); sy = cy
+        sr = 20
+        cr.arc(sx, sy, sr, 0, 6.2832)
+        cr.set_source_rgba(*self._col("#A88452", .8)); cr.set_line_width(2); cr.stroke()
+        for i in range(4):
+            a = i * 1.5708 - 1.5708
+            big = i == pidx
+            cr.arc(sx + (sr-6)*math.cos(a), sy + (sr-6)*math.sin(a), 2.4 if big else 1.4, 0, 6.2832)
+            cr.set_source_rgba(*(self._col("#D4B27A", .95) if big else self._col("#6E6858", .7)))
+            cr.fill()
+        cr.select_font_face("DejaVu Serif", 0, 1)
+        cr.set_font_size(7)
+        for i, lab in enumerate(("I", "II", "III", "IV")):
+            a = i * 1.5708 - 1.5708
+            lx, ly = sx + (sr+6)*math.cos(a), sy + (sr+6)*math.sin(a)
+            ext = cr.text_extents(lab)
+            cr.set_source_rgba(*self._col("#8E8468", .75))
+            cr.move_to(lx - ext.width/2 - ext.x_bearing, ly - ext.height/2 - ext.y_bearing)
+            cr.show_text(lab)
+        pa = pidx * 1.5708 - 1.5708
+        cr.set_source_rgba(*self._col("#E8A33D" if self._progress > 0 else "#9A917E"))
+        cr.set_line_width(2); cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.move_to(sx - 5*math.cos(pa), sy - 5*math.sin(pa))
+        cr.line_to(sx + (sr-9)*math.cos(pa), sy + (sr-9)*math.sin(pa)); cr.stroke()
+        cr.arc(sx, sy, 2.4, 0, 6.2832)
+        cr.set_source_rgba(*self._col("#D4B27A")); cr.fill()
+
+        # hands at the true center
         m = now.tm_min + now.tm_sec/60.0
         hr = (now.tm_hour % 12) + m/60.0
-        self._hand(cr, cx, cy, hr*6.2832/12 - 1.5708, R*0.46, R*0.10, 6.5, "#E8E2D4", ornate=True)
-        self._hand(cr, cx, cy, m*6.2832/60 - 1.5708, R*0.68, R*0.12, 4.5, "#D9D2C0", ornate=True)
+        self._hand(cr, cx, cy, hr*6.2832/12 - 1.5708, R*0.40, R*0.09, 6.5, "#E8E2D4", ornate=True)
+        self._hand(cr, cx, cy, m*6.2832/60 - 1.5708, R*0.60, R*0.11, 4.5, "#D9D2C0", ornate=True)
         seca = (time.time() % 60) * 6.2832/60 - 1.5708
-        self._hand(cr, cx, cy, seca, R*0.78, R*0.18, 1.8, "#E8A33D")
+        self._hand(cr, cx, cy, seca, R*0.70, R*0.16, 1.8, "#E8A33D")
         for i in range(8):
             a = i * 6.2832/8
             cr.arc(cx + 11*math.cos(a), cy + 11*math.sin(a), 2.1, 0, 6.2832)
@@ -294,13 +266,34 @@ class DialArea(Gtk.DrawingArea):
         cr.set_source_rgba(*self._col("#D4B27A")); cr.fill()
         cr.arc(cx, cy, 3.2, 0, 6.2832)
         cr.set_source_rgba(*self._col("#1A1409")); cr.fill()
-        # phase complication (top aperture) — visible through the open lid
-        # the readout, thin as mercury on water: gradient-faded hairline type
-        phase_name = str(pal.get("phase", "")).upper().replace("-", " ")
-        # circadian hour — top, wearing the engine's phase color
-        phase_accent = ui.PHASE_ACCENT.get(str(pal.get("phase", "")), "#9FB4BE")
+
+        # glass register — countdown + block together, framed, unmistakable
+        pw2, ph3 = 156, 64
+        py2 = cy + 34
+        cr.arc(cx - pw2/2 + 10, py2 + 10, 10, 3.1416, 4.7124)
+        cr.arc(cx + pw2/2 - 10, py2 + 10, 10, 4.7124, 0)
+        cr.arc(cx + pw2/2 - 10, py2 + ph3 - 10, 10, 0, 1.5708)
+        cr.arc(cx - pw2/2 + 10, py2 + ph3 - 10, 10, 1.5708, 3.1416)
+        cr.close_path()
+        cr.set_source_rgba(*self._col(face_bg, .6)); cr.fill_preserve()
+        cr.set_source_rgba(*self._col("#DFE9EE", .3)); cr.set_line_width(1); cr.stroke()
+        digits = self._time_text or "--:--"
+        cr.select_font_face("DejaVu Sans Mono", 0, 0)
+        cr.set_font_size(25)
+        ext = cr.text_extents(digits)
+        cr.set_source(self._mercury(cr, cx, py2 + 2, py2 + 38, a=.95))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, py2 + 30)
+        cr.show_text(digits)
+        cr.select_font_face("DejaVu Sans", 0, 1)
+        cr.set_font_size(10.5)
+        ext = cr.text_extents(self._phase_text or "")
+        cr.set_source_rgba(*self._col(self._color_hex if self._progress > 0 else MUTED))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, py2 + 52)
+        cr.show_text(self._phase_text or "")
+
+        # the circadian hour — top, wearing the engine's phase color
         cr.select_font_face("DejaVu Sans Light,DejaVu Sans", 0, 0)
-        cr.set_font_size(12)
+        cr.set_font_size(12.5)
         ext = cr.text_extents(phase_name)
         g = cairo.LinearGradient(cx, cy - R*0.40 - 12, cx, cy - R*0.40 + 8)
         g.add_color_stop_rgba(0, *self._col(phase_accent, .95))
@@ -308,54 +301,15 @@ class DialArea(Gtk.DrawingArea):
         cr.set_source(g)
         cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - R*0.40)
         cr.show_text(phase_name)
-        # the countdown — center, a column of mercury
-        # glass register — the countdown framed under the hands, always legible
-        pw2, ph3 = 152, 46
-        py2 = cy + 30
-        cr.arc(cx - pw2/2 + 10, py2 + 10, 10, 3.1416, 4.7124)
-        cr.arc(cx + pw2/2 - 10, py2 + 10, 10, 4.7124, 0)
-        cr.arc(cx + pw2/2 - 10, py2 + ph3 - 10, 10, 0, 1.5708)
-        cr.arc(cx - pw2/2 + 10, py2 + ph3 - 10, 10, 1.5708, 3.1416)
-        cr.close_path()
-        cr.set_source_rgba(*self._col(face_bg, .55)); cr.fill_preserve()
-        cr.set_source_rgba(*self._col("#DFE9EE", .28)); cr.set_line_width(1); cr.stroke()
-        digits = self._time_text or "--:--"
-        cr.select_font_face("DejaVu Sans Mono", 0, 0)
-        cr.set_font_size(25)
-        ext = cr.text_extents(digits)
-        cr.set_source(self._mercury(cr, cx, py2 + 4, py2 + ph3, a=.95))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, py2 + 32)
-        cr.show_text(digits)
-        # the lid — a hinged cover at 6 o'clock; span shrinks as the face opens
-        span = 5.58 - self._lid * 4.0
-        a0 = 1.5708 - span/2
-        cr.arc(cx, cy, R - 2, a0, a0 + span)
-        cr.close_path()
-        lidpat = cairo.LinearGradient(cx - R, cy, cx + R, cy + R)
-        lidpat.add_color_stop_rgba(0, *self._col("#232A33", .97))
-        lidpat.add_color_stop_rgba(1, *self._col("#12161C", .97))
-        cr.set_source(lidpat); cr.fill_preserve()
-        cr.set_source_rgba(*self._col("#A88452", .9)); cr.set_line_width(3); cr.stroke()
-        # seat shadow under the lid's upper edge, so it reads as a raised cover
-        cr.arc(cx, cy, R - 3, a0 - 0.16, a0 + 0.02)
-        cr.set_source_rgba(0, 0, 0, .42); cr.set_line_width(5); cr.stroke()
-        cr.arc(cx, cy, R - 3, a0 + span - 0.02, a0 + span + 0.16)
-        cr.set_source_rgba(0, 0, 0, .28); cr.stroke()
-        # the block, engraved on the case-back lid — bottom of the dial
-        label = self._phase_text or ""
-        if label:
-            lx, ly = cx + (R*0.55)*math.cos(1.5708), cy + (R*0.55)*math.sin(1.5708)
-            cr.select_font_face("DejaVu Sans", 0, 1)
-            cr.set_font_size(11)
-            ext = cr.text_extents(label)
-            cr.set_source(self._mercury(cr, lx, ly - 8, ly + 8, a=.6))
-            cr.move_to(lx - ext.width/2 - ext.x_bearing, ly - ext.height/2 - ext.y_bearing)
-            cr.show_text(label)
-        # lid crown nub
-        na = a0 + 0.12  # hinge edge
-        nx, ny = cx + (R-16)*math.cos(na), cy + (R-16)*math.sin(na)
-        cr.arc(nx, ny, 7, 0, 6.2832)
-        cr.set_source_rgba(*self._col("#D4B27A")); cr.fill()
+
+        # the maker's mark — arc · vagabond, tucked beneath the register
+        cr.select_font_face("DejaVu Sans", 0, 0)
+        cr.set_font_size(8)
+        mark = "arc · vagabond"
+        ext = cr.text_extents(mark)
+        cr.set_source_rgba(*self._col(face_fg, .34))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.62)
+        cr.show_text(mark)
 
 
 def boot_id():

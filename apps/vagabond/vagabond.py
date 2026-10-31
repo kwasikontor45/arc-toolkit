@@ -91,22 +91,39 @@ class DialArea(Gtk.DrawingArea):
         v = hex_color.lstrip('#')
         return (int(v[0:2], 16)/255, int(v[2:4], 16)/255, int(v[4:6], 16)/255, alpha)
 
-    def _hand(self, cr, cx, cy, angle, length, tail, width, color):
-        """Tapered vintage hand with a counterweight disc — mercury on metal."""
+    def _hand(self, cr, cx, cy, angle, length, tail, width, color, ornate=False):
+        """Baroque tapered hand: brushed-brass gradient, pierced tip, ringed
+        counterweight — mercury on metal, dressed for the dark."""
         ux, uy = math.cos(angle), math.sin(angle)
         px, py = -uy, ux
-        cr.set_source_rgba(*self._col(color))
-        cr.set_line_cap(cairo.LINE_CAP_ROUND)
-        cr.set_line_width(1)
-        w_base = width; w_tip = max(1.2, width * 0.32)
+        w_base = width; w_tip = max(1.2, width * 0.30)
         bx, by = cx + length*ux, cy + length*uy
+        grad = cairo.LinearGradient(cx - tail*ux, cy - tail*uy, bx, by)
+        grad.add_color_stop_rgba(0, *self._col("#8A6B3E"))
+        grad.add_color_stop_rgba(0.55, *self._col(color))
+        grad.add_color_stop_rgba(1, *self._col("#F2E3C2"))
+        cr.set_source(grad)
         cr.move_to(cx - tail*ux + w_base*px*0.4, cy - tail*uy + w_base*py*0.4)
         cr.line_to(bx + w_tip*px, by + w_tip*py)
         cr.line_to(bx - w_tip*px, by - w_tip*py)
         cr.line_to(cx - tail*ux - w_base*px*0.4, cy - tail*uy - w_base*py*0.4)
         cr.close_path(); cr.fill()
-        cr.arc(cx - (tail + width)*ux, cy - (tail + width)*uy, width*1.15, 0, 6.2832)
-        cr.fill()
+        if ornate:
+            # pierced diamond near the tip
+            dpos = length * 0.72; dw = width * 0.9
+            dx, dy = cx + dpos*ux, cy + dpos*uy
+            cr.set_source_rgba(*self._col("#0B0D10", .85))
+            cr.move_to(dx + dw*ux, dy + dw*uy)
+            cr.line_to(dx + dw*px*0.7, dy + dw*py*0.7)
+            cr.line_to(dx - dw*ux, dy - dw*uy)
+            cr.line_to(dx - dw*px*0.7, dy - dw*py*0.7)
+            cr.close_path(); cr.fill()
+        # ringed counterweight
+        ccx, ccy = cx - (tail + width)*ux, cy - (tail + width)*uy
+        cr.arc(ccx, ccy, width*1.25, 0, 6.2832)
+        cr.set_source_rgba(*self._col(color)); cr.fill()
+        cr.arc(ccx, ccy, width*0.55, 0, 6.2832)
+        cr.set_source_rgba(*self._col("#0B0D10", .8)); cr.fill()
 
     def _draw(self, _widget, cr):
         w = self.get_allocated_width(); h = self.get_allocated_height()
@@ -167,13 +184,34 @@ class DialArea(Gtk.DrawingArea):
             cr.set_source_rgba(*self._col(face_fg, .9))
             cr.move_to(x - ext.width/2 - ext.x_bearing, y - ext.height/2 - ext.y_bearing)
             cr.show_text(num)
+        # chapter ring: minute figures every five, tucked and quiet
+        cr.select_font_face("DejaVu Serif", 0, 0)
+        cr.set_font_size(10)
+        for i in range(12):
+            a = i * 6.2832 / 12 - 1.5708
+            rr = R - 70
+            label = f"{(i*5) if i else 60:02d}"
+            ext = cr.text_extents(label)
+            cr.set_source_rgba(*self._col("#8E8468", .5))
+            cr.move_to(cx + rr*math.cos(a) - ext.width/2 - ext.x_bearing,
+                       cy + rr*math.sin(a) - ext.height/2 - ext.y_bearing)
+            cr.show_text(label)
+        # filigree arcs flanking the hinge — baroque whisper, not noise
+        for sgn in (-1, 1):
+            cr.arc(cx, cy, R - 34, 1.5708 + sgn*0.55 - 0.38, 1.5708 + sgn*0.55 + 0.38)
+            cr.set_source_rgba(*self._col("#A88452", .4))
+            cr.set_line_width(1.4); cr.stroke()
         # real clock hands: hour, minute, sweeping second
         m = now.tm_min + now.tm_sec/60.0
         hr = (now.tm_hour % 12) + m/60.0
-        self._hand(cr, cx, cy, hr*6.2832/12 - 1.5708, R*0.46, R*0.10, 6, "#E8E2D4")
-        self._hand(cr, cx, cy, m*6.2832/60 - 1.5708, R*0.68, R*0.12, 4, "#D9D2C0")
+        self._hand(cr, cx, cy, hr*6.2832/12 - 1.5708, R*0.46, R*0.10, 6.5, "#E8E2D4", ornate=True)
+        self._hand(cr, cx, cy, m*6.2832/60 - 1.5708, R*0.68, R*0.12, 4.5, "#D9D2C0", ornate=True)
         seca = (time.time() % 60) * 6.2832/60 - 1.5708
-        self._hand(cr, cx, cy, seca, R*0.78, R*0.16, 2, "#E8A33D")
+        self._hand(cr, cx, cy, seca, R*0.78, R*0.18, 1.8, "#E8A33D")
+        for i in range(8):
+            a = i * 6.2832/8
+            cr.arc(cx + 11*math.cos(a), cy + 11*math.sin(a), 2.1, 0, 6.2832)
+            cr.set_source_rgba(*self._col("#A88452", .8)); cr.fill()
         cr.arc(cx, cy, 8, 0, 6.2832)
         cr.set_source_rgba(*self._col("#D4B27A")); cr.fill()
         cr.arc(cx, cy, 3.2, 0, 6.2832)
@@ -409,7 +447,7 @@ class ArcBreak:
         edge = self._rgba(TEXT, .2)
         sheen = self._rgba("#ffffff", .16)
         self.css.load_from_data(f"""
-          window.vagabond {{ background-color: {BG}; color: {TEXT}; }}
+          window.vagabond {{ background-color: transparent; color: {TEXT}; }}
           window.vagabond > box {{
             background-image: linear-gradient(145deg, {self._rgba(SURFACE, .97)}, {self._rgba(BG, .98)});
             border: 1px solid {edge}; border-top-color: {sheen}; border-radius: 22px;

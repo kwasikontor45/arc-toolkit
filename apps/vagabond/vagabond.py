@@ -91,6 +91,14 @@ class DialArea(Gtk.DrawingArea):
         v = hex_color.lstrip('#')
         return (int(v[0:2], 16)/255, int(v[2:4], 16)/255, int(v[4:6], 16)/255, alpha)
 
+    @staticmethod
+    def _mercury(cr, x, y0, y1, top="#E9F1F5", mid="#9FB4BE", a=1.0):
+        g = cairo.LinearGradient(x, y0, x, y1)
+        g.add_color_stop_rgba(0, *DialArea._col(top, a))
+        g.add_color_stop_rgba(0.6, *DialArea._col(mid, a * 0.72))
+        g.add_color_stop_rgba(1, *DialArea._col(mid, a * 0.18))
+        return g
+
     def _hand(self, cr, cx, cy, angle, length, tail, width, color, ornate=False):
         """Baroque tapered hand: brushed-brass gradient, pierced tip, ringed
         counterweight — mercury on metal, dressed for the dark."""
@@ -287,45 +295,29 @@ class DialArea(Gtk.DrawingArea):
         cr.arc(cx, cy, 3.2, 0, 6.2832)
         cr.set_source_rgba(*self._col("#1A1409")); cr.fill()
         # phase complication (top aperture) — visible through the open lid
-        if self._progress > 0:
-            frac = 1.0 - self._progress
-            cr.arc(cx, cy, R - 88, -1.5708 - 1.05, -1.5708 + 1.05)
-            cr.set_source_rgba(*self._col(self._color_hex, .18)); cr.set_line_width(11); cr.stroke()
-            cr.arc(cx, cy, R - 88, -1.5708 - 1.05, -1.5708 - 1.05 + frac*2.1)
-            cr.set_source_rgba(*self._col(self._color_hex, .95)); cr.stroke()
-            ga = -1.5708 - 1.05 + frac*2.1
-            cr.arc(cx + (R - 88)*math.cos(ga), cy + (R - 88)*math.sin(ga), 5, 0, 6.2832)
-            cr.set_source_rgba(*self._col("#F2E3C2", .98)); cr.fill()
-        # TOP of the dial: the circadian hour — the headline
+        # the readout, thin as mercury on water: gradient-faded hairline type
         phase_name = str(pal.get("phase", "")).upper().replace("-", " ")
-        cr.select_font_face("DejaVu Sans", 0, 1)
-        cr.set_font_size(13)
+        # circadian hour — top, a breath of smoke
+        cr.select_font_face("DejaVu Sans Light,DejaVu Sans", 0, 0)
+        cr.set_font_size(12)
         ext = cr.text_extents(phase_name)
-        cr.set_source_rgba(*self._col(face_fg))
+        cr.set_source(self._mercury(cr, cx, cy - R*0.40 - 12, cy - R*0.40 + 8, a=.75))
         cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - R*0.40)
         cr.show_text(phase_name)
-        # CENTER: the countdown on its own register plaque — unmistakably THE
-        # timer, separate from the clockwork around it (the digital/analog mix)
-        pw, ph2 = 158, 60
-        px, py = cx - pw/2, cy + 2
-        cr.arc(px + 10, py + 10, 10, 3.1416, 4.7124)
-        cr.arc(px + pw - 10, py + 10, 10, 4.7124, 0)
-        cr.arc(px + pw - 10, py + ph2 - 10, 10, 0, 1.5708)
-        cr.arc(px + 10, py + ph2 - 10, 10, 1.5708, 3.1416)
-        cr.close_path()
-        cr.set_source_rgba(*self._col("#10141A", .92)); cr.fill_preserve()
-        cr.set_source_rgba(*self._col("#A88452", .95)); cr.set_line_width(2); cr.stroke()
-        cr.select_font_face("DejaVu Sans Mono", 0, 1)
-        cr.set_font_size(26)
-        ext = cr.text_extents(self._time_text or "--:--")
-        cr.set_source_rgba(*self._col(self._color_hex if self._progress > 0 else face_fg))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + 30)
-        cr.show_text(self._time_text or "--:--")
+        # the countdown — center, a column of mercury
+        digits = self._time_text or "--:--"
+        cr.select_font_face("DejaVu Sans Mono", 0, 0)
+        cr.set_font_size(24)
+        ext = cr.text_extents(digits)
+        cr.set_source(self._mercury(cr, cx, cy - 2, cy + 40, a=.92))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + 26)
+        cr.show_text(digits)
+        # whispered caption
         cr.select_font_face("DejaVu Sans", 0, 0)
-        cr.set_font_size(8)
+        cr.set_font_size(7.5)
         ext = cr.text_extents("R E M A I N I N G")
-        cr.set_source_rgba(*self._col(face_fg, .5))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + 48)
+        cr.set_source(self._mercury(cr, cx, cy + 32, cy + 46, a=.45))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + 44)
         cr.show_text("R E M A I N I N G")
         # the lid — a hinged cover at 6 o'clock; span shrinks as the face opens
         span = 5.58 - self._lid * 4.0
@@ -349,10 +341,7 @@ class DialArea(Gtk.DrawingArea):
             cr.select_font_face("DejaVu Sans", 0, 1)
             cr.set_font_size(11)
             ext = cr.text_extents(label)
-            cr.set_source_rgba(0, 0, 0, .45)
-            cr.move_to(lx - ext.width/2 - ext.x_bearing + 0.8, ly - ext.height/2 - ext.y_bearing + 1)
-            cr.show_text(label)
-            cr.set_source_rgba(*self._col("#D4B27A", .9))
+            cr.set_source(self._mercury(cr, lx, ly - 8, ly + 8, a=.6))
             cr.move_to(lx - ext.width/2 - ext.x_bearing, ly - ext.height/2 - ext.y_bearing)
             cr.show_text(label)
         # lid crown nub

@@ -297,11 +297,15 @@ class DialArea(Gtk.DrawingArea):
         # phase complication (top aperture) — visible through the open lid
         # the readout, thin as mercury on water: gradient-faded hairline type
         phase_name = str(pal.get("phase", "")).upper().replace("-", " ")
-        # circadian hour — top, a breath of smoke
+        # circadian hour — top, wearing the engine's phase color
+        phase_accent = ui.PHASE_ACCENT.get(str(pal.get("phase", "")), "#9FB4BE")
         cr.select_font_face("DejaVu Sans Light,DejaVu Sans", 0, 0)
         cr.set_font_size(12)
         ext = cr.text_extents(phase_name)
-        cr.set_source(self._mercury(cr, cx, cy - R*0.40 - 12, cy - R*0.40 + 8, a=.75))
+        g = cairo.LinearGradient(cx, cy - R*0.40 - 12, cx, cy - R*0.40 + 8)
+        g.add_color_stop_rgba(0, *self._col(phase_accent, .95))
+        g.add_color_stop_rgba(1, *self._col(phase_accent, .30))
+        cr.set_source(g)
         cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - R*0.40)
         cr.show_text(phase_name)
         # the countdown — center, a column of mercury

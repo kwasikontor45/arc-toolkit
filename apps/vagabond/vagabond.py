@@ -283,26 +283,26 @@ class DialArea(Gtk.DrawingArea):
             ga = -1.5708 - 1.05 + frac*2.1
             cr.arc(cx + (R - 88)*math.cos(ga), cy + (R - 88)*math.sin(ga), 5, 0, 6.2832)
             cr.set_source_rgba(*self._col("#F2E3C2", .98)); cr.fill()
+        # circadian phase rides the TOP of the aperture — the headline hour
+        phase_name = str(pal.get("phase", "")).upper().replace("-", " ")
         cr.select_font_face("DejaVu Sans", 0, 1)
-        cr.set_font_size(17)
-        ext = cr.text_extents(self._phase_text)
-        cr.set_source_rgba(*self._col(self._color_hex if self._progress > 0 else MUTED))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.36)
-        cr.show_text(self._phase_text)
+        cr.set_font_size(13)
+        ext = cr.text_extents(phase_name)
+        cr.set_source_rgba(*self._col(face_fg))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.36 + 2)
+        cr.show_text(phase_name)
         cr.select_font_face("DejaVu Sans", 0, 0)
         cr.set_font_size(15)
         ext = cr.text_extents(self._time_text or "--:--")
         cr.set_source_rgba(*self._col(face_fg))
         cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.36 + 24)
         cr.show_text(self._time_text or "--:--")
-        # circadian phase name — the watch always knows what hour it is
-        phase_name = str(pal.get("phase", "")).upper().replace("-", " ")
-        cr.select_font_face("DejaVu Sans", 0, 0)
+        # block label tucked beneath — we know what the clock is for
         cr.set_font_size(11)
-        ext = cr.text_extents(phase_name)
-        cr.set_source_rgba(*self._col(face_fg, .55))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.36 + 44)
-        cr.show_text(phase_name)
+        ext = cr.text_extents(self._phase_text)
+        cr.set_source_rgba(*self._col(self._color_hex if self._progress > 0 else MUTED))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.36 + 42)
+        cr.show_text(self._phase_text)
         # the lid — a hinged cover at 6 o'clock; span shrinks as the face opens
         span = 5.58 - self._lid * 4.0
         a0 = 1.5708 - span/2

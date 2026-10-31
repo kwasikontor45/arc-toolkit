@@ -1,8 +1,8 @@
-# Arc Break taskbar timer
+# Vagabond timer
 
-A small GTK 3 timer for XFCE and other GTK desktops. Start it from the desktop menu, click **Start timer**, and it minimizes into the normal taskbar. Its taskbar icon shows the remaining minutes in a phase-colored progress ring; the live title carries the exact countdown. Click the taskbar item to restore its controls. It needs no tray plugin or panel setup.
+A small GTK 3 timer for XFCE and other GTK desktops. Start it from the desktop menu, click **Start timer**, and it minimizes into the normal taskbar. A crafted mechanical dial sits beside the exact digital countdown; its hand and progress track follow the selected focus/rest block. The taskbar window icon uses the same timer face, tinted for the active block. Click the taskbar item to restore its controls. It needs no tray plugin or panel setup.
 
-The work cycle starts at **40 minutes focus / 18 minutes rest**, matching this workstation's current timer settings. Open **Timer settings** in the app to set focus/rest durations, automatic next cycles, and transition alerts. Settings are saved in `~/.config/arc-break-taskbar/settings.json`; changes apply to the next cycle. The window follows the same live circadian palette as Khaos Lab and Arc Pine through the shared `_arc_ui.py` engine.
+The work cycle starts at **40 minutes focus / 18 minutes rest**, matching this workstation's current timer settings. Open **Timer settings** in the app to set focus/rest durations, automatic next cycles, and transition alerts. Settings are saved in `~/.config/vagabond/settings.json`; changes apply to the next cycle. The window follows the same live circadian palette as Khaos Lab and Arc Pine through the shared `_arc_ui.py` engine.
 
 ## Install
 
@@ -15,28 +15,28 @@ sudo apt install python3-gi gir1.2-gtk-3.0
 Then clone this repository and run:
 
 ```sh
-./apps/arc-break-taskbar/install.sh
+./apps/vagabond/install.sh
 ```
 
-The installer copies this app and the shared circadian palette into `~/.local/opt/arc-break-taskbar`, updates the existing Arc Break desktop-menu entry, and creates a `~/.local/bin/arc-break-taskbar` launcher. If a prior Arc Break menu entry exists, the installer preserves a copy so uninstall can restore it. It uses no network, privilege escalation, Genmon, Arc command, or tray extension.
+The installer copies this app and the shared circadian palette into `~/.local/opt/vagabond`, updates the existing Arc Break desktop-menu entry, and creates a `~/.local/bin/vagabond` launcher. If a prior Arc Break menu entry exists, the installer preserves a copy so uninstall can restore it. It uses no network, privilege escalation, Genmon, Arc command, or tray extension.
 
 ## Local data and behavior
 
 - A new timer starts only when the user starts it. At login, a previously active timer resumes minimized with its saved remainder; explicit Stop prevents resuming. A paused timer stays paused. Powered-off time does not consume focus/rest time; state checkpoints every five seconds and at normal shutdown. Uninstall restores the previous login-resume entry.
-- Settings and resumable timer state are stored under `~/.config/arc-break-taskbar/` and `~/.local/state/arc-break-taskbar/`; files are written atomically with owner-only permissions. The four settings are focus length, rest length, automatic cycle continuation, and transition alerts.
+- Settings and resumable timer state are stored under `~/.config/vagabond/` and `~/.local/state/vagabond/`; files are written atomically with owner-only permissions. The four settings are focus length, rest length, automatic cycle continuation, and transition alerts.
 - The countdown uses a one-second GTK callback, sends desktop notifications at phase changes, and stores no account or personal data.
-- When Arc Pine is running, taskbar notifications inherit its `arc-break` sound, speech, and mute policy. Speech also respects Arc Pine's global speech toggle, snooze, and quiet hours. A separate app rule for `arc_break_taskbar.py` overrides the inherited policy. Without Arc Pine, desktop notifications continue normally.
+- When Arc Pine is running, taskbar notifications inherit its `arc-break` sound, speech, and mute policy. Speech also respects Arc Pine's global speech toggle, snooze, and quiet hours. A separate app rule for `vagabond.py` overrides the inherited policy. Without Arc Pine, desktop notifications continue normally.
 - Closing the window while the timer runs minimizes it to the taskbar, so it remains visible and keeps timing. Close the app after stopping the timer to exit.
-- Removing the app with `./apps/arc-break-taskbar/uninstall.sh` removes only its own launcher and installed app files; it preserves the settings and state directories.
+- Removing the app with `./apps/vagabond/uninstall.sh` removes only its own launcher and installed app files; it preserves the settings and state directories.
 
 ## Uninstall
 
 ```sh
-./apps/arc-break-taskbar/uninstall.sh
+./apps/vagabond/uninstall.sh
 ```
 
 The older `arc break start|stop|status` commands still control the supervised daemon, which keeps separate state and timing. `arc break gui` opens this standalone app. The daemon no longer configures Genmon; run only one timer at a time.
 
-The taskbar and desktop launcher keep the Kataleya orb mark in `icon.png`; the compact window masthead pairs it with the Khaos Lab flamingo mark in `flamingo-mark.png`. The installer copies both assets locally so the timer remains self-contained. The live countdown ring and phase readout are unchanged.
+`mechanical-timer.svg` is the single vector face used by the desktop launcher, the window, and the live taskbar indicator. The dial adds no polling or background activity; it redraws with the existing one-second timer update. The older `icon.png` and `flamingo-mark.png` are retained as local history but are no longer displayed by Arc Break.
 
 The optional user unit owns a running timer independently of tool sessions and restarts after a crash. Login resume remains conditional on saved active state. Arc Heal restores a missing process only for an active saved phase, and respects explicit Stop. Lab status/start/stop/open controls use this taskbar timer. CLI: --status, --start, --stop, --resume-only.

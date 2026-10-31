@@ -1,7 +1,10 @@
 [Unit]
-Description=Arc Break taskbar timer (resume active state only)
+Description=Vagabond taskbar timer (resume active state only)
 
 [Service]
-ExecStart=%h/.local/opt/arc-break-taskbar/arc_break_taskbar.py --resume-only
+Type=simple
+ExecStart=%h/.local/opt/vagabond/vagabond.py --resume-only
 Restart=on-failure
-RestartSec=3
+
+[Install]
+WantedBy=default.target

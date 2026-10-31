@@ -98,6 +98,16 @@ class DialArea(Gtk.DrawingArea):
         px, py = -uy, ux
         w_base = width; w_tip = max(1.2, width * 0.30)
         bx, by = cx + length*ux, cy + length*uy
+        # cast shadow first (offset down-right), then the hand floats above it
+        cr.save()
+        cr.translate(1.6, 2.2)
+        cr.move_to(cx - tail*ux + w_base*px*0.4, cy - tail*uy + w_base*py*0.4)
+        cr.line_to(bx + w_tip*px, by + w_tip*py)
+        cr.line_to(bx - w_tip*px, by - w_tip*py)
+        cr.line_to(cx - tail*ux - w_base*px*0.4, cy - tail*uy - w_base*py*0.4)
+        cr.close_path()
+        cr.set_source_rgba(0, 0, 0, .32); cr.fill()
+        cr.restore()
         grad = cairo.LinearGradient(cx - tail*ux, cy - tail*uy, bx, by)
         grad.add_color_stop_rgba(0, *self._col("#8A6B3E"))
         grad.add_color_stop_rgba(0.55, *self._col(color))
@@ -133,12 +143,14 @@ class DialArea(Gtk.DrawingArea):
         pal = ui.circadian()
         face_bg = pal.get("bg", BG); face_surface = pal.get("surface", SURFACE)
         face_fg = pal.get("fg", TEXT)
-        # 3D: soft ambient shadow lifting the watch off the desk
-        sh = cairo.RadialGradient(cx, cy + 6, R*0.55, cx, cy + 6, R + 26)
-        sh.add_color_stop_rgba(0, 0, 0, 0, .42)
+        # 3D: drop shadow lifting the watch off the desk (renders in the band
+        # between bezel and window edge; the shape covers it)
+        sh = cairo.RadialGradient(cx, cy + 5, R*0.92, cx, cy + 5, R + 18)
+        sh.add_color_stop_rgba(0, 0, 0, 0, .55)
+        sh.add_color_stop_rgba(0.75, 0, 0, 0, .28)
         sh.add_color_stop_rgba(1, 0, 0, 0, 0)
         cr.set_source(sh)
-        cr.arc(cx, cy + 6, R + 26, 0, 6.2832); cr.fill()
+        cr.arc(cx, cy + 5, R + 18, 0, 6.2832); cr.fill()
         # face — tinted by the live circadian engine
         cr.arc(cx, cy, R, 0, 6.2832)
         pat = cairo.RadialGradient(cx - R*0.3, cy - R*0.35, R*0.1, cx, cy, R)
@@ -155,9 +167,19 @@ class DialArea(Gtk.DrawingArea):
             cr.set_source_rgba(*self._col("#E4C88E", .95)); cr.fill()
         # 3D bevel: lit upper-left, shaded lower-right
         cr.arc(cx, cy, R - 2, 2.6, 4.6)
-        cr.set_source_rgba(1, 1, 1, .16); cr.set_line_width(5); cr.stroke()
+        cr.set_source_rgba(1, 1, 1, .22); cr.set_line_width(5); cr.stroke()
         cr.arc(cx, cy, R - 2, -0.6, 1.2)
-        cr.set_source_rgba(0, 0, 0, .30); cr.stroke()
+        cr.set_source_rgba(0, 0, 0, .34); cr.stroke()
+        # raised-band edges: bright crest on the outer lip, dark seat inside
+        cr.arc(cx, cy, R - 1, 2.4, 4.9)
+        cr.set_source_rgba(1, 1, 1, .30); cr.set_line_width(1.6); cr.stroke()
+        cr.arc(cx, cy, R - 7, 2.4, 4.9)
+        cr.set_source_rgba(0, 0, 0, .38); cr.set_line_width(1.6); cr.stroke()
+        cr.arc(cx, cy, R - 7, -0.5, 1.4)
+        cr.set_source_rgba(1, 1, 1, .12); cr.set_line_width(1.3); cr.stroke()
+        # seat shadow where face meets bezel (lower half)
+        cr.arc(cx, cy, R - 9, 0.4, 2.7)
+        cr.set_source_rgba(0, 0, 0, .30); cr.set_line_width(3); cr.stroke()
         # soft sheen across the glass
         sheen = cairo.LinearGradient(cx - R, cy - R, cx + R*0.4, cy + R*0.5)
         sheen.add_color_stop_rgba(0, 1, 1, 1, .10)
@@ -256,6 +278,11 @@ class DialArea(Gtk.DrawingArea):
         lidpat.add_color_stop_rgba(1, *self._col("#12161C", .97))
         cr.set_source(lidpat); cr.fill_preserve()
         cr.set_source_rgba(*self._col("#A88452", .9)); cr.set_line_width(3); cr.stroke()
+        # seat shadow under the lid's upper edge, so it reads as a raised cover
+        cr.arc(cx, cy, R - 3, a0 - 0.16, a0 + 0.02)
+        cr.set_source_rgba(0, 0, 0, .42); cr.set_line_width(5); cr.stroke()
+        cr.arc(cx, cy, R - 3, a0 + span - 0.02, a0 + span + 0.16)
+        cr.set_source_rgba(0, 0, 0, .28); cr.stroke()
         # lid crown nub
         na = a0 + 0.12  # hinge edge
         nx, ny = cx + (R-16)*math.cos(na), cy + (R-16)*math.sin(na)
@@ -561,7 +588,7 @@ class ArcBreak:
     def _apply_round_shape(self):
         w = self.window.get_allocated_width() or 380
         h = self.window.get_allocated_height() or 360
-        r = min(w, h) / 2.0
+        r = min(w, h) / 2.0 + 14
         surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
         cr = cairo.Context(surf)
         cr.arc(w / 2.0, h / 2.0, r, 0, 6.2832)

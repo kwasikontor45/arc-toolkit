@@ -19,7 +19,6 @@ Commands:
 
 import hashlib
 import re
-import json
 import os
 import shutil
 import shlex
@@ -689,20 +688,12 @@ def _finish_start(sid: str, aid: str, policy_digest: str,
     return 0
 
 
-GATE_BYPASS_FILE = HOME / ".config/arc/gate-bypass"
-GATE_EMERGENCY_FILE = HOME / ".config/arc/gate-emergency.json"
-GATE_EMERGENCY_LOG = HOME / ".config/arc/gate-emergency.jsonl"
-GATE_EMERGENCY_SECONDS = 30 * 60
-
-
-def _active_emergency():
-    try:
-        record = json.loads(GATE_EMERGENCY_FILE.read_text())
-        if float(record["expires_epoch"]) > time.time():
-            return record
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-        pass
-    return None
+# Legacy override records from the retired bypass/emergency era. The gate never
+# consults them; gate-enable deletes them so stale files stop misleading anyone.
+GATE_LEGACY_FILES = (
+    HOME / ".config/arc/gate-bypass",
+    HOME / ".config/arc/gate-emergency.json",
+)
 
 
 def cmd_gate_status():
@@ -711,7 +702,7 @@ def cmd_gate_status():
     print(f"{C}arc-sop gate status{N}")
     state = G + "enforced — no bypass/emergency window can unlock operations" + N
     print(f"  {D}state{N}     {state}")
-    if GATE_BYPASS_FILE.exists() or GATE_EMERGENCY_FILE.exists():
+    if any(path.exists() for path in GATE_LEGACY_FILES):
         print(f"  {Y}!{N}  legacy override record exists but is ignored; owner may clear it with arc-sop gate-enable")
     print(f"  {D}gameplan{N}  {(G + 'satisfied for today' + N) if gp_ok else (Y + 'not satisfied yet' + N)}")
     if owner_uid is None:
@@ -769,8 +760,8 @@ GATE_OWNER_UID_FILE = HOME / ".config/arc/gate-owner-uid"
 
 
 def _gate_owner_uid(create: bool = True):
-    """The one UID allowed to bypass/enable the gate. Stored explicitly
-    rather than hardcoded, and keyed on UID (not username) specifically so
+    """The one UID allowed to manage gate enforcement (gate-enable). Stored
+    explicitly rather than hardcoded, and keyed on UID (not username) specifically so
     a future username change ('architect-of-chaos' renamed to something
     else) doesn't lock the real owner out -- usermod -l keeps the UID, only
     the login name changes. First call enrolls whoever's running it right
@@ -802,8 +793,8 @@ def _current_username() -> str:
 
 
 def cmd_gate_bypass():
-    print(f"{R}✗{N}  gate bypass is retired; it cannot authorize operations for any user or agent.")
-    print('Read and accept the current SOT + all MOs with: arc-sop start "task"')
+    print(f"{R}✗{N}  there is no bypass. The gate has no override, no timer, and no owner backdoor.")
+    print('The only way in is reading and accepting the current SOT + all MOs: arc-sop start "task"')
     return 1
 
 
@@ -829,22 +820,16 @@ def cmd_gate_enable():
         print(f"{R}✗{N}  refused — only the machine's owner (uid {_gate_owner_uid()}) can manage gate enforcement. You are: {_current_username()} (uid {os.getuid()})")
         _notify("SOP gate enable REFUSED", f"Non-owner tried to re-enable: {_current_username()} (uid {os.getuid()})", urgency="critical")
         sys.exit(1)
-    had_override = GATE_BYPASS_FILE.exists() or GATE_EMERGENCY_FILE.exists()
-    emergency = _active_emergency()
-    if GATE_BYPASS_FILE.exists():
-        GATE_BYPASS_FILE.unlink()
-    if GATE_EMERGENCY_FILE.exists():
-        GATE_EMERGENCY_FILE.unlink()
-    if had_override:
-        if emergency:
-            record = {"event": "closed_early", "closed_at": now(), "user": _current_username(),
-                      "uid": os.getuid(), "session_id": session_id(), "reason": emergency.get("reason", "")}
-            with GATE_EMERGENCY_LOG.open("a") as audit:
-                audit.write(json.dumps(record, sort_keys=True) + "\n")
-            os.chmod(GATE_EMERGENCY_LOG, 0o600)
-        print(f"{G}✓{N}  gate enforced again for new commands")
+    had_legacy = any(path.exists() for path in GATE_LEGACY_FILES)
+    for path in GATE_LEGACY_FILES:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    if had_legacy:
+        print(f"{G}✓{N}  removed legacy override records; the gate never honored them")
     else:
-        print(f"{D}gate already enforced — nothing to do{N}")
+        print(f"{D}gate enforced — nothing to do{N}")
 
 
 def hash_file(path: Path) -> str:

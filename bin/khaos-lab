@@ -6126,10 +6126,8 @@ class App:
         text, color = gate_status(ok, detail)
         self.status_gate.configure(text=text, fg=color)
         if isinstance(self.view, SopView) and self.view.alive():
-            bypass = ok and 'owner bypass active' in str(detail).lower()
-            self.view.gate_label.configure(text="OWNER BYPASS ACTIVE" if bypass else
-                                           "OPERATIONS OPEN" if ok else "OPERATIONS LOCKED",
-                                           fg=GOLD if bypass else TEAL if ok else ROSE)
+            self.view.gate_label.configure(text="OPERATIONS OPEN" if ok else "OPERATIONS LOCKED",
+                                           fg=TEAL if ok else ROSE)
             self.view.detail_label.configure(text=detail or ("This session is cleared." if ok else
                                                                "Read the current plan, then log and acknowledge."))
 

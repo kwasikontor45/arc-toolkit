@@ -167,10 +167,20 @@ Future agent adapters should set `ARC_SESSION_ID` (or `AGENT_SESSION_ID`) to a s
 session ID and call `arc-sop gate-check` before operational tools. Before acknowledgment, only
 standalone SOP setup, recovery, and read-only discovery commands pass; shell chains do not.
 
-If the owner must act during a real emergency, `arc-sop emergency "reason"` opens an audited,
-owner-only 30-minute window that expires on its own. Agents cannot activate it. Run
-`arc-sop gate-enable` to close it sooner. The separate `arc-sop gate-bypass` remains an owner-only
-manual override; use the timed emergency command for a temporary opening.
+The gate, in one paragraph: arc-sop is a per-session, per-day policy gate with no daemon and no
+single chokepoint. The three policy files are hashed into a digest bound to the current session,
+and every entry point (interactive shell, agent hook, panel) calls the same thin `gate-check` that
+requires both a matching `[STARTING]` log line and a fresh ack row for that exact digest. The
+moment any policy file changes, the hash changes, and every open session re-locks automatically.
+Read-only discovery always passes, one standalone SOP command is self-served so a locked shell can
+always unlock itself, command chains are parse-time rejected, and denials are logged without
+arguments. There is no bypass, no override, and no timer — the hash is the invalidation.
+
+There is deliberately no emergency bypass. `arc-sop emergency` is a read-only recovery hatch: it
+prints the policy paths and recovery steps, and it never unlocks operations. If policy files are
+missing or corrupt, `arc-sop recover` restores them and invalidates every prior acceptance — the
+only way back in is re-reading and re-accepting. Stale override records from the old bypass era
+are ignored; the owner can delete them with `arc-sop gate-enable` (agents are refused).
 
 ## What's NOT in here, on purpose
 

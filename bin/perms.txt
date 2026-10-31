@@ -17,7 +17,7 @@
 711 arc-dns-cold
 711 arc-dns-hot
 775 arc-fail2ban-watch
-711 arc-gate-bypass
+755 arc-gate-bypass
 711 arc-heal
 750 arc-home-sweep
 775 arc-inv

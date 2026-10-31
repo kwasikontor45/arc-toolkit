@@ -4968,7 +4968,7 @@ cmd_sop() {
         status)  arc-sop gate-status ;;
         bypass)  arc-sop gate-bypass ;;
         enable)  arc-sop gate-enable ;;
-        *)       echo -e "  usage: arc sop gate [status|bypass|enable]" ;;
+        *)       echo -e "  usage: arc sop gate [status|enable]  (bypass is retired — it only explains there is none)" ;;
       esac
       ;;
     *)
@@ -4977,8 +4977,8 @@ cmd_sop() {
       echo -e "  ${D}bundle · root-copy · recover · ack-today · done-balance${N}"
       echo -e "  ${D}emergency — read-only recovery hatch; never bypasses policy acceptance${N}"
       echo -e "  ${D}start <task>               — review current policy and print a session-bound acceptance command${N}"
-      echo -e "  ${D}emergency                  — read-only recovery hatch; recover never unlocks operations${N}"
-      echo -e "  ${D}gate status|bypass|enable  — interactive-shell gate management${N}"
+      echo -e "  ${D}emergency                  — read-only recovery hatch; never unlocks operations${N}"
+      echo -e "  ${D}gate status|enable         — gate management · bypass is retired: there is no override${N}"
       ;;
   esac
 }

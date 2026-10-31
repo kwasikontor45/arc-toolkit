@@ -82,7 +82,6 @@ def handle_notify(args):
         cfg.get("audio_volume_percent", cfg.get("sound_volume_percent", 50)),
         cfg.get("speech_volume_percent", 58),
         cfg.get("speech_length_scale", 1.10),
-        persistent_tts=True,
     )
 
 
@@ -136,7 +135,6 @@ def _shutdown(signum, _frame):
             PID_PATH.unlink()
     except OSError:
         pass
-    pine.stop_piper_worker()
     signal.signal(signum, signal.SIG_DFL)
     os.kill(os.getpid(), signum)
 
@@ -146,10 +144,6 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
     pine.write_default_config_if_missing()
-    cfg = pine.load_config()
-    if cfg.get("speak_enabled", True) and any(
-            rule.get("speak") for rule in cfg.get("app_rules", {}).values()):
-        pine.warm_speech_async(cfg.get("speech_length_scale", 1.10))
 
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SessionBus()

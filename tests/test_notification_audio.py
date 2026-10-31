@@ -128,28 +128,6 @@ class NotificationAudio(unittest.TestCase):
         restore.assert_called_once_with([13])
         self.assertEqual(events, ['wake', 'synthesize', 'chime', 'duck', 'speech', 'restore'])
 
-    def test_resident_piper_path_is_used_only_when_requested(self):
-        with tempfile.TemporaryDirectory() as directory, \
-             patch.object(pine, 'DATA_DIR', Path(directory)), \
-             patch.object(pine, '_wake_sink', return_value=True), \
-             patch.object(pine, '_synthesize_speech') as cold, \
-             patch.object(pine, '_synthesize_speech_resident', return_value=None) as warm:
-            pine.emit_audio(None, 'timer transition', persistent_tts=True)
-        warm.assert_called_once_with('timer transition', 1.10)
-        cold.assert_not_called()
-
-    def test_arc_pined_opts_into_resident_piper(self):
-        cfg = {'speak_enabled': True, 'sound_enabled': False,
-               'app_rules': {'arc-break': {'speak': True}}}
-        with patch.object(pine, 'load_config', return_value=cfg), \
-             patch.object(pine, 'is_muted', return_value=False), \
-             patch.object(pine, 'log_notification'), \
-             patch.object(pine, 'in_dnd_window', return_value=False), \
-             patch.object(pine, 'is_snoozed', return_value=False), \
-             patch.object(pine, 'emit_audio_async') as emit:
-            pined.handle_notify(['Arc Break', 0, '', 'Rest time', '18 minutes', [], {}, 0])
-        self.assertIs(emit.call_args.kwargs['persistent_tts'], True)
-
     def test_volume_control_notifications_are_muted_by_observed_xfce_identity(self):
         cfg = {'app_rules': {'Xfce volume control': {'mute': True}}}
         self.assertTrue(pine.is_muted(cfg, 'Xfce volume control'))

@@ -206,6 +206,35 @@ class DialArea(Gtk.DrawingArea):
             cr.set_source_rgba(*self._col(face_fg, .9))
             cr.move_to(x - ext.width/2 - ext.x_bearing, y - ext.height/2 - ext.y_bearing)
             cr.show_text(num)
+        # skeleton movement — exposed gear train in the bezel band, always turning
+        def gear(gx, gy, gr, ang, teeth, col="#39414C", hub="#A88452"):
+            cr.save()
+            cr.translate(gx, gy); cr.rotate(ang)
+            cr.set_source_rgba(*self._col(col))
+            for i in range(teeth):
+                a = i * 6.2832 / teeth
+                cr.save(); cr.rotate(a)
+                cr.rectangle(gr - 3.5, -1.8, 5.5, 3.6)
+                cr.fill()
+                cr.restore()
+            cr.arc(0, 0, gr - 3, 0, 6.2832)
+            cr.set_source_rgba(*self._col("#2B313A")); cr.fill_preserve()
+            cr.set_source_rgba(*self._col("#4A5260", .9)); cr.set_line_width(1.4); cr.stroke()
+            for i in range(5):
+                a = i * 6.2832 / 5
+                cr.set_source_rgba(*self._col("#434C58"))
+                cr.set_line_width(2.6)
+                cr.move_to(0, 0)
+                cr.line_to((gr - 6)*math.cos(a), (gr - 6)*math.sin(a)); cr.stroke()
+            cr.arc(0, 0, 4.4, 0, 6.2832)
+            cr.set_source_rgba(*self._col(hub)); cr.fill()
+            cr.restore()
+        tt = time.time()
+        train = [(24, 0.5, 1), (17, -0.9, -1), (21, 0.34, 1), (15, -0.62, -1), (19, 0.78, 1)]
+        for gi, (gr, sp, direc) in enumerate(train):
+            ga = gi * 6.2832/5 - 1.5708
+            gx = cx + (R - 15)*math.cos(ga); gy = cy + (R - 15)*math.sin(ga)
+            gear(gx, gy, gr, direc * tt * sp, max(9, int(gr * 0.75)))
         # chapter ring: minute figures every five, tucked and quiet
         cr.select_font_face("DejaVu Serif", 0, 0)
         cr.set_font_size(10)
@@ -283,26 +312,37 @@ class DialArea(Gtk.DrawingArea):
             ga = -1.5708 - 1.05 + frac*2.1
             cr.arc(cx + (R - 88)*math.cos(ga), cy + (R - 88)*math.sin(ga), 5, 0, 6.2832)
             cr.set_source_rgba(*self._col("#F2E3C2", .98)); cr.fill()
-        # circadian phase rides the TOP of the aperture — the headline hour
+        # TOP of the dial: the circadian hour — the headline
         phase_name = str(pal.get("phase", "")).upper().replace("-", " ")
         cr.select_font_face("DejaVu Sans", 0, 1)
         cr.set_font_size(13)
         ext = cr.text_extents(phase_name)
         cr.set_source_rgba(*self._col(face_fg))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.36 + 2)
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - R*0.40)
         cr.show_text(phase_name)
-        cr.select_font_face("DejaVu Sans", 0, 0)
-        cr.set_font_size(15)
+        # CENTER: the countdown on its own register plaque — unmistakably THE
+        # timer, separate from the clockwork around it (the digital/analog mix)
+        pw, ph2 = 158, 60
+        px, py = cx - pw/2, cy + 2
+        cr.arc(px + 10, py + 10, 10, 3.1416, 4.7124)
+        cr.arc(px + pw - 10, py + 10, 10, 4.7124, 0)
+        cr.arc(px + pw - 10, py + ph2 - 10, 10, 0, 1.5708)
+        cr.arc(px + 10, py + ph2 - 10, 10, 1.5708, 3.1416)
+        cr.close_path()
+        cr.set_source_rgba(*self._col("#10141A", .92)); cr.fill_preserve()
+        cr.set_source_rgba(*self._col("#A88452", .95)); cr.set_line_width(2); cr.stroke()
+        cr.select_font_face("DejaVu Sans Mono", 0, 1)
+        cr.set_font_size(26)
         ext = cr.text_extents(self._time_text or "--:--")
-        cr.set_source_rgba(*self._col(face_fg))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.36 + 24)
+        cr.set_source_rgba(*self._col(self._color_hex if self._progress > 0 else face_fg))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + 30)
         cr.show_text(self._time_text or "--:--")
-        # block label tucked beneath — we know what the clock is for
-        cr.set_font_size(11)
-        ext = cr.text_extents(self._phase_text)
-        cr.set_source_rgba(*self._col(self._color_hex if self._progress > 0 else MUTED))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.36 + 42)
-        cr.show_text(self._phase_text)
+        cr.select_font_face("DejaVu Sans", 0, 0)
+        cr.set_font_size(8)
+        ext = cr.text_extents("R E M A I N I N G")
+        cr.set_source_rgba(*self._col(face_fg, .5))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + 48)
+        cr.show_text("R E M A I N I N G")
         # the lid — a hinged cover at 6 o'clock; span shrinks as the face opens
         span = 5.58 - self._lid * 4.0
         a0 = 1.5708 - span/2
@@ -318,6 +358,19 @@ class DialArea(Gtk.DrawingArea):
         cr.set_source_rgba(0, 0, 0, .42); cr.set_line_width(5); cr.stroke()
         cr.arc(cx, cy, R - 3, a0 + span - 0.02, a0 + span + 0.16)
         cr.set_source_rgba(0, 0, 0, .28); cr.stroke()
+        # the block, engraved on the case-back lid — bottom of the dial
+        label = self._phase_text or ""
+        if label:
+            lx, ly = cx + (R*0.55)*math.cos(1.5708), cy + (R*0.55)*math.sin(1.5708)
+            cr.select_font_face("DejaVu Sans", 0, 1)
+            cr.set_font_size(11)
+            ext = cr.text_extents(label)
+            cr.set_source_rgba(0, 0, 0, .45)
+            cr.move_to(lx - ext.width/2 - ext.x_bearing + 0.8, ly - ext.height/2 - ext.y_bearing + 1)
+            cr.show_text(label)
+            cr.set_source_rgba(*self._col("#D4B27A", .9))
+            cr.move_to(lx - ext.width/2 - ext.x_bearing, ly - ext.height/2 - ext.y_bearing)
+            cr.show_text(label)
         # lid crown nub
         na = a0 + 0.12  # hinge edge
         nx, ny = cx + (R-16)*math.cos(na), cy + (R-16)*math.sin(na)

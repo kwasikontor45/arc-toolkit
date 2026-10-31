@@ -21,6 +21,7 @@ duplicated logic.
 """
 
 import json
+import atexit
 import fcntl
 import logging
 import os
@@ -64,7 +65,7 @@ DEFAULT_CONFIG = {
     "audio_volume_percent": 50,
     # Speech has its own restrained level and cadence. Keep alert chimes on
     # audio_volume_percent so the spoken-style change cannot soften alarms.
-    "speech_volume_percent": 58,
+    "speech_volume_percent": 85,
     "speech_length_scale": 1.10,
     "speak_enabled": True,
     "app_rules": {"arc-break": {"speak": True}, "orage": {"speak": True}},
@@ -86,6 +87,11 @@ _AUDIO_THREADS_LOCK = threading.Lock()
 _ACTIVE_DUCKED = set()
 _ACTIVE_DUCKED_LOCK = threading.Lock()
 _AUDIO_SHUTDOWN_HANDLERS = {}
+_PIPER_WORKER = None
+_PIPER_WORKER_SCALE = None
+_PIPER_WORKER_LOCK = threading.Lock()
+_PIPER_WORKER_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "arc-pine" / "speech"
+_PIPER_WARM_THREAD = None
 
 
 def install_audio_shutdown_guard():
@@ -439,8 +445,6 @@ def _synthesize_speech(text, length_scale=1.10):
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             wav_path = tmp.name
-        # Piper's length scale is bounded so a malformed preference cannot
-        # produce an extreme or impractically slow notification.
         try:
             pace = max(0.90, min(1.35, float(length_scale)))
         except (TypeError, ValueError):
@@ -456,11 +460,111 @@ def _synthesize_speech(text, length_scale=1.10):
     except Exception as error:
         logging.warning('Arc Pine speech failed: %s', type(error).__name__)
         if wav_path:
+            Path(wav_path).unlink(missing_ok=True)
+        return None
+
+
+def _stop_piper_worker_locked():
+    global _PIPER_WORKER, _PIPER_WORKER_SCALE
+    worker = _PIPER_WORKER
+    _PIPER_WORKER = None
+    _PIPER_WORKER_SCALE = None
+    if worker is None:
+        return
+    try:
+        if worker.stdin:
+            worker.stdin.close()
+        worker.wait(timeout=2)
+    except Exception:
+        try:
+            worker.terminate()
+            worker.wait(timeout=2)
+        except Exception:
             try:
-                Path(wav_path).unlink(missing_ok=True)
+                worker.kill()
             except Exception:
                 pass
+
+
+def stop_piper_worker():
+    """Stop the resident synthesizer cleanly when Arc Pine exits."""
+    with _PIPER_WORKER_LOCK:
+        _stop_piper_worker_locked()
+
+
+atexit.register(stop_piper_worker)
+
+
+def _synthesize_speech_resident(text, length_scale=1.10):
+    """Use a warm Piper process so each Arc Pine alert avoids a model reload."""
+    global _PIPER_WORKER, _PIPER_WORKER_SCALE
+    if not PIPER_BIN.exists() or not PIPER_VOICE.exists() or not text.strip():
         return None
+    try:
+        pace = max(0.90, min(1.35, float(length_scale)))
+    except (TypeError, ValueError):
+        pace = 1.10
+    with _PIPER_WORKER_LOCK:
+        if (_PIPER_WORKER is not None and
+                (_PIPER_WORKER.poll() is not None or _PIPER_WORKER_SCALE != pace)):
+            _stop_piper_worker_locked()
+        try:
+            _PIPER_WORKER_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(_PIPER_WORKER_DIR, 0o700)
+            if _PIPER_WORKER is None:
+                for stale_wav in _PIPER_WORKER_DIR.glob("*.wav"):
+                    stale_wav.unlink(missing_ok=True)
+                _PIPER_WORKER = subprocess.Popen(
+                    [str(PIPER_BIN), "-m", str(PIPER_VOICE), "-d", str(_PIPER_WORKER_DIR),
+                     "--output-dir-naming", "timestamp", "--length-scale", f"{pace:.2f}"],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                )
+                _PIPER_WORKER_SCALE = pace
+            before = set(_PIPER_WORKER_DIR.glob("*.wav"))
+            _PIPER_WORKER.stdin.write(text.strip().replace("\n", " ") + "\n")
+            _PIPER_WORKER.stdin.flush()
+            deadline = time.monotonic() + 20
+            candidate = None
+            stable_size = -1
+            stable_since = 0.0
+            while time.monotonic() < deadline:
+                if _PIPER_WORKER.poll() is not None:
+                    raise RuntimeError("resident Piper process exited")
+                fresh = set(_PIPER_WORKER_DIR.glob("*.wav")) - before
+                if fresh:
+                    newest = max(fresh, key=lambda path: path.stat().st_mtime_ns)
+                    size = newest.stat().st_size
+                    if size > 44 and size == stable_size:
+                        if not stable_since:
+                            stable_since = time.monotonic()
+                        elif time.monotonic() - stable_since >= 0.12:
+                            candidate = newest
+                            break
+                    else:
+                        stable_size = size
+                        stable_since = 0.0
+                time.sleep(0.025)
+            if candidate is None:
+                raise TimeoutError("resident Piper output did not finish")
+            return str(candidate)
+        except Exception as error:
+            logging.warning("Arc Pine resident speech unavailable: %s", type(error).__name__)
+            _stop_piper_worker_locked()
+            return _synthesize_speech(text, pace)
+
+
+def warm_speech_async(length_scale=1.10):
+    """Load Piper in the background at daemon start, before a timer transition."""
+    global _PIPER_WARM_THREAD
+    if _PIPER_WARM_THREAD is not None and _PIPER_WARM_THREAD.is_alive():
+        return
+    def warm():
+        path = _synthesize_speech_resident("Ready.", length_scale)
+        if path:
+            Path(path).unlink(missing_ok=True)
+    _PIPER_WARM_THREAD = threading.Thread(target=warm, name="arc-pine-piper-warm", daemon=True)
+    _PIPER_WARM_THREAD.start()
 
 
 def _play_speech_file(wav_path, volume_percent=50):
@@ -491,7 +595,8 @@ def speak(text, volume_percent=50, *, sink_ready=False, length_scale=1.10):
 
 
 def emit_audio(sound_file, speak_text, audio_volume_percent=50,
-               speech_volume_percent=None, speech_length_scale=1.10):
+               speech_volume_percent=None, speech_length_scale=1.10,
+               persistent_tts=False):
     """Play Arc Pine's short chime on its own stream without muting other
     applications. Speech retains the older duck/restore behavior so spoken
     alerts remain clear; the finally path restores every stream Arc Pine muted."""
@@ -503,13 +608,15 @@ def emit_audio(sound_file, speak_text, audio_volume_percent=50,
         speech_path = None
         try:
             has_sound = bool(sound_file and Path(sound_file).exists())
+            wake_thread = None
             if has_sound or speak_text:
-                _wake_sink()
-            # Prepare speech before the chime. Piper synthesis can take a
-            # moment; placing the beep first makes it sound like an alert
-            # followed by a failure or dropped notification.
+                wake_thread = threading.Thread(target=_wake_sink, daemon=True)
+                wake_thread.start()
             if speak_text:
-                speech_path = _synthesize_speech(speak_text, speech_length_scale)
+                synthesizer = _synthesize_speech_resident if persistent_tts else _synthesize_speech
+                speech_path = synthesizer(speak_text, speech_length_scale)
+            if wake_thread is not None:
+                wake_thread.join()
             if sound_file:
                 try:
                     play_sound(sound_file, audio_volume_percent)
@@ -530,7 +637,8 @@ def emit_audio(sound_file, speak_text, audio_volume_percent=50,
 
 
 def emit_audio_async(sound_file, speak_text, audio_volume_percent=50,
-                     speech_volume_percent=None, speech_length_scale=1.10):
+                     speech_volume_percent=None, speech_length_scale=1.10,
+                     persistent_tts=False):
     """Fire emit_audio() in a background thread and return it -- both
     callers need this (arc-pined so a slow duck/play never blocks the
     D-Bus loop, arc-pine-notify so it can still join before exiting, since
@@ -542,8 +650,12 @@ def emit_audio_async(sound_file, speak_text, audio_volume_percent=50,
 
     def run_audio_job():
         try:
-            emit_audio(sound_file, speak_text, audio_volume_percent,
-                       speech_volume_percent, speech_length_scale)
+            if persistent_tts:
+                emit_audio(sound_file, speak_text, audio_volume_percent,
+                           speech_volume_percent, speech_length_scale, persistent_tts=True)
+            else:
+                emit_audio(sound_file, speak_text, audio_volume_percent,
+                           speech_volume_percent, speech_length_scale)
         finally:
             with _AUDIO_THREADS_LOCK:
                 _AUDIO_THREADS.discard(threading.current_thread())

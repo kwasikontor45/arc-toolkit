@@ -144,6 +144,14 @@ def _paint_outline(state):
                          width=1 + 0.2 * max(0, amount))
 
 
+def _glass_edges(canvas, highlight, shade, width, height, surface):
+    """Keep a fine silver highlight and dark waterline on shared app surfaces."""
+    canvas.coords(highlight, 10, 2, max(10, width - 10), 2)
+    canvas.coords(shade, 10, max(2, height - 3), max(10, width - 10), max(2, height - 3))
+    canvas.itemconfigure(highlight, fill=_lerp_hex(surface, "#ffffff", 0.13))
+    canvas.itemconfigure(shade, fill=_lerp_hex(surface, "#000000", 0.24))
+
+
 def _set_outline_state(widget, state, mode):
     """Briefly swell or settle the outline in response to direct interaction."""
     target = {"rest": 0.0, "hover": 1.0, "press": -0.35}.get(mode, 0.0)
@@ -329,6 +337,10 @@ def rounded_frame(parent, parent_bg, bg=SURFACE, radius=8, border=None, border_w
     face = outer.create_polygon(0, 0, 0, 0, smooth=True, fill=bg,
                                 outline=border or _lerp_hex(bg, "#ffffff", 0.09),
                                 width=max(1, border_width))
+    highlight = outer.create_line(10, 2, 10, 2, fill=_lerp_hex(bg, "#ffffff", 0.13),
+                                  width=1, capstyle="round")
+    shade = outer.create_line(10, 2, 10, 2, fill=_lerp_hex(bg, "#000000", 0.24),
+                              width=1, capstyle="round")
     outline = {"canvas": outer, "face": face, "points": (), "amount": 0.0,
                "job": None, "base": border or _lerp_hex(bg, "#ffffff", 0.09)}
     outer._arc_outline = outline
@@ -344,8 +356,11 @@ def rounded_frame(parent, parent_bg, bg=SURFACE, radius=8, border=None, border_w
         outline["points"] = pts
         outline["base"] = border or _lerp_hex(state["bg"], "#ffffff", 0.09)
         outer.itemconfigure(face, fill=state["bg"])
+        _glass_edges(outer, highlight, shade, w, h, state["bg"])
         _paint_outline(outline)
         outer.tag_lower(face, "win")
+        outer.tag_raise(highlight)
+        outer.tag_raise(shade)
 
     def retheme(new_bg=None, new_parent_bg=None):
         """Live re-color for the circadian engine -- changes the card's
@@ -377,6 +392,10 @@ def rounded_pane(parent, parent_bg, bg=SURFACE, radius=8):
     window = outer.create_window(8, 8, window=inner, anchor='nw')
     face = outer.create_polygon(0, 0, 0, 0, smooth=True, fill=bg,
                                 outline=_lerp_hex(bg, "#ffffff", 0.09), width=1)
+    highlight = outer.create_line(10, 2, 10, 2, fill=_lerp_hex(bg, "#ffffff", 0.13),
+                                  width=1, capstyle="round")
+    shade = outer.create_line(10, 2, 10, 2, fill=_lerp_hex(bg, "#000000", 0.24),
+                              width=1, capstyle="round")
     outline = {"canvas": outer, "face": face, "points": (), "amount": 0.0,
                "job": None, "base": _lerp_hex(bg, "#ffffff", 0.09)}
     outer._arc_outline = outline
@@ -395,10 +414,13 @@ def rounded_pane(parent, parent_bg, bg=SURFACE, radius=8):
         outer.coords(face, *pts)
         outer.itemconfigure(face, fill=face_bg,
                             outline=_lerp_hex(face_bg, "#ffffff", 0.09))
+        _glass_edges(outer, highlight, shade, width, height, face_bg)
         outline["points"] = pts
         outline["base"] = _lerp_hex(face_bg, "#ffffff", 0.09)
         _paint_outline(outline)
         outer.tag_lower(face, window)
+        outer.tag_raise(highlight)
+        outer.tag_raise(shade)
     outer.bind('<Configure>', resize)
     outer.bind('<Expose>', resize)
     return outer, inner

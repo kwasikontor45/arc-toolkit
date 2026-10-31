@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 
-TV_GUIDE = (Path.home() / "khaos-lab" / "bio..:☠️:..hazard" / "ref" /
+TV_GUIDE = (Path.home() / "khaos-lab" / "local-cloud-hub" / "personal-cabinet" / "reference" / "ref" /
             "tv-display-paths-ns32-fefl26.md")
 
 

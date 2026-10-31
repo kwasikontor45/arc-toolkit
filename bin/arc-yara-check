@@ -33,7 +33,7 @@ set -euo pipefail
 
 RULES="$HOME/.local/share/arc-toolkit/yara-rules/index.yar"
 TARGET="$HOME/.downloads"
-LOG="$HOME/khaos-lab/soc-lab/yara-scan.log"
+LOG="$HOME/khaos-lab/soc-opsec/labs/soc-lab/yara-scan.log"
 SOCK="/run/user/$(id -u)/arc-pine-bubbles.sock"
 
 notify() {

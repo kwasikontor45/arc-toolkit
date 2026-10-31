@@ -95,12 +95,11 @@ for REPO in "${REPOS[@]}"; do
   if git clone --quiet "git@github.com:$K45/$REPO.git" "$CLONE_DIR" 2>>"$LOG"; then
     cd "$CLONE_DIR"
     git remote add k6 "git@github-k6:$K6/$REPO.git"
-    if git push k6 "$BRANCH" 2>>"$LOG" \
-       || git push k6 "$BRANCH" --force 2>>"$LOG"; then
+    if git push k6 "$BRANCH" 2>>"$LOG"; then
       log "DONE  $REPO — pushed to k6"
       (( synced++ )) || true
     else
-      log "ERR   $REPO — push to k6 failed"
+      log "ERR   $REPO — push to k6 failed; branch may have diverged, manual reconciliation required"
       (( errors++ )) || true
     fi
     cd - > /dev/null
@@ -113,3 +112,6 @@ done
 
 rm -rf "$WORK_DIR"
 log "=== done — synced=$synced skipped=$skipped errors=$errors ==="
+if (( errors > 0 )); then
+  exit 1
+fi

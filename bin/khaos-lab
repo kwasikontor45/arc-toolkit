@@ -94,6 +94,7 @@ GARAGE_LOCAL_HOMES = {
 MOBILE_ACCESS_DIR = HOME / "khaos-lab/android-mobile-ios/projects/iphone-cloud-local"
 MOBILE_PREVIEW_SCRIPT = MOBILE_ACCESS_DIR / "automators" / "serve-preview.sh"
 MOBILE_ACCESS_GUIDE = MOBILE_ACCESS_DIR / "md-s" / "mobile-access-operator-2026-10-17.md"
+TAILNET_ADMIN_URL = "https://console.tailscale.com/admin/machines"
 WORKBENCH_DRILL_DIR = HOME / "khaos-lab/local-cloud-hub/operations/workbench/17oct2026-drills"
 WORKBENCH_DRILL_INDEX = WORKBENCH_DRILL_DIR / "README.md"
 IPHONE_PRIVACY_CARD = WORKBENCH_DRILL_DIR / "iphone-cleanup-privacy-card.md"
@@ -183,239 +184,7 @@ GARAGE_FLAMINGO_PNG = (
     "l59IXj8nAAAAAElFTkSuQmCC"
 )
 
-# Embedded reference-shelf art: kept inside the control-panel script.
-GARAGE_BOOKSTACK_PNG = (
-    "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"
-    "AABJRU5ErkJggg=="
-)
-
+# Garage diagnostics emblem is drawn with Tk Canvas at render time.
 HEAL_LOG_PATH    = HOME / "khaos-lab/arc-heal-log/latest-status.md"
 ORAGE_ICS_PATH   = HOME / ".local/share/orage/orage.ics"
 AUDIO_EQ_CONFIG  = HOME / ".config/pipewire/pipewire.conf.d/60-speaker-studio-eq.conf"
@@ -1663,6 +1432,7 @@ CATEGORIES = {
         Action("Eero: stop monitor", "arc stop-eero"),
     ],
     "Reference": [
+        Action("Personal library: open shelf", "khaos-hub-window --page library", detach=True),
         Action("Book: status", "arc book"),
         Action("Book: rebuild", "arc book rebuild", timeout=120),
         Action("Site: status", "arc site"),
@@ -1695,8 +1465,12 @@ CATEGORIES = {
         Action("Android: recent launch logs", "arc-waydroid logs", timeout=10),
     ],
     "Studio": [
-        Action("Course: Studio Foundations (web app)", "xdg-open " + shlex.quote((HOME / "khaos-lab/local-cloud-hub/operations/current/notes-site/studio-course.html").as_uri()), detach=True),
-        Action("Course: printable PDF", "xdg-open " + shlex.quote((HOME / "khaos-lab/studio-khaos/projects/studio/exports/studio-foundations-course.pdf").as_uri()), detach=True),
+        Action("Course: Studio Foundations (web app)",
+               "xdg-open file:///home/architect-of-chaos/khaos-lab/local-cloud-hub/operations/current/notes-site/studio-course.html",
+               detach=True),
+        Action("Course: printable PDF", "xdg-open "
+               "file:///home/architect-of-chaos/khaos-lab/studio-khaos/projects/studio/exports/studio-foundations-course.pdf",
+               detach=True),
         Action("LMMS: launch music studio", "flatpak run io.lmms.LMMS", detach=True),
         Action("LMMS: open Reborn practice beat", "flatpak run io.lmms.LMMS "
                "~/khaos-lab/studio-khaos/projects/studio/projects/Reborn_Practice_Beat.mmp", detach=True),
@@ -1847,7 +1621,7 @@ CATEGORIES = {
         Action("SSH backup: stop tunnel", "arc remote backup-stop", confirm=True),
         # Never wired: `arc site url` (secret address -- terminal only) and `arc site rotate`.
     ],
-    "Mobile Access": [],  # special view: iPhone fixture, Waydroid test, and denied standby slot
+    "Khaos Link": [],  # special view: private phone/PC state and fixture-only access
     "iPhone Privacy": [],  # guided, read-only on-device checklist; no phone or network controls
     "Maintenance": [
         Action("Disk overview", "arc disk"),
@@ -3105,6 +2879,9 @@ class CalendarView(View):
         ui.button(self.frame, 'Open Khaos Hub · app window', command=self.open_khaos_hub,
                   font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
                   padx=13, pady=5).pack(anchor='w', padx=16, pady=9)
+        ui.button(self.frame, 'Open Khaos Forge', command=self.open_khaos_forge,
+                  font=self.app.f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                  padx=13, pady=5).pack(anchor='w', padx=16, pady=(0, 9))
         self.message = tk.Label(self.frame, text='Loading calendar…', bg=SURFACE, fg=FG_MUTED)
         self.message.pack(anchor='w', padx=16)
         self.rows = tk.Frame(self.frame, bg=SURFACE)
@@ -3113,7 +2890,6 @@ class CalendarView(View):
         self.expanded_groups = {'To-dos'}
         self.expanded_rows = set()
         self.poll('calendar-live', 2000, self.read_calendar, self.apply_calendar)
-
 
     def open_khaos_hub(self):
         launcher = shutil.which('khaos-hub-window')
@@ -3127,6 +2903,20 @@ class CalendarView(View):
             self.app.console.log('Opening Khaos Hub · native app window', TEAL)
         except OSError as error:
             self.app.console.log(f'Khaos Hub window did not start: {error}', GOLD)
+
+    def open_khaos_forge(self):
+        launcher = Path.home() / 'khaos-lab/local-cloud-hub/apps/khaos-forge/launch.py'
+        if not launcher.is_file():
+            self.app.console.log('Khaos Forge launcher is unavailable; no action taken', GOLD)
+            return
+        try:
+            subprocess.Popen([sys.executable, str(launcher)], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             close_fds=True, start_new_session=True)
+            self.app.console.log('Opening Khaos Forge · local workspace', TEAL)
+        except OSError:
+            self.app.console.log('Khaos Forge could not start; no other action taken', ROSE)
+
     def _set_checks_enabled(self, enabled):
         for check in self.checks:
             try:
@@ -3852,16 +3642,20 @@ class IPhonePrivacyView(View):
                    "retext --preview " + shlex.quote(str(IPHONE_PRIVACY_CARD)), detach=True)),
             font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
             padx=10, pady=6).pack(side="left", padx=(0, 6))
-        ui.button(footer, "Mobile Access", command=lambda: self.app.select("Mobile Access"),
+        ui.button(footer, "Khaos Link", command=lambda: self.app.select("Khaos Link"),
                   font=f.small, bg=OVERLAY, fg=FG_MUTED, hover_bg=BG,
                   padx=10, pady=6).pack(side="left")
         self.app.refresh_scroll(self.frame)
 
 
 class MobileAccessView(View):
-    """A compact, fail-closed map of the three mobile lanes. The iPhone lane can
-    only serve the synthetic fixture; Waydroid remains a local test guest, and
-    the reserved spare has no implicit Tailnet access."""
+    """Khaos Link: local, privacy-preserving phone/PC connection console.
+
+    It reads this workstation's Tailscale state through the local CLI, never
+    renders peer addresses/IDs/keys, and only offers a local inbound-block
+    action. Identity approval and the effective Tailnet policy remain in the
+    owner's authenticated Tailscale admin console.
+    """
 
     scrollable = True
 
@@ -3869,21 +3663,23 @@ class MobileAccessView(View):
         f = self.app.f
         header = tk.Frame(self.frame, bg=SURFACE)
         header.pack(fill="x", padx=6, pady=(4, 8))
-        tk.Label(header, text="MOBILE ACCESS", font=f.small, bg=SURFACE,
+        tk.Label(header, text="KHAOS LINK  /  PRIVATE DEVICES", font=f.small, bg=SURFACE,
                  fg=self.app.phase_accent, anchor="w").pack(fill="x")
-        tk.Label(header, text="One preview · three device roles", font=f.big, bg=SURFACE,
+        tk.Label(header, text="Phone ↔ workstation", font=f.big, bg=SURFACE,
                  fg=FG, anchor="w").pack(fill="x", pady=(2, 2))
-        tk.Label(header, text="Only synthetic Hub fixtures are eligible. Host controls and live data stay local.",
+        tk.Label(header, text="A light local control surface. It hides peer addresses, IDs, account names, and keys; it never manages iPhone apps or changes Tailnet policy.",
                  font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left",
                  wraplength=700).pack(fill="x")
 
         self.status_labels = {}
-        self._row("Workstation", "Tailnet host", "checking…")
-        self._row("iPhone SE", "primary · TCP 443 only after policy approval", "checking…")
+        self.current_shields_up = None
+        self._row("Workstation", "this device · live state from local Tailscale CLI", "checking…")
+        self._row("Phone", "personal iPhone · manual enrollment and approval", "checking…")
+        self._row("Local posture", "inbound · DNS · SSH · routes · exit node", "checking…")
         self._row("Waydroid", "Android test · local sandbox", "checking…")
-        self._row("Spare device", "standby · no access until enrolled and reviewed", "reserved")
+        self._row("Other devices", "unassigned peers · no implicit access", "checking…")
         self._row("Hub preview", "loopback fixture · 127.0.0.1:8765", "checking…")
-        self._row("Tailnet route", "HTTPS 443 · Funnel must remain off", "checking…")
+        self._row("Phone route", "fixture only · Funnel stays off", "checking…")
 
         actions = tk.Frame(self.frame, bg=SURFACE)
         actions.pack(fill="x", padx=4, pady=(10, 3))
@@ -3891,7 +3687,6 @@ class MobileAccessView(View):
             ("Check fixture", Action("Check synthetic Hub fixture", f"bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} check", timeout=30)),
             ("Start locally", Action("Start loopback-only Hub fixture", f"bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} start", confirm=True, timeout=12)),
             ("Stop locally", Action("Stop loopback-only Hub fixture", f"bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} stop", confirm=True, timeout=8)),
-            ("Open setup guide", Action("Open mobile access guide", f"xdg-open {shlex.quote(str(MOBILE_ACCESS_GUIDE))}", detach=True)),
         ]
         row_a = tk.Frame(actions, bg=SURFACE)
         row_a.pack(fill="x")
@@ -3899,28 +3694,45 @@ class MobileAccessView(View):
             ui.button(row_a, label, command=lambda a=action: self.app.run_action(a),
                       font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
                       padx=9, pady=5).pack(side="left", padx=3, pady=3)
-        row_b = tk.Frame(actions, bg=SURFACE)
-        row_b.pack(fill="x")
-        exposure = [
-            ("Enable iPhone route", Action("Enable private fixture route after policy tests",
-                f"konsole --hold -e bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} expose",
-                confirm=True, timeout=20, detach=True)),
-            ("Close iPhone route", Action("Close private fixture route",
-                f"konsole --hold -e bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} close-route",
-                confirm=True, timeout=20, detach=True)),
-        ]
-        for label, action in exposure:
-            ui.button(row_b, label, command=lambda a=action: self.app.run_action(a),
-                      font=f.small, bg=OVERLAY, fg=ROSE if "Enable" in label else GOLD,
-                      hover_bg=BG, padx=9, pady=5).pack(side="left", padx=3, pady=3)
-        ui.button(row_b, "Android tools", command=lambda: self.app.select("Waydroid"),
-                  font=f.small, bg=OVERLAY, fg=self.app.phase_accent, hover_bg=BG,
-                  padx=9, pady=5).pack(side="left", padx=3, pady=3)
-
         self.refresh_button = ui.button(actions, "Refresh", command=self.refresh,
                                         font=f.small, bg=OVERLAY, fg=FG_MUTED,
                                         hover_bg=BG, padx=10, pady=5)
         self.refresh_button.pack(side="right", padx=3, pady=3)
+        row_b = tk.Frame(actions, bg=SURFACE)
+        row_b.pack(fill="x")
+        quick_links = [
+            ("Lilah inventory", Action("Open Lilah read-only iPhone inventory", "gtk-launch lilah", detach=True)),
+            ("Setup guide", Action("Open mobile access guide", f"xdg-open {shlex.quote(str(MOBILE_ACCESS_GUIDE))}", detach=True)),
+            ("Tailnet admin", Action("Open Tailnet device approval and policy", f"xdg-open {shlex.quote(TAILNET_ADMIN_URL)}", detach=True)),
+        ]
+        for label, action in quick_links:
+            ui.button(row_b, label, command=lambda a=action: self.app.run_action(a),
+                      font=f.small, bg=OVERLAY, fg=TEAL, hover_bg=BG,
+                      padx=9, pady=5).pack(side="left", padx=3, pady=3)
+        row_c = tk.Frame(actions, bg=SURFACE)
+        row_c.pack(fill="x")
+        self.block_button = ui.button(
+            row_c, "Block incoming", command=lambda: self.app.run_action(
+                Action("Enable Shields Up to block incoming Tailnet connections",
+                       "tailscale set --shields-up=true", confirm=True, timeout=20)),
+            font=f.small, bg=OVERLAY, fg=GOLD, hover_bg=BG, padx=9, pady=5)
+        self.block_button.pack(side="left", padx=3, pady=3)
+        self.block_button.set_enabled(False)
+        ui.button(row_c, "Close phone route", command=lambda: self.app.run_action(
+            Action("Close private fixture route",
+                f"konsole --hold -e bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} close-route",
+                confirm=True, timeout=20, detach=True)),
+            font=f.small, bg=OVERLAY, fg=GOLD, hover_bg=BG,
+            padx=9, pady=5).pack(side="left", padx=3, pady=3)
+        ui.button(row_c, "Review gate before opening", command=lambda: self.app.run_action(
+            Action("Open Tailnet policy gate guide",
+                   f"retext --preview {shlex.quote(str(MOBILE_ACCESS_DIR / 'md-s' / 'khaos-link-operator.md'))}",
+                   detach=True)),
+            font=f.small, bg=OVERLAY, fg=ROSE, hover_bg=BG,
+            padx=9, pady=5).pack(side="left", padx=3, pady=3)
+        ui.button(row_c, "Android tools", command=lambda: self.app.select("Waydroid"),
+                  font=f.small, bg=OVERLAY, fg=self.app.phase_accent, hover_bg=BG,
+                  padx=9, pady=5).pack(side="left", padx=3, pady=3)
         self.refresh()
 
     def _row(self, title, detail, initial):
@@ -3956,6 +3768,40 @@ class MobileAccessView(View):
         except (json.JSONDecodeError, AttributeError, TypeError):
             return None, None
 
+    @staticmethod
+    def _local_posture(text):
+        """Return a safe summary and inbound-block state; never echo IDs or routes."""
+        try:
+            prefs = json.loads(text)
+            if not isinstance(prefs, dict):
+                return "unavailable · no settings changed", None, FG_MUTED
+        except (json.JSONDecodeError, TypeError):
+            return "unavailable · no settings changed", None, FG_MUTED
+
+        shields = prefs.get("shields-up")
+        ssh = prefs.get("ssh")
+        dns = prefs.get("accept-dns")
+        routes = prefs.get("accept-routes")
+        advertise = prefs.get("advertise-routes")
+        advertise_exit = prefs.get("advertise-exit-node")
+        exit_node = prefs.get("exit-node")
+        webclient = prefs.get("webclient")
+        state = lambda value, yes, no: yes if value is True else no if value is False else "unknown"
+        summary = "INBOUND {} · DNS {} · SSH {} · ROUTES {} · EXIT {} · ADV ROUTES {} · ADV EXIT {} · WEB UI {}".format(
+            state(shields, "BLOCKED", "ALLOWED"),
+            state(dns, "TAILNET", "LOCAL"),
+            state(ssh, "ON", "OFF"),
+            state(routes, "ACCEPT", "IGNORE"),
+            "SELECTED" if exit_node else "NONE" if exit_node == "" else "UNKNOWN",
+            "ON" if advertise else "OFF" if advertise == [] or advertise == "" else "UNKNOWN",
+            state(advertise_exit, "ON", "OFF"),
+            state(webclient, "ON", "OFF"),
+        )
+        exposure = (shields is False or ssh is True or bool(advertise) or
+                    advertise_exit is True or bool(exit_node) or webclient is True)
+        color = ROSE if exposure else TEAL if shields is True else GOLD
+        return summary, shields if isinstance(shields, bool) else None, color
+
     def refresh(self):
         if not self.alive() or getattr(self, "_busy", False):
             return
@@ -3965,11 +3811,13 @@ class MobileAccessView(View):
         def collect():
             r = self.app.runner.run
             t_ok, t_out = r("tailscale status --json", timeout=10)
+            pref_ok, pref_out = r("tailscale get --json", timeout=8)
             w_ok, w_out = r("arc-waydroid status", timeout=15)
             p_ok, p_out = r(f"bash {shlex.quote(str(MOBILE_PREVIEW_SCRIPT))} status", timeout=5)
             s_ok, s_out = r("tailscale serve status", timeout=8)
             f_ok, f_out = r("tailscale funnel status", timeout=8)
-            return (t_ok, t_out, w_ok, w_out, p_ok, p_out, s_ok, s_out, f_ok, f_out)
+            return (t_ok, t_out, pref_ok, pref_out, w_ok, w_out, p_ok, p_out,
+                    s_ok, s_out, f_ok, f_out)
 
         self.app.bg(collect, self._apply_status)
 
@@ -3978,34 +3826,42 @@ class MobileAccessView(View):
             return
         self._busy = False
         self.refresh_button.configure(state="normal", text="Refresh")
-        (t_ok, t_out, w_ok, w_out, p_ok, p_out,
+        (t_ok, t_out, pref_ok, pref_out, w_ok, w_out, p_ok, p_out,
          s_ok, s_out, f_ok, f_out) = result
 
         self_node, peers = self._peer_map(t_out) if t_ok else (None, None)
         android_peer = None
+        phone_peers = [(name, peer) for name, peer in (peers or {}).items()
+                       if name.startswith(("iphone", "ios-phone"))]
         if self_node is None:
             self._set("Workstation", "unavailable", ROSE)
-            self._set("iPhone SE", "Tailnet status unavailable", ROSE)
-            self._set("Spare device", "reserved · access not granted here", GOLD)
+            self._set("Phone", "Tailnet status unavailable", ROSE)
+            self._set("Other devices", "reserved · access not granted here", GOLD)
         else:
             self._set("Workstation", "online" if self_node.get("Online") else "offline",
                       TEAL if self_node.get("Online") else ROSE)
-            phone = (peers or {}).get("iphone-se-gen-3")
-            if phone is None:
-                self._set("iPhone SE", "not enrolled / not visible", GOLD)
+            if not phone_peers:
+                self._set("Phone", "not enrolled / not visible", GOLD)
             else:
-                online = bool(phone.get("Online"))
-                self._set("iPhone SE", "online" if online else "offline · reconnect in Tailscale",
-                          TEAL if online else GOLD)
+                online_count = sum(bool(peer.get("Online")) for _, peer in phone_peers)
+                count = len(phone_peers)
+                state = "online" if online_count == count else "offline" if online_count == 0 else "mixed"
+                self._set("Phone", f"{count} phone peer(s) · {state}",
+                          TEAL if online_count else GOLD)
             android_peer = next((p for name, p in (peers or {}).items()
                                  if name.startswith("waydroid")), None)
-            known = {"iphone-se-gen-3"} | ({name for name in peers if name.startswith("waydroid")})
-            extras = sorted(name for name in (peers or {}) if name not in known)
+            known = {name for name, _ in phone_peers} | ({name for name in peers if name.startswith("waydroid")})
+            extras = len([name for name in (peers or {}) if name not in known])
             if extras:
-                self._set("Spare device", f"unassigned peer(s): {', '.join(extras)} · review policy",
-                          GOLD)
+                self._set("Other devices", f"{extras} unassigned peer(s) · review before access", GOLD)
             else:
-                self._set("Spare device", "reserved · not enrolled · no automatic grant", FG_MUTED)
+                self._set("Other devices", "none visible · no automatic grant", FG_MUTED)
+
+        posture, shields_up, posture_color = self._local_posture(pref_out) if pref_ok else (
+            "unavailable · no settings changed", None, FG_MUTED)
+        self.current_shields_up = shields_up
+        self._set("Local posture", posture, posture_color)
+        self.block_button.set_enabled(shields_up is False)
 
         if not w_ok:
             android = "status unavailable"
@@ -4031,7 +3887,7 @@ class MobileAccessView(View):
         self._set("Hub preview", preview, preview_color)
 
         if not s_ok or not f_ok:
-            self._set("Tailnet route", "status unavailable · no route change made", FG_MUTED)
+            self._set("Phone route", "status unavailable · no route change made", FG_MUTED)
         else:
             route_open = "127.0.0.1:8765" in s_out
             funnel_on = "funnel on" in f_out.casefold()
@@ -4041,7 +3897,7 @@ class MobileAccessView(View):
                 state, color = "fixture route present · verify policy + iPhone", GOLD
             else:
                 state, color = "closed · policy tests required before opening", FG_MUTED
-            self._set("Tailnet route", state, color)
+            self._set("Phone route", state, color)
 
     def _set(self, key, value, color):
         label = self.status_labels.get(key)
@@ -4073,17 +3929,27 @@ class GarageView(View):
         garage_header = tk.Frame(self.frame, bg=SURFACE)
         garage_header.pack(fill="x", padx=10, pady=(0, 2))
         self.garage_flamingo = tk.PhotoImage(data=GARAGE_FLAMINGO_PNG)
-        self.garage_bookstack = tk.PhotoImage(data=GARAGE_BOOKSTACK_PNG).subsample(4, 4)
         tk.Label(garage_header, image=self.garage_flamingo, bg=SURFACE,
                  width=48, height=48).pack(side="left", padx=(0, 8))
-        tk.Label(garage_header, image=self.garage_bookstack, bg=SURFACE,
-                 width=75, height=40).pack(side="left", padx=(0, 12))
+        self.garage_diagnostic_mark = tk.Canvas(
+            garage_header, width=48, height=48, bg=SURFACE,
+            highlightthickness=0, takefocus=0,
+        )
+        mark = self.garage_diagnostic_mark
+        phase = self.app.phase_accent
+        mark.create_oval(4, 4, 44, 44, fill="#1b2825", outline=phase, width=1)
+        mark.create_oval(8, 8, 36, 36, fill="#202d29", outline="#60766d", width=1)
+        mark.create_line(29, 30, 41, 42, fill="#d9e6e0", width=5, capstyle="round")
+        mark.create_line(14, 22, 18, 22, 22, 15, 26, 28, 30, 20, 33, 20,
+                         fill=phase, width=2, capstyle="round", joinstyle="round",
+                         smooth=True)
+        mark.pack(side="left", padx=(0, 12))
         title_block = tk.Frame(garage_header, bg=SURFACE)
         title_block.pack(side="left", fill="x", expand=True)
         tk.Label(title_block, text="KHAOS CONTROL PANEL  /  GARAGE",
                  font=self.app.f.label, bg=SURFACE, fg=self.app.phase_accent,
                  anchor="w").pack(fill="x")
-        tk.Label(title_block, text="PERSONAL CABINET  ·  REFERENCE SHELF",
+        tk.Label(title_block, text="QUALITY ASSURANCE  ·  OPERATIONS ROOM",
                  font=self.app.f.small, bg=SURFACE, fg=FG_MUTED,
                  anchor="w").pack(fill="x", pady=(3, 0))
         tk.Label(self.frame, text="Apps, health, and resource history in one workbench.",
@@ -4447,6 +4313,7 @@ class InventoryView(View):
 
     def review_drift(self, asset):
         """Explain a mismatch and offer confirmed, asset-scoped ways to resolve it."""
+        aid = str(asset.get("id", ""))
         desired = asset.get("status", "unknown")
         observed = asset.get("observed", "unknown")
         detail = asset.get("detail", "no probe detail")
@@ -4467,6 +4334,21 @@ class InventoryView(View):
                 "lifecycle state in the inventory. If retirement is still intended, remove the "
                 "resource through its provider, then make sure the probe can confirm absence "
                 "before scanning again."
+            )
+        elif aid == "site.py-bite" and probe.get("type") == "http":
+            guidance = (
+                f"The public check returned {observed} ({detail}). Py-bite runs on PythonAnywhere "
+                "behind the py-bite-proxy Cloudflare Worker, so the 404 may come from either layer. "
+                "Check the PythonAnywhere Web tab first, then inspect the Worker in Cloudflare. "
+                "The panel can open both consoles and recheck the endpoint; provider changes remain "
+                "manual so it cannot deploy unreviewed code."
+            )
+        elif aid == "storage.gvm-db-backups":
+            guidance = (
+                "No validated SQL restore point is present on the USB vault. GVM is intentionally "
+                "on-demand; creating a dump requires starting the billed cloud instance, then using "
+                "the guarded backup + stop action. That action validates the dump on the vault and "
+                "leaves GVM running if backup validation fails."
             )
         elif probe.get("type") == "systemd" and observed == "stopped":
             unit = probe.get("unit", "the reported unit")
@@ -4516,8 +4398,6 @@ class InventoryView(View):
             cmd = f"xdg-open {shlex.quote(str(INVENTORY_REGISTRY))}"
             ok, result = self.app.runner.detach(cmd)
             self.app.console.log("opened inventory register" if ok else result, TEAL if ok else ROSE)
-
-        aid = str(asset.get("id", ""))
 
         def set_lifecycle(status, reason):
             cmd = (f"arc inv set-status {shlex.quote(aid)} {status} "
@@ -4584,7 +4464,61 @@ class InventoryView(View):
         support = [("inspect record", TEAL, lambda: self.app.run_async(inspect_cmd)),
                    ("copy inspect command", GOLD, copy_inspect),
                    ("open inventory register", GOLD, open_register)]
-        dialog.button_rows([actions + [choose, close], support])
+        provider_rows = []
+        if aid == "site.py-bite":
+            # The checks are safe reads; provider fixes stay in authenticated consoles.
+            provider_rows = [[
+                ("recheck endpoint", TEAL,
+                 lambda: self.app.run_action(Action(
+                     "Py-bite: endpoint check (read-only)",
+                     "curl -sSL -o /dev/null -w 'py-bite HTTP %{http_code}\\n' "
+                     "--max-time 12 https://py-bite.kwasikontor.dev"))),
+                ("PythonAnywhere Web tab", GOLD,
+                 lambda: self.app.run_action(Action(
+                     "Py-bite: open PythonAnywhere Web tab",
+                     "xdg-open 'https://www.pythonanywhere.com/user/b6ones6aw/webapps/'",
+                     detach=True))),
+            ], [
+                ("Cloudflare dashboard", GOLD,
+                 lambda: self.app.run_action(Action(
+                     "Py-bite: open Cloudflare dashboard",
+                     "xdg-open 'https://dash.cloudflare.com/'", detach=True))),
+            ]]
+        elif aid == "storage.gvm-db-backups":
+            cloud_actions = {action.label: action for action in CATEGORIES["Cloud"]}
+            provider_rows = [[
+                ("GVM status", TEAL,
+                 lambda: self.app.run_action(cloud_actions["GVM cloud: status"])),
+                ("start for backup · billed", ROSE,
+                 lambda: self.app.run_action(cloud_actions["GVM cloud: start"])),
+            ], [
+                ("backup + stop", GOLD,
+                 lambda: self.app.run_action(cloud_actions["GVM cloud: backup + stop"])),
+                ("USB backup folder", GOLD,
+                 lambda: self.app.run_action(Action(
+                     "GVM: open USB SQL backup folder",
+                     "xdg-open /mnt/storage/Persistent/khaos-lab/gvm-lab/backups",
+                     detach=True))),
+            ]]
+        elif (probe.get("type") == "systemd" and probe.get("scope") == "user"
+              and desired == "active" and observed in ("stopped", "down", "absent")):
+            unit = str(probe.get("unit", ""))
+            if unit:
+                quoted_unit = shlex.quote(unit)
+                provider_rows = [[
+                    ("unit status", TEAL,
+                     lambda cmd=f"systemctl --user status {quoted_unit} --no-pager -l":
+                         self.app.run_action(Action(f"inspect {unit}", cmd))),
+                    ("start/restart + scan", ROSE,
+                     lambda cmd=(f"systemctl --user restart {quoted_unit} && "
+                                 f"systemctl --user is-active {quoted_unit} && arc inv scan --quiet"):
+                         self.app.run_action(Action(
+                             f"start/restart {unit} and rescan inventory", cmd,
+                             confirm=True, timeout=180))),
+                ]]
+        rows = [actions + [choose, close], support]
+        rows.extend(provider_rows)
+        dialog.button_rows(rows)
 
     def _confirm_drift_action(self, aid, cmd):
         confirm = Dialog(self.app, "confirm live repair")
@@ -5162,7 +5096,7 @@ class HelpView(View):
         "Find": "Search your notes and archived references",
         "Network": "VPN, DNS, router, and network-monitoring actions",
         "Display": "Screen-share readiness, local Google Cast discovery, and the Fire TV path",
-        "Reference": "Build and open your private reference library",
+        "Reference": "Open the Personal Library in Khaos Hub; build and open the private Notes Site",
         "Phone": "ADB device tools · UAD-ng package management",
         "Waydroid": "Open Android → connect ADB → manage it from Phone",
         "Studio": "Follow one course for beat-making, editing, DJ practice, and event sound",
@@ -5171,7 +5105,7 @@ class HelpView(View):
         "Cloud": "AWS guardrails and stop controls · Cloudflare · Git release lanes · SSH references",
         "Dev": "Git health, Arc Toolkit source-of-truth, mirrors, and development workflows",
         "Remote Access": "Tailscale, private notes site, and backup tunnel",
-        "Mobile Access": "iPhone fixture, local Waydroid test, and denied standby slot",
+        "Khaos Link": "Private phone/PC state · synthetic fixture · no peer identifiers",
         "iPhone Privacy": "Guided manual iPhone privacy and battery checklist · read-only",
         "Maintenance": "Backups, cleanup, updates, and system repair",
         "Personal": "Personal utilities and daily workflow actions",
@@ -5468,14 +5402,18 @@ class App:
                      "Audio": AudioView, "LT": LtView, "Commands": CommandsView,
                      "Cockpit": CockpitView, "Garage": GarageView, "Inventory": InventoryView,
                      "Display": DisplayView, "Logs": LogsView, "Find": FindView,
-                     "Mobile Access": MobileAccessView, "iPhone Privacy": IPhonePrivacyView}
+                     "Khaos Link": MobileAccessView, "iPhone Privacy": IPhonePrivacyView}
 
-    def __init__(self):
+    def __init__(self, start_view=None):
         # className explicit: WM_CLASS was generic "Tk" (never "khaos-lab" as the .desktop
         # StartupWMClass assumed) -- a correctness fix independent of the taskbar-icon bug.
         self.root = root = tk.Tk(className="khaos-lab")
         root.title("khaos☠️lab")
         root.configure(bg=BG)
+        try:
+            root.attributes("-alpha", 0.985)
+        except tk.TclError:
+            pass  # Compositors without per-window opacity keep full contrast.
         # Start at a comfortable fraction of the actual screen instead of imposing one
         # workstation-sized box on every display. The window remains freely resizable.
         screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
@@ -5527,7 +5465,8 @@ class App:
         gate_text, gate_color = gate_status(gate_open, gate_detail)
         self.status_gate.configure(text=gate_text, fg=gate_color)
         self.status_phase.configure(text=f"{self.phase_name.upper()}  ·  {time.strftime('%H:%M')}")
-        self.select("Status" if gate_open else "SOP")
+        preferred = start_view if start_view in CATEGORIES else None
+        self.select((preferred if gate_open else None) or ("Status" if gate_open else "SOP"))
         self._tick()
         root.after(500, self._geometry_watchdog)   # give the WM time to finish its initial placement
 
@@ -5818,15 +5757,54 @@ class App:
 
     def _build_sidebar(self):
         sb = self.sidebar
-        # Quiet identity header: a fine Mercury staff echoes the website SVG
-        # without sitting behind labels or bringing old wallpaper into the rail.
-        sb.create_line(24, 14, 24, 72, fill=self.phase_accent, width=1.6, capstyle="round")
-        sb.create_line(24, 20, 12, 13, 24, 17, 36, 13, 24, 20,
-                       fill=self.phase_accent, width=1.5, smooth=True, splinesteps=24)
-        sb.create_line(24, 24, 12, 33, 24, 42, 36, 51, 24, 61,
-                       fill=TEAL, width=1.7, smooth=True, splinesteps=28)
-        sb.create_line(24, 24, 36, 33, 24, 42, 12, 51, 24, 61,
-                       fill=self.phase_accent, width=1.7, smooth=True, splinesteps=28)
+        # Caduceus: winged rod, inward-facing serpent heads, and two distinct
+        # interwoven bodies. Motion is limited to a brief hover response.
+        self._staff_accent_items = []
+        self._staff_hover_level = 0.0
+        self._staff_hover_target = 0.0
+        self._staff_anim_job = None
+        self._staff_hover_job = None
+        self._staff_accent_color = self.phase_accent
+        staff_tag = "staff-mark"
+        sb.create_line(24, 14, 24, 73, fill="#a8c4bd", width=1.6,
+                       capstyle="round", tags=(staff_tag,))
+        self._staff_accent_items.append(sb.create_line(
+            24, 19, 21, 15, 17, 12, 11, 12, 14, 16, 20, 19, 24, 20,
+            fill=self.phase_accent, width=1.6, smooth=True, splinesteps=20,
+            capstyle="round", joinstyle="round", tags=(staff_tag,)))
+        self._staff_accent_items.append(sb.create_line(
+            24, 20, 28, 19, 34, 16, 37, 12, 31, 12, 27, 15, 24, 19,
+            fill=self.phase_accent, width=1.6, smooth=True, splinesteps=20,
+            capstyle="round", joinstyle="round", tags=(staff_tag,)))
+        # Feather veins make the paired wings read at the sidebar's small scale.
+        self._staff_accent_items.append(sb.create_line(
+            23, 19, 17, 14, 12, 13, fill=self.phase_accent, width=1.0,
+            smooth=True, tags=(staff_tag,)))
+        self._staff_accent_items.append(sb.create_line(
+            25, 19, 31, 14, 36, 13, fill=self.phase_accent, width=1.0,
+            smooth=True, tags=(staff_tag,)))
+        self._staff_accent_items.append(sb.create_line(
+            18, 24, 22, 25, 26, 29, 26, 33, 22, 37, 18, 40, 18, 44,
+            22, 48, 27, 51, 30, 55, 29, 59, 25, 63, 24, 67,
+            fill=self.phase_accent, width=1.7, smooth=True, splinesteps=24,
+            capstyle="round", joinstyle="round", tags=(staff_tag,)))
+        sb.create_line(
+            30, 24, 26, 25, 22, 29, 22, 33, 26, 37, 30, 40, 30, 44,
+            26, 48, 21, 51, 18, 55, 19, 59, 23, 63, 24, 67,
+            fill=TEAL, width=1.7, smooth=True, splinesteps=24,
+            capstyle="round", joinstyle="round", tags=(staff_tag,))
+        sb.create_oval(21.5, 10, 26.5, 15, fill=TEAL, outline="", tags=(staff_tag,))
+        self._staff_accent_items.append(sb.create_oval(
+            15.5, 21.5, 20.5, 26.5, fill=self.phase_accent,
+            outline="", tags=(staff_tag,)))
+        sb.create_oval(27.5, 21.5, 32.5, 26.5, fill=TEAL,
+                        outline="", tags=(staff_tag,))
+        sb.create_oval(19, 23, 20, 24, fill=BG, outline="", tags=(staff_tag,))
+        sb.create_oval(28, 23, 29, 24, fill=BG, outline="", tags=(staff_tag,))
+        self._staff_accent_items.append(sb.create_oval(
+            21, 70, 27, 76, fill=self.phase_accent, outline="", tags=(staff_tag,)))
+        sb.tag_bind(staff_tag, "<Enter>", self._schedule_staff_hover)
+        sb.tag_bind(staff_tag, "<Leave>", self._schedule_staff_hover)
         sb.create_text(49, 28, anchor="w", text="khaos / lab", font=self.f.label, fill=FG)
         sb.create_text(49, 49, anchor="w", text="b6ones6aw-418☠️", font=self.f.identity, fill=FG_MUTED)
         dev_link = sb.create_text(49, 65, anchor="w", text="kwasikontor.dev",
@@ -5860,6 +5838,44 @@ class App:
         sb.bind("<Button-4>", lambda _e: sb.yview_scroll(-1, "units"))
         sb.bind("<Button-5>", lambda _e: sb.yview_scroll(1, "units"))
         sb.bind("<MouseWheel>", lambda e: sb.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+
+    def _schedule_staff_hover(self, _event=None):
+        """Debounce transitions between the staff's separate vector strokes."""
+        if self._staff_hover_job is not None:
+            try:
+                self.root.after_cancel(self._staff_hover_job)
+            except tk.TclError:
+                pass
+        self._staff_hover_job = self.root.after(70, self._sync_staff_hover)
+
+    def _sync_staff_hover(self):
+        self._staff_hover_job = None
+        try:
+            x = self.sidebar.canvasx(self.sidebar.winfo_pointerx() - self.sidebar.winfo_rootx())
+            y = self.sidebar.canvasy(self.sidebar.winfo_pointery() - self.sidebar.winfo_rooty())
+        except tk.TclError:
+            return
+        self._staff_hover_target = 1.0 if 8 <= x <= 40 and 8 <= y <= 78 else 0.0
+        if self._staff_anim_job is None:
+            self._animate_staff_hover()
+
+    def _animate_staff_hover(self):
+        """Short, hover-only stroke lift; no idle animation or timer loop."""
+        self._staff_anim_job = None
+        delta = self._staff_hover_target - self._staff_hover_level
+        if abs(delta) < 0.04:
+            self._staff_hover_level = self._staff_hover_target
+        else:
+            self._staff_hover_level += delta * 0.58
+        width = 1.7 + self._staff_hover_level * 0.45
+        color = self._staff_accent_color
+        for item in self._staff_accent_items:
+            try:
+                self.sidebar.itemconfigure(item, fill=color, width=width)
+            except tk.TclError:
+                return
+        if abs(self._staff_hover_target - self._staff_hover_level) >= 0.04:
+            self._staff_anim_job = self.root.after(36, self._animate_staff_hover)
 
     def _bind_search(self):
         self.search_entry.bind("<KeyRelease>", self._do_search)
@@ -6088,6 +6104,10 @@ class App:
                 self._apply_circadian_ambient()
             if name != self.phase_name or color != self.phase_accent:
                 self.phase_name, self.phase_accent = name, color
+                if hasattr(self, "_staff_accent_items"):
+                    self._staff_accent_color = color
+                    for item in self._staff_accent_items:
+                        self.sidebar.itemconfigure(item, fill=color)
                 self.phase_lbl.configure(text=f"◐ {name}", fg=color)
                 self.brand_accent.configure(fg=color)
                 self.search_entry.configure(highlightcolor=color)
@@ -6404,7 +6424,15 @@ class App:
 
 
 def main(argv):
-    app = App()
+    start_view = None
+    if "--view" in argv:
+        index = argv.index("--view")
+        if index + 1 >= len(argv):
+            raise SystemExit("usage: khaos-lab [--view WORKSPACE] [--selftest]")
+        start_view = argv[index + 1]
+        if start_view not in CATEGORIES:
+            raise SystemExit(f"unknown workspace: {start_view}")
+    app = App(start_view=start_view)
     if "--selftest" in argv:
         sys.exit(app.selftest())
     app.run()

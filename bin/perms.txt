@@ -9,7 +9,7 @@
 755 arc
 755 arc-waydroid
 711 arc-aide-watch
-755 arc-break
+755 lilah-break
 711 arc-cf-watch
 711 arc-chkrootkit-check
 711 arc-clamav-watch

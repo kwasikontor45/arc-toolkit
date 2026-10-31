@@ -363,13 +363,13 @@ cmd_update() {
 cmd_clean() {
   if [[ -n "${1:-}" ]]; then
     echo -e "${R}unknown:${N} arc clean $1"
-    echo -e "${D}arc clean takes no arguments — it always runs the full deep clean.${N}"
+    echo -e "${D}arc clean takes no arguments — it runs the reviewed, allowlisted cleanup.${N}"
     echo -e "${D}looking for browser caches? that's ${C}arc browser-clean${N}${D}.${N}"
     return 1
   fi
 
   echo -e "$HR"
-  echo -e "  ${C}${B}arc clean${N}  —  deep clean"
+  echo -e "  ${C}${B}arc clean${N}  —  allowlisted cleanup"
   echo -e "$HR\n"
 
   local start
@@ -382,8 +382,28 @@ cmd_clean() {
     echo ""
   fi
 
-  echo -e "${C}user cache...${N}"
-  rm -rf ~/.cache/*
+  echo -e "${C}known regenerable caches...${N}"
+  local cache_cleaned=0
+  local cache_targets=(
+    "$HOME/.cache/fontconfig"
+    "$HOME/.cache/glycin"
+    "$HOME/.cache/gstreamer-1.0"
+    "$HOME/.cache/mesa_shader_cache"
+    "$HOME/.cache/thumbnails"
+    "$HOME/.cache/zcompdump"
+    "$HOME/.cache"/ksycoca6_*
+  )
+  for target in "${cache_targets[@]}"; do
+    [[ -e "$target" ]] || continue
+    if rm -rf -- "$target"; then
+      echo -e "  ${G}✓${N}  cleared regenerable cache: ${target#$HOME/.cache/}"
+      (( cache_cleaned++ ))
+    else
+      echo -e "  ${Y}!${N}  could not clear cache: ${target#$HOME/.cache/}"
+    fi
+  done
+  (( cache_cleaned == 0 )) && echo -e "  ${D}·${N}  no allowlisted cache entries"
+  echo -e "  ${D}·${N}  preserved app, session, Proton, and browser state${N}"
 
   echo -e "${C}trash...${N}"
   # If it's trash, it's trash — actually empty it, don't just hide it from
@@ -400,19 +420,32 @@ cmd_clean() {
   fi
 
   echo -e "${C}session logs...${N}"
-  rm -f ~/.xsession-errors ~/.xsession-errors.old ~/nohup.out
+  local session_logs=0
+  for f in "$HOME/.xsession-errors" "$HOME/.xsession-errors.old" "$HOME/nohup.out"; do
+    if [[ -f "$f" ]]; then
+      echo -e "  ${D}·${N}  kept for review: ${f#$HOME/}"
+      (( session_logs++ ))
+    fi
+  done
+  (( session_logs == 0 )) && echo -e "  ${D}·${N}  no session logs"
 
-  echo -e "${C}home junk...${N}"
-  find "$HOME" -maxdepth 1 -type f -name "*.log" -delete
-  find "$HOME" -maxdepth 1 -type f -empty ! -name ".ICEauthority" ! -name ".bash_history" ! -name ".bash_logout" -delete
+  echo -e "${C}home review...${N}"
+  find "$HOME" -maxdepth 1 -type f -name "*.log" -print 2>/dev/null |
+    while IFS= read -r f; do echo -e "  ${D}·${N}  kept for review: ${f#$HOME/}"; done
+  find "$HOME" -maxdepth 1 -type f -empty ! -name ".ICEauthority" ! -name ".bash_history" ! -name ".bash_logout" -print 2>/dev/null |
+    while IFS= read -r f; do echo -e "  ${D}·${N}  kept empty marker for review: ${f#$HOME/}"; done
 
   echo -e "${C}tmp...${N}"
-  # Only clean user-owned files in /tmp older than 2h — never touch ssh sockets,
-  # systemd-private dirs, chromium/claude runtime dirs, or other users' files
+  # Clean only old, regular user-owned files that are not open. Preserve
+  # directories, sockets, active work files, and other users' runtime state.
   local tmp_cleaned=0
   while IFS= read -r f; do
-    rm -rf "$f" 2>/dev/null && (( tmp_cleaned++ ))
-  done < <(find /tmp -maxdepth 1 -user "$USER" -mmin +120 \
+    if command -v fuser >/dev/null 2>&1 && fuser -- "$f" >/dev/null 2>&1; then
+      echo -e "  ${D}·${N}  kept open temp file: ${f}"
+    elif rm -f -- "$f" 2>/dev/null; then
+      (( tmp_cleaned++ ))
+    fi
+  done < <(find /tmp -maxdepth 1 -type f -user "$USER" -mmin +120 \
     ! -name 'ssh-*' \
     ! -name 'claude-*' \
     ! -name 'org.chromium.*' \
@@ -1061,6 +1094,7 @@ cmd_sync() {
   else
     echo -e "  ${R}✗${N}  MEGA sync failed — check /var/log/vault-mega.log"
     notify-send -u critical -i dialog-error "arc sync" "MEGA sync failed — check /var/log/vault-mega.log" 2>/dev/null || true
+    return 1
   fi
   echo -e "\n$HR"
 }
@@ -1390,8 +1424,8 @@ cmd_stop() {
 }
 
 # ── Break ──────────────────────────────────────────────────────────────────────
-BREAK_BIN="$HOME/.local/bin/arc-break"
-BREAK_PID="$HOME/.local/share/arc-break/arc-break.pid"
+BREAK_BIN="$HOME/.local/bin/lilah-break"
+BREAK_PID="$HOME/.local/share/lilah-break/lilah-break.pid"
 
 cmd_break() {
   local sub="${1:-status}"
@@ -1400,10 +1434,10 @@ cmd_break() {
   case "$sub" in
     start)
       echo -e "$HR"
-      echo -e "  ${C}${B}arc break start${N}"
+      echo -e "  ${C}${B}arc lilah start${N}"
       echo -e "$HR\n"
       if [[ -f "$BREAK_PID" ]] && kill -0 "$(cat "$BREAK_PID")" 2>/dev/null; then
-        echo -e "  ${Y}!${N}  arc-break already running  —  PID $(cat "$BREAK_PID")"
+        echo -e "  ${Y}!${N}  lilah-break already running  —  PID $(cat "$BREAK_PID")"
         echo -e "$HR"; return 0
       fi
       # Runs as a systemd --user unit (not nohup/disown) so it survives the
@@ -1411,18 +1445,18 @@ cmd_break() {
       # the terminal's session, and desktop/terminal-emulator session teardown
       # can still reap it. A user service is supervised independently of any
       # terminal's lifecycle.
-      systemctl --user start arc-break.service
+      systemctl --user start lilah-break.service
       sleep 0.3
       local pid
       pid=$(cat "$BREAK_PID" 2>/dev/null || echo "?")
-      echo -e "  ${G}✓${N}  arc-break started  —  PID ${pid}  (survives closing this terminal)"
-      echo -e "  ${D}arc break status  ·  arc break stop  ·  arc break snooze${N}"
+      echo -e "  ${G}✓${N}  lilah-break started  —  PID ${pid}  (survives closing this terminal)"
+      echo -e "  ${D}arc lilah status  ·  arc lilah stop  ·  arc lilah snooze${N}"
       echo -e "$HR"
       ;;
 
     stop)
       echo -e "$HR"
-      echo -e "  ${C}${B}arc break stop${N}"
+      echo -e "  ${C}${B}arc lilah stop${N}"
       echo -e "$HR\n"
       if [[ -f "$BREAK_PID" ]] && kill -0 "$(cat "$BREAK_PID")" 2>/dev/null; then
         systemctl --user stop arc-break.service 2>/dev/null
@@ -1435,10 +1469,10 @@ cmd_break() {
 
     status)
       echo -e "$HR"
-      echo -e "  ${C}${B}arc break status${N}"
+      echo -e "  ${C}${B}arc lilah status${N}"
       echo -e "$HR\n"
       if [[ ! -f "$BREAK_PID" ]] || ! kill -0 "$(cat "$BREAK_PID")" 2>/dev/null; then
-        echo -e "  ${D}·${N}  not running  —  ${C}arc break start${N} to begin"
+        echo -e "  ${D}·${N}  not running  —  ${C}arc lilah start${N} to begin"
         echo -e "$HR"; return 0
       fi
       local info
@@ -1650,7 +1684,7 @@ cmd_emoji() {
 
 # ── Ref ────────────────────────────────────────────────────────────────────────
 cmd_ref() {
-  local ARCHIVE="${ARC_REF_DIR:-$HOME/archive}"
+  local ARCHIVE="${ARC_REF_DIR:-$HOME/links/vault/archive}"
   local query="${1:-}"
 
   echo -e "$HR"
@@ -1658,26 +1692,28 @@ cmd_ref() {
   echo -e "$HR"
 
   if [[ ! -d "$ARCHIVE" ]]; then
-    echo -e "  ${R}no archive found${N}"
-    echo -e ""
-    echo -e "  create a folder and drop files into it:"
-    echo -e "  ${D}mkdir ~/archive${N}"
-    echo -e ""
-    echo -e "  or point arc at an existing folder:"
-    echo -e "  ${D}export ARC_REF_DIR=\"\$HOME/your-folder\"  # add to ~/.bashrc${N}"
+    echo -e "  ${R}archive directory unavailable${N}"
+    echo -e "  ${D}path: ${ARCHIVE}${N}"
+    echo -e "  ${D}mount the archive source or set ARC_REF_DIR to its verified location${N}"
     echo -e "$HR"
     return 1
   fi
 
   if [[ -z "$query" ]]; then
-    echo ""
-    find "$ARCHIVE" -type f | sort | while IFS= read -r f; do
-      local size rel
-      size=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
-      rel="${f#$ARCHIVE/}"
-      printf "  ${D}·${N}  %-48s  ${D}%s b${N}\n" "$rel" "$size"
-    done
-    echo ""
+    local first_file
+    first_file=$(find "$ARCHIVE" -type f -print -quit 2>/dev/null)
+    if [[ -z "$first_file" ]]; then
+      echo -e "\n  ${D}archive is empty · ${ARCHIVE}${N}\n"
+    else
+      echo ""
+      find "$ARCHIVE" -type f | sort | while IFS= read -r f; do
+        local size rel
+        size=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+        rel="${f#$ARCHIVE/}"
+        printf "  ${D}·${N}  %-48s  ${D}%s b${N}\n" "$rel" "$size"
+      done
+      echo ""
+    fi
     echo -e "  ${D}arc ref <name>     — view a file by name${N}"
     echo -e "  ${D}arc ref <keyword>  — search across all files${N}"
   else
@@ -1772,7 +1808,7 @@ cmd_find() {
 # ── Book (compiled reference archive) ───────────────────────────────────────────
 cmd_book() {
   local sub="${1:-}"
-  local BOOK="$HOME/khaos-lab/master-archive/master-book.md"
+  local BOOK="$HOME/khaos-lab/local-cloud-hub/archive/current-book/master-archive/master-book.md"
 
   case "$sub" in
     rebuild)
@@ -1812,7 +1848,7 @@ cmd_book() {
 # ── Site (dashboard + browsable notes, lives in the vault) ──────────────────────
 cmd_site() {
   local sub="${1:-}"
-  local SITE="$HOME/khaos-lab/notes-site"
+  local SITE="$HOME/khaos-lab/local-cloud-hub/operations/current/notes-site"
   local SRV="$HOME/.local/bin/arc-site-server"
 
   case "$sub" in
@@ -1838,14 +1874,19 @@ cmd_site() {
       "$SRV" "$sub"
       ;;
     expose)
-      # tailnet-only (never Funnel): HTTP over WireGuard -> loopback server. Hostname-matched,
-      # so no public certificate is ever issued for it.
+      # Tailnet-only (never Funnel): HTTPS on 443 -> loopback HTTP server.
+      # Tailscale HTTPS certificates publish the randomized hostname in CT; content remains private.
       systemctl --user is-active --quiet notes-site || { systemctl --user start notes-site; sleep 1; }
-      (tailscale serve --bg --yes --http 80 http://127.0.0.1:8642 2>&1 || sudo -n tailscale serve --bg --yes --http 80 http://127.0.0.1:8642 2>&1) | tail -3
+      if ! output=$(tailscale serve --bg --yes --https 443 http://127.0.0.1:8642 2>&1); then
+        output=$(sudo -n tailscale serve --bg --yes --https 443 http://127.0.0.1:8642 2>&1) || { echo "$output"; return 1; }
+      fi
+      printf '%s\n' "$output" | tail -3
       echo -e "\n  ${G}✓${N}  exposed to your tailnet only — run ${C}arc site audit${N} to verify every layer, ${C}arc site url${N} for the address"
       ;;
     unexpose)
-      tailscale serve --http=80 off 2>&1 || sudo -n tailscale serve --http=80 off 2>&1
+      if ! tailscale serve --https=443 off 2>&1; then
+        sudo -n tailscale serve --https=443 off 2>&1 || return 1
+      fi
       echo -e "  ${G}✓${N}  no longer reachable from the tailnet (local server still up on loopback)"
       ;;
     *)
@@ -2205,6 +2246,7 @@ _vpn_run() {
 }
 
 _vpn_state_file() { echo "$HOME/.config/arc/vpn-desired-state"; }
+_vpn_auth_retry_file() { echo "$HOME/.cache/arc/vpn-auth-retry"; }
 
 # Real, live-confirmed failure mode (2026-09-14): ProtonVPN's free plan only
 # ever offers shared, often-loaded free-tier servers -- the CLI's own client-
@@ -2222,6 +2264,12 @@ _vpn_connect_retry() {
     echo "$out"
     if echo "$out" | grep -q "^Connected to"; then
       return 0
+    fi
+    # Authentication and keyring failures cannot improve by retrying a busy
+    # free server. Return a distinct status; the timer applies a backoff.
+    if echo "$out" | grep -Eiq 'authentication required|please sign in|keyring.*locked|failed to unlock the collection'; then
+      echo -e "  ${Y}⚠${N}  ProtonVPN needs an interactive sign-in or an unlocked login keyring; server retries will not fix this."
+      return 2
     fi
     if [[ "$attempt" -lt 3 ]]; then
       echo -e "  ${D}·${N}  attempt ${attempt}/3 didn't complete in time (free-tier server load) — retrying..."
@@ -2251,14 +2299,33 @@ _vpn_disable_nm_autoconnect() {
 }
 
 cmd_vpn() {
-  local sub="${1:-}"
+  local sub="${1:-}" state retry_count retry_after retry_at
   command -v protonvpn >/dev/null 2>&1 || { echo -e "  ${R}✗${N}  protonvpn not installed — sudo apt install proton-vpn-cli"; return 1; }
   case "$sub" in
+    login)
+      # The login unit must honor an intentional disconnect saved in this
+      # session. Only an explicit connect or `autoconnect on` opts back in.
+      if [[ "$(cat "$(_vpn_state_file)" 2>/dev/null)" != "connected" ]]; then
+        echo -e "  ${D}·${N}  login reconnect skipped — desired VPN state is disconnected"
+        return 0
+      fi
+      shift
+      cmd_vpn connect "$@"
+      return $?
+      ;;
     status)
       echo -e "$HR"
       echo -e "  ${C}${B}arc vpn status${N}"
       echo -e "$HR\n"
       _vpn_run status
+      if [[ -r "$(_vpn_auth_retry_file)" ]]; then
+        read -r retry_count retry_after < "$(_vpn_auth_retry_file)" || true
+        if [[ "${retry_after:-0}" =~ ^[0-9]+$ ]] && (( retry_after > $(date +%s) )); then
+          retry_at=$(date -d "@$retry_after" '+%H:%M')
+          echo -e "\n  ${Y}⚠${N}  Autoconnect is retrying after the Proton sign-in/keyring delay (next check about ${retry_at})."
+          echo -e "  ${D}·${N}  If it remains disconnected: protonvpn signin  then  arc vpn connect"
+        fi
+      fi
       echo -e "\n$HR"
       ;;
     connect)
@@ -2268,9 +2335,19 @@ cmd_vpn() {
       echo -e "$HR\n"
       mkdir -p "$(dirname "$(_vpn_state_file)")"
       echo "connected" > "$(_vpn_state_file)"
-      _vpn_connect_retry "$@"
+      # A deliberate connect request should bypass any timer backoff.
+      rm -f "$(_vpn_auth_retry_file)"
+      if _vpn_connect_retry "$@"; then
+        state=0
+      else
+        state=$?
+        if [[ "$state" -eq 2 ]]; then
+          echo -e "  ${D}·${N}  after the keyring is unlocked, run: protonvpn signin  then  arc vpn connect"
+        fi
+      fi
       _vpn_disable_nm_autoconnect
       echo -e "\n$HR"
+      return "$state"
       ;;
     disconnect)
       echo -e "$HR"
@@ -2278,6 +2355,7 @@ cmd_vpn() {
       echo -e "$HR\n"
       mkdir -p "$(dirname "$(_vpn_state_file)")"
       echo "disconnected" > "$(_vpn_state_file)"
+      rm -f "$(_vpn_auth_retry_file)"
       _vpn_run disconnect
       _vpn_disable_nm_autoconnect
       echo -e "\n$HR"
@@ -2288,14 +2366,28 @@ cmd_vpn() {
       echo -e "$HR\n"
       case "${2:-}" in
         on)
-          systemctl --user enable --now arc-vpn-autoconnect.service 2>&1
           mkdir -p "$(dirname "$(_vpn_state_file)")"
           echo "connected" > "$(_vpn_state_file)"
-          echo -e "  ${G}✓${N}  enabled — connects on every login, arc-heal keeps it connected after that"
+          rm -f "$(_vpn_auth_retry_file)"
+          if ! systemctl --user enable arc-vpn-autoconnect.service >/dev/null 2>&1; then
+            echo -e "  ${R}✗${N}  could not enable the login connection service"
+            return 1
+          fi
+          if ! systemctl --user start --no-block arc-vpn-autoconnect.service >/dev/null 2>&1; then
+            echo -e "  ${R}✗${N}  service is enabled, but its connection attempt could not be queued"
+            return 1
+          fi
+          echo -e "  ${G}✓${N}  enabled for login; connection attempt queued — use arc vpn status to confirm"
           ;;
         off)
-          systemctl --user disable --now arc-vpn-autoconnect.service 2>&1
-          echo -e "  ${G}✓${N}  disabled"
+          mkdir -p "$(dirname "$(_vpn_state_file)")"
+          echo "disconnected" > "$(_vpn_state_file)"
+          rm -f "$(_vpn_auth_retry_file)"
+          if ! systemctl --user disable --now arc-vpn-autoconnect.service >/dev/null 2>&1; then
+            echo -e "  ${R}✗${N}  desired state is now disconnected, but the login unit could not be disabled"
+            return 1
+          fi
+          echo -e "  ${G}✓${N}  login auto-connect disabled; reconnect retries paused; current tunnel unchanged"
           ;;
         *)
           if systemctl --user is-enabled --quiet arc-vpn-autoconnect.service 2>/dev/null; then
@@ -2624,7 +2716,7 @@ _sec_amass() {
       ;;
   esac
   _sec_hdr "amass  —  attack-surface mapping — $domain"
-  local outdir="$HOME/khaos-lab/soc-lab/amass-runs/$(date +%F)/$domain"
+  local outdir="$HOME/khaos-lab/soc-opsec/labs/soc-lab/amass-runs/$(date +%F)/$domain"
   mkdir -p "$outdir"
   echo -e "  ${D}running passive + active (cert-grab) enum, 3min stall-timeout...${N}"
   echo -e "  ${D}output: $outdir${N}\n"
@@ -2841,7 +2933,7 @@ _sec_clamav() {
 _sec_yara() {
   local sub="${1:-}"
   local rules="$HOME/.local/share/arc-toolkit/yara-rules/index.yar"
-  local log="$HOME/khaos-lab/soc-lab/yara-scan.log"
+  local log="$HOME/khaos-lab/soc-opsec/labs/soc-lab/yara-scan.log"
   case "$sub" in
     status)
       _sec_hdr "yara  —  last scheduled sweep"
@@ -3650,7 +3742,7 @@ _sec_overview() {
   echo -e "  ${D}arc sec suricata  — network IDS status + recent alerts${N}"
   echo -e "  ${D}arc sec cloudtrail — recent AWS management events (management-events-cloudtrail)${N}"
   echo -e "  ${D}arc sagan/evebox  — SOC lab: correlated alerts (fail2ban+ufw feed in too now)${N}"
-  echo -e "  ${D}arc soc-lab       — Splunk lab (local Docker, khaos-lab/soc-lab -- SQL Server + Nessus both purged, see 2026-08-31/08-25)${N}"
+  echo -e "  ${D}arc soc-lab       — Splunk lab (local Docker, soc-opsec/labs/soc-lab -- SQL Server + Nessus both purged, see 2026-08-31/08-25)${N}"
   echo -e "  ${D}arc gvm           — GVM/OpenVAS vuln scanner (local removed 2026-08-31, moving to on-demand AWS)${N}"
   echo -e "  ${D}arc zap           — OWASP ZAP web app scanner (manual-start, lab-only targets by default)${N}"
   echo -e "  ${D}arc darkstat      — live traffic dashboard (manual-start, loopback only)${N}"
@@ -4556,7 +4648,7 @@ cmd_help_full() {
   echo -e "  ${D}arc ${C}safe-reboot${N}           ${M}backup → unmount USB → sudo reboot${N}"
   echo -e "  ${D}arc ${C}stop${N}                  ${M}end-of-day: kill servers, backup, unmount USB${N}"
   echo -e "  ${D}arc ${C}notify${N}                ${M}open notification history (or: status, tts-on, tts-off)${N}"
-  echo -e "  ${D}arc ${C}break${N}                 ${M}break timer — start · stop · status · snooze [N] · skip · config · gui${N}"
+  echo -e "  ${D}arc ${C}break${N}                 ${M}lilah-break timer — start · stop · status · snooze [N] · skip · config · gui${N}"
   echo -e "  ${D}arc ${C}word${N}                  ${M}offline word of the day  ·  --json for panel integration${N}"
   echo -e "  ${D}arc ${C}sop ack${N}               ${M}acknowledge SOPs for this session${N}"
   echo -e "  ${D}arc ${C}sop baseline${N}          ${M}record current SOP file hashes into local DB${N}"
@@ -4624,7 +4716,7 @@ cmd_help_full() {
   echo -e "  ${D}arc ${C}health${N}                ${M}disks, RAM, all encryption layers${N}"
   echo -e "  ${D}arc ${C}mount${N}                 ${M}manual USB remount (PARTUUID-based, port-agnostic)${N}"
   echo -e "  ${D}arc ${C}update${N}                ${M}apt update + upgrade + clean${N}"
-  echo -e "  ${D}arc ${C}clean${N}                 ${M}deep clean: sweep + cache + logs + tmp + apt${N}"
+  echo -e "  ${D}arc ${C}clean${N}                 ${M}allowlisted caches + reviewed tmp + apt archive cache${N}"
   echo -e "  ${D}arc ${C}browser-clean${N}         ${M}clear Brave + Firefox caches (close browsers first)${N}"
   echo -e "  ${D}arc ${C}browser-clean --force${N} ${M}force clean even if browsers are open${N}"
   echo -e "  ${D}arc ${C}sweep${N}                 ${M}home directory sweep — moves junk, packs it${N}"
@@ -4697,7 +4789,7 @@ cmd_help_full() {
   echo -e "  ${D}arc-dns-hot${N}                 ${M}enable NextDNS boot + activate aggressive filtering${N}"
   echo -e "  ${D}arc-dns-cold${N}                ${M}disable NextDNS boot + deactivate to system DNS${N}"
   echo -e "  ${D}arc ${C}vpn ${W}[status|connect|disconnect]${N}   ${M}ProtonVPN, CLI-only — connect takes the same flags as protonvpn connect${N}"
-  echo -e "  ${D}arc ${C}vpn autoconnect ${W}[on|off]${N}   ${M}connect automatically on every login${N}"
+  echo -e "  ${D}arc ${C}vpn autoconnect ${W}[on|off]${N}   ${M}enable or pause login and reconnect behavior${N}"
   echo -e "  ${D}arc ${C}vpn killswitch ${W}[on|off]${N}    ${M}block internet if the VPN drops${N}"
   echo -e "  ${D}arc ${C}vpn leak-check${N}          ${M}same ground-truth check arc-heal uses — confirms traffic actually routes through the tunnel${N}"
   echo -e "  ${D}arc ${C}remote ${W}[status|backup-start|backup-stop]${N}   ${M}Cloudflare Tunnel SSH-only backup channel — Tailscale is primary, this is dormant by default${N}"
@@ -4774,7 +4866,7 @@ cmd_help() {
     echo -e "  ${D}Find a workspace below, then open its focused help.${N}"
     echo -e "$HR"
     echo -e "\n  ${Y}WORKSPACES${N}"
-    echo -e "  ${D}daily${N}       ${M}backup, startup, notifications, break timer${N}"
+    echo -e "  ${D}daily${N}       ${M}backup, startup, notifications, lilah-break timer${N}"
     echo -e "  ${D}dev${N}         ${M}repos, deploys, cloud labs, containers${N}"
     echo -e "  ${D}system${N}      ${M}health, storage, updates, cleanup${N}"
     echo -e "  ${D}security${N}    ${M}accounts, audits, firewall, SOPs${N}"
@@ -5600,7 +5692,7 @@ cmd_phone() {
 
 cmd_soclab() {
   local sub="${1:-}"
-  local dir="$HOME/khaos-lab/soc-lab"
+  local dir="$HOME/khaos-lab/soc-opsec/labs/soc-lab"
   case "$sub" in
     start)
       echo -e "$HR"
@@ -5699,7 +5791,7 @@ cmd_soclab() {
       echo -e "  ${C}${B}arc soc-lab cloud-stop${N}  —  sync data down, then stop soclab-cloud"
       echo -e "$HR\n"
       _aws_lab_conf || { echo -e "\n$HR"; return 1; }
-      local backup_dir="$HOME/khaos-lab/soc-lab/cloud-backups"
+      local backup_dir="$HOME/khaos-lab/soc-opsec/labs/soc-lab/cloud-backups"
       mkdir -p "$backup_dir"
       local stamp; stamp=$(date +%Y%m%dT%H%M%SZ)
       echo -e "  ${D}archiving splunk-data volume...${N}"
@@ -6825,7 +6917,7 @@ cmd_mirrors() {
       echo ""
       echo -e "  ${D}arc mirrors run   — sync now${N}"
       echo -e "  ${D}arc mirrors log   — full history${N}"
-      echo -e "  ${D}cron: daily 2am   — ~/.local/bin/sync-mirrors${N}"
+      echo -e "  ${Y}schedule: unverified${N}  ${D}check cron/systemd before relying on automatic mirror sync${N}"
       echo -e "\n$HR"
       ;;
 
@@ -6840,9 +6932,10 @@ cmd_deploy() {
   local target="${1:-athena}"
   local CF_TOKEN
   local repo
+  local WRANGLER_BIN WRANGLER_VERSION
   case "$target" in
     athena) repo="$HOME/khaos-lab/athena" ;;
-    kontor-studio) repo="$HOME/khaos-lab/kontor-studio" ;;
+    kontor-studio) repo="$HOME/khaos-lab/android-mobile-ios/apps/kontor-studio" ;;
     phoenix)
       echo -e "  ${R}✗${N}  Phoenix is retired; deployment is blocked to prevent accidental resurrection"
       return 2
@@ -6892,29 +6985,58 @@ cmd_deploy() {
   export NVM_DIR="$HOME/.nvm"
   [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
 
+  WRANGLER_BIN=$(command -v wrangler) || {
+    echo -e "  ${R}✗${N}  pinned Wrangler 4.123.0 is required; install it locally before deploying"
+    return 1
+  }
+  WRANGLER_VERSION=$("$WRANGLER_BIN" --version 2>/dev/null) || {
+    echo -e "  ${R}✗${N}  could not read the local Wrangler version"
+    return 1
+  }
+  if [[ "$WRANGLER_VERSION" != "4.123.0" ]]; then
+    echo -e "  ${R}✗${N}  expected Wrangler 4.123.0; found ${WRANGLER_VERSION:-unknown}"
+    return 1
+  fi
+
   case "$target" in
     athena)
       cd ~/khaos-lab/athena || { echo -e "  ${R}✗${N}  athena repo not found"; return 1; }
       echo -e "  ${C}building athena${N} …"
-      node node_modules/vite/bin/vite.js build 2>&1 | tail -5 || { echo -e "  ${R}✗${N}  build failed"; return 1; }
+      local build_log build_rc
+      build_log=$(mktemp "${TMPDIR:-/tmp}/arc-athena-build.XXXXXX") || {
+        echo -e "  ${R}✗${N}  could not create a private build log"; return 1;
+      }
+      if node node_modules/vite/bin/vite.js build >"$build_log" 2>&1; then
+        tail -5 "$build_log"
+        rm -f -- "$build_log"
+      else
+        build_rc=$?
+        tail -20 "$build_log"
+        rm -f -- "$build_log"
+        echo -e "  ${R}✗${N}  build failed (exit $build_rc)"; return "$build_rc"
+      fi
       echo -e "  ${C}deploying to CF Pages${N} …"
-      CLOUDFLARE_API_TOKEN="$CF_TOKEN" npx wrangler pages deploy dist \
-        --project-name athena --branch main \
-        && echo -e "  ${G}✓${N}  athena deployed" \
-        || echo -e "  ${R}✗${N}  deploy failed"
+      if CLOUDFLARE_API_TOKEN="$CF_TOKEN" "$WRANGLER_BIN" pages deploy dist \
+        --project-name athena --branch main; then
+        echo -e "  ${G}✓${N}  athena deployed"
+      else
+        echo -e "  ${R}✗${N}  athena deploy failed"; return 1
+      fi
       ;;
     kontor-studio)
       # Static site, no build step. Real gap closed 2026-09-14 -- this target
       # never existed here before, despite PLAY-STORE-SHIPPING.md referring to
       # "arc deploy" fixing kontor-studio's pipeline. Repo wasn't even cloned
       # locally until today (see reference.md's 2026-08-22 note); cloned fresh
-      # to ~/khaos-lab/kontor-studio.
-      cd ~/khaos-lab/kontor-studio || { echo -e "  ${R}✗${N}  kontor-studio not cloned — git clone git@github.com:kwasikontor45/kontor-studio.git ~/khaos-lab/kontor-studio"; return 1; }
+      # to ~/khaos-lab/android-mobile-ios/apps/kontor-studio.
+      cd ~/khaos-lab/android-mobile-ios/apps/kontor-studio || { echo -e "  ${R}✗${N}  kontor-studio not cloned — clone it into ~/khaos-lab/android-mobile-ios/apps/kontor-studio"; return 1; }
       echo -e "  ${C}deploying to CF Pages${N} …"
-      CLOUDFLARE_API_TOKEN="$CF_TOKEN" npx wrangler pages deploy . \
-        --project-name kontor-studio --branch main \
-        && echo -e "  ${G}✓${N}  kontor-studio deployed → kontor.studio" \
-        || echo -e "  ${R}✗${N}  deploy failed"
+      if CLOUDFLARE_API_TOKEN="$CF_TOKEN" "$WRANGLER_BIN" pages deploy . \
+        --project-name kontor-studio --branch main; then
+        echo -e "  ${G}✓${N}  kontor-studio deployed → kontor.studio"
+      else
+        echo -e "  ${R}✗${N}  kontor-studio deploy failed"; return 1
+      fi
       ;;
     *)
       echo -e "  ${R}unknown target:${N} $target  —  try ${C}arc deploy athena${N} or ${C}kontor-studio${N}"
@@ -6985,7 +7107,8 @@ case "${1:-}" in
   desktop)        cmd_desktop "${@:2}" ;;
   cf-watch)       cmd_cf_watch "${@:2}" ;;
   heal)           cmd_heal "${@:2}" ;;
-  break)          cmd_break "${@:2}" ;;
+  lilah)         cmd_break "${@:2}" ;;
+  break)          cmd_break "${@:2}" ;;  # legacy alias
   eero)           cmd_eero ;;
   eero-summary)   cmd_eero_summary ;;
   eero-watch)     cmd_eero_watch ;;

@@ -283,7 +283,7 @@ check_watcher_daemons() {
   # User-scope, no sudo needed. orage-alarms added 2026-09-19 (its XDG autostart entry never fired,
   # so the calendar -- and every alarm -- silently wasn't running). arc-pined added 2026-09-19: it is the daemon
   # that actually SPEAKS notifications; its XDG autostart entry had been
-  # silently flipped to Hidden=true, so arc-break showed bubbles but never spoke.
+  # silently flipped to Hidden=true, so lilah-break showed bubbles but never spoke.
   # Private notes site (arc site): keep the guarded server up, and treat a
   # Tailscale Funnel (= public internet) as an emergency -- always safe to close.
   if systemctl --user is-active --quiet notes-site; then
@@ -322,20 +322,20 @@ check_watcher_daemons() {
   done
   # Recover a crashed taskbar timer only when its saved user intent is active.
   # Explicit Stop and missing/uninstalled app state never start a new timer.
-  if [[ -f "$HOME/.config/systemd/user/arc-break-taskbar.service" ]] && python3 -c '
+  if [[ -f "$HOME/.config/systemd/user/lilah-break-taskbar.service" ]] && python3 -c '
 import json, pathlib, sys
 try:
-    state = json.loads((pathlib.Path.home()/".local/state/arc-break-taskbar/timer.json").read_text())
+    state = json.loads((pathlib.Path.home()/".local/state/lilah-break-taskbar/timer.json").read_text())
     sys.exit(0 if state.get("phase") in ("focus", "break") else 1)
 except (OSError, ValueError):
     sys.exit(1)
 '; then
     if pgrep -f '^/usr/bin/python3 .*/arc_break_taskbar.py' >/dev/null; then
-      note "OK::watcher:arc-break-taskbar::active timer present"
-    elif systemctl --user start arc-break-taskbar.service; then
-      note "HEAL::watcher:arc-break-taskbar::restored saved active timer"
+      note "OK::watcher:lilah-break-taskbar::active timer present"
+    elif systemctl --user start lilah-break-taskbar.service; then
+      note "HEAL::watcher:lilah-break-taskbar::restored saved active timer"
     else
-      note "FLAG::watcher:arc-break-taskbar::active timer recovery failed"
+      note "FLAG::watcher:lilah-break-taskbar::active timer recovery failed"
     fi
   fi
   # Stock XFCE popups take the Kataleya phase colour from a generated CSS file (arc-notify-theme.timer);

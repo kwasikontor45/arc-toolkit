@@ -1,19 +1,7 @@
 #!/usr/bin/env bash
-# arc-home-sweep — conservative home-directory janitor.
-#
-# Referenced by arc-quiet-clean and by `arc sweep` (dry/purge/status wrapper
-# in the main arc CLI) but never existed on this machine (created 2026-08-12
-# after the Chromebook->MacBook->Kali move left it undeployed).
-# Deliberately narrow scope for a first version: only removes things that
-# are unambiguously regenerable junk (bytecode caches, editor swap/backup
-# files, empty leftover dirs). It does NOT touch anything under vault,
-# dev-notes, khaos-lab content, or any dotfile/config -- extend it yourself
-# once you've decided what else you want auto-pruned.
-#
-# ~/MEGA is not excluded: megasync (the GUI client) was deliberately removed
-# in an earlier session (see GAMEPLAN.md, 2026-08-1x Tails-migration entry)
-# -- the real workflow is rclone's mega remote via `arc sync`. An empty
-# leftover ~/MEGA is just litter now, not a live sync target.
+# arc-home-sweep — conservative HOME review and bytecode-cache cleanup.
+# Only __pycache__ directories are purgeable. Backups, swap files, and empty
+# user directories are review-only; hidden directories are never candidates.
 set -uo pipefail
 
 MODE="dry-run"
@@ -25,52 +13,67 @@ case "${1:-}" in
   *)           echo "usage: arc-home-sweep [--purge|--dry-run|--status]" >&2; exit 1 ;;
 esac
 
-_log() { echo "  sweep: $*"; }
+_log() { printf '  sweep: %s\n' "$*"; }
 
+safe_found=0
+review_found=0
 removed=0
-found=0
-sweep_rm() {
+failed=0
+
+safe_candidate() {
   local path="$1"
-  ((found++))
+  safe_found=$((safe_found + 1))
   case "$MODE" in
     purge)
-      rm -rf "$path" && { _log "removed $path"; ((removed++)); }
+      if rm -rf -- "$path"; then
+        _log "removed regenerable cache: $path"
+        removed=$((removed + 1))
+      else
+        _log "failed to remove cache: $path"
+        failed=$((failed + 1))
+      fi
       ;;
-    dry-run)
-      _log "(dry-run) would remove $path"
-      ;;
-    status)
-      _log "candidate: $path"
-      ;;
+    dry-run) _log "(dry-run) would remove regenerable cache: $path" ;;
+    status)  _log "safe cache candidate: $path" ;;
   esac
 }
 
-# __pycache__ dirs anywhere under $HOME (top 4 levels, avoids crawling vault/khaos-lab deeply)
-while IFS= read -r d; do
-  sweep_rm "$d"
-done < <(find "$HOME" -maxdepth 4 -type d -name "__pycache__" -not -path "$HOME/links/vault/*" -not -path "$HOME/khaos-lab/*" 2>/dev/null)
+review_candidate() {
+  local path="$1"
+  review_found=$((review_found + 1))
+  [[ "$MODE" == "purge" ]] && _log "kept for review: $path" || _log "review only: $path"
+}
 
-# editor swap/backup files
-while IFS= read -r f; do
-  sweep_rm "$f"
-done < <(find "$HOME" -maxdepth 3 -type f \( -name "*~" -o -name "*.swp" -o -name "*.swo" \) 2>/dev/null)
+# Python bytecode is regenerable. Do not traverse the mounted vault or project
+# tree, where active work and intentionally staged artifacts may exist.
+while IFS= read -r -d '' path; do
+  safe_candidate "$path"
+done < <(find "$HOME" -maxdepth 4 -type d -name '__pycache__' \
+  -not -path "$HOME/links/vault/*" -not -path "$HOME/khaos-lab/*" -print0 2>/dev/null)
 
-# empty leftover directories directly in $HOME (top level only, never recurse into real content dirs)
-# Standard XDG dirs are structural, not litter -- excluded even when empty
-# (user-dirs.dirs points at these; deleting them undoes that fix).
-XDG_DIRS=(Desktop Documents Downloads Music Pictures Videos Templates Public Projects .gvfs)
-while IFS= read -r d; do
-  base="$(basename "$d")"
-  skip=0
-  for xdg in "${XDG_DIRS[@]}"; do
-    [[ "$base" == "$xdg" ]] && { skip=1; break; }
-  done
-  [[ "$skip" -eq 1 ]] && continue
-  sweep_rm "$d"
-done < <(find "$HOME" -maxdepth 1 -mindepth 1 -type d -empty 2>/dev/null)
+# Editor backups and swap files may contain recoverable work. Report, never
+# purge them automatically.
+while IFS= read -r -d '' path; do
+  review_candidate "$path"
+done < <(find "$HOME" -maxdepth 3 -type f \
+  \( -name '*~' -o -name '*.swp' -o -name '*.swo' \) -print0 2>/dev/null)
 
-if [[ "$MODE" == "status" ]]; then
-  _log "done — ${found} candidate(s) found"
-else
-  _log "done — ${removed} item(s) $( [[ $MODE == purge ]] && echo removed || echo would-remove )"
-fi
+# Empty directories can be intentional structure. Report visible HOME-level
+# candidates only; hidden configuration and repository directories are never
+# considered cleanup targets.
+while IFS= read -r -d '' path; do
+  base="$(basename "$path")"
+  case "$base" in
+    .*|Desktop|Documents|Downloads|Music|Pictures|Videos|Templates|Public|Projects) continue ;;
+  esac
+  review_candidate "$path"
+done < <(find "$HOME" -maxdepth 1 -mindepth 1 -type d -empty -print0 2>/dev/null)
+
+case "$MODE" in
+  status) _log "done — $safe_found safe cache candidate(s); $review_found review-only item(s)" ;;
+  dry-run) _log "done — $safe_found safe cache candidate(s) would be removed; $review_found review-only item(s); nothing changed" ;;
+  purge)
+    _log "done — $removed/$safe_found safe cache candidate(s) removed; $review_found review-only item(s) kept"
+    (( failed == 0 )) || exit 1
+    ;;
+esac

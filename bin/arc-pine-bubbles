@@ -2,7 +2,7 @@
 """
 arc-pine-bubbles -- the visual notification renderer for arc-pine's watcher
 family (Suricata/Sagan/fail2ban/rkhunter/VPN/DNS/eero/lynis/chkrootkit/
-ClamAV/arc-heal, and -- once it routes through arc-pine-notify -- arc-break).
+ClamAV/arc-heal, and -- once it routes through arc-pine-notify -- lilah-break).
 
 Redesigned 2026-09-19 (was a plain Tk card): GTK3 + cairo, so it can do what
 Tk can't -- real per-pixel transparency on the desktop compositor. Frosted

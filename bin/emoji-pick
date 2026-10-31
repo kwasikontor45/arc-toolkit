@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# emoji-pick — rofi-based emoji search UI. Reads ~/.config/emoji-pick/emojis.txt
-# (one entry per line: "<emoji> word1 word2 ..."), lets you fuzzy-search by
-# word, then types the picked emoji into whatever window had focus.
+# emoji-pick — small Rofi picker backed by ~/.config/emoji-pick/emojis.txt.
+# Each line is "<emoji> word1 word2 ...". The selected emoji is sent to the
+# window that was active before the picker opened.
 #
 # Rebuilt 2026-08-22 — the original (script, list, and Alt+E keybinding) had
 # all been silently wiped by an OS-level event sometime after 2026-05-28,
@@ -11,35 +11,61 @@ set -euo pipefail
 
 LIST="$HOME/.config/emoji-pick/emojis.txt"
 
-# Capture the destination before rofi takes focus. Codex's terminal UI can
-# interpret paste shortcuts as image paste, so type emoji text directly there.
+for command in rofi xdotool xclip; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    notify-send -a emoji-pick "emoji-pick" "Missing dependency: $command" 2>/dev/null || true
+    exit 1
+  fi
+done
+
+# Capture the destination before rofi takes focus. Paste Unicode text instead
+# of synthesizing emoji key events, which terminals can silently discard.
 target_window=$(xdotool getactivewindow 2>/dev/null || true)
 target_class=""
+target_title=""
 if [[ -n "$target_window" ]]; then
   target_class=$(xdotool getwindowclassname "$target_window" 2>/dev/null || true)
+  target_title=$(xdotool getwindowname "$target_window" 2>/dev/null || true)
 fi
 
-if [[ ! -s "$LIST" ]]; then
+if [[ ! -r "$LIST" || ! -s "$LIST" ]]; then
   notify-send -a emoji-pick "emoji-pick" "list is empty — run: arc emoji add <emoji> <words>" 2>/dev/null || true
   exit 1
 fi
 
 # rofi -dmenu shows one line per option; we show "emoji  words" and pick
 # just the emoji (first field) back out of whichever line was chosen.
-chosen=$(cat "$LIST" | rofi -dmenu -i -p "emoji" -format s 2>/dev/null) || exit 0
+chosen=$(rofi -dmenu -i -p "emoji" -format s < "$LIST" 2>/dev/null) || exit 0
 [[ -z "$chosen" ]] && exit 0
 
 emoji="${chosen%% *}"
 [[ -z "$emoji" ]] && exit 0
 
-echo -n "$emoji" | xclip -selection clipboard
-sleep 0.1
+# Always retain the selection as explicitly typed UTF-8 text, including when
+# focus cannot be restored. No clipboard change occurs on cancellation.
+printf '%s' "$emoji" | xclip -selection clipboard -target UTF8_STRING
 
-case "${target_class,,}" in
-  *terminal*|*konsole*|*kitty*|*alacritty*|*wezterm*|*foot*|*xterm*|*rxvt*|*tilix*|*terminator*|*contour*|*qterminal*|*mate-terminal*|*lxterminal*|*cool-retro-term*|*hyper*|*tabby*)
-    xdotool type --clearmodifiers --delay 0 "$emoji"
+# Rofi temporarily owns focus. Restore the original window explicitly so the
+# key event cannot land in the launcher or another window opened meanwhile.
+if [[ -z "$target_window" ]] || ! xdotool getwindowname "$target_window" >/dev/null 2>&1; then
+  notify-send -a emoji-pick "emoji-pick" "Target window closed; emoji copied to clipboard" 2>/dev/null || true
+  exit 0
+fi
+
+if ! xdotool windowactivate --sync "$target_window" 2>/dev/null; then
+  # Window managers may deny activation; leave the selection available to paste.
+  notify-send -a emoji-pick "emoji-pick" "Could not refocus target; emoji copied to clipboard" 2>/dev/null || true
+  exit 0
+fi
+
+case "${target_class,,} ${target_title,,}" in
+  *codex*|*terminal*|*konsole*|*kitty*|*alacritty*|*wezterm*|*foot*|*xterm*|*rxvt*|*tilix*|*terminator*|*contour*|*qterminal*|*mate-terminal*|*lxterminal*|*cool-retro-term*|*hyper*|*tabby*)
+    sleep 0.1
+    xdotool key --clearmodifiers ctrl+shift+v
     ;;
   *)
+    # Paste into the window that was active before Rofi opened.
+    sleep 0.1
     xdotool key --clearmodifiers ctrl+v
     ;;
 esac

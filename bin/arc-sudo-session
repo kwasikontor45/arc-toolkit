@@ -3,7 +3,7 @@
 # refreshed on a short interval, until explicitly stopped.
 # hook: arc sudo <cmd>
 #
-# Source material: khaos-lab/work-bench/refresh-sudo-v (a saved browser AI
+# Source material: khaos-lab/local-cloud-hub/operations/workbench/refresh-sudo-v (a saved browser AI
 # research thread that converged on a start/stop/status keepalive design
 # after a few iterations). Two real bugs in that draft, fixed here:
 #   - PID file moved to $HOME/.local/state/ (matches every other arc-*

@@ -28,7 +28,7 @@ set -uo pipefail
 
 IFACE="wlan0"
 STATE_DIR="$HOME/.local/state/arc-kismet"
-CAPTURE_DIR="$HOME/khaos-lab/session-logs/kismet-captures"
+CAPTURE_DIR="$HOME/khaos-lab/soc-opsec/labs/captures/session-logs/kismet-captures"
 mkdir -p "$STATE_DIR" "$CAPTURE_DIR"
 
 _restore_iface() {

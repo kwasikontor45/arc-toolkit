@@ -60,7 +60,7 @@ class DialArea(Gtk.DrawingArea):
 
     def __init__(self):
         super().__init__()
-        self.set_size_request(340, 340)
+        self.set_size_request(420, 420)
         self._progress = 0.0
         self._color_hex = ACCENT
         self._phase_text = ""
@@ -184,9 +184,9 @@ class DialArea(Gtk.DrawingArea):
         cr.select_font_face("DejaVu Serif", 0, 1)
         for i, num in enumerate(self.ROMAN):
             a = i * 6.2832 / 12 - 1.5708
-            rr = R - 52
+            rr = R - 56
             x, y = cx + rr*math.cos(a), cy + rr*math.sin(a)
-            cr.set_font_size(21)
+            cr.set_font_size(20)
             ext = cr.text_extents(num)
             cr.set_source_rgba(*self._col(face_fg, .9))
             cr.move_to(x - ext.width/2 - ext.x_bearing, y - ext.height/2 - ext.y_bearing)
@@ -262,8 +262,8 @@ class DialArea(Gtk.DrawingArea):
             cr.set_source_rgba(*self._col("#454E5A", .5)); cr.set_line_width(1.2); cr.stroke()
             for i in range(6):
                 a = i * 6.2832 / 6
-                cr.set_source_rgba(*self._col("#3E4650"))
-                cr.set_line_width(6)
+                cr.set_source_rgba(*self._col("#3E4650", .85))
+                cr.set_line_width(3.6)
                 cr.move_to(0, 0)
                 cr.line_to((gr - 16)*math.cos(a), (gr - 16)*math.sin(a)); cr.stroke()
             cr.arc(0, 0, 9, 0, 6.2832)
@@ -275,9 +275,9 @@ class DialArea(Gtk.DrawingArea):
         mesh = 0.22  # rad/s at the pitch circle; adjacent wheels counter-rotate
         for gi in range(3):
             ga = gi * 2.0944 - 1.5708  # 120° apart, one at 12 o'clock
-            gxr = R*0.60
+            gxr = R*0.66
             gx = cx + gxr*math.cos(ga); gy = cy + gxr*math.sin(ga)
-            gr = R*0.46
+            gr = R*0.40
             big_gear(gx, gy, gr, (1 if gi % 2 == 0 else -1) * tt2 * mesh + gi * 0.31)
         # real clock hands: hour, minute, sweeping second
         m = now.tm_min + now.tm_sec/60.0
@@ -305,20 +305,23 @@ class DialArea(Gtk.DrawingArea):
         cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - R*0.40)
         cr.show_text(phase_name)
         # the countdown — center, a column of mercury
+        # glass register — the countdown framed under the hands, always legible
+        pw2, ph3 = 152, 46
+        py2 = cy + 30
+        cr.arc(cx - pw2/2 + 10, py2 + 10, 10, 3.1416, 4.7124)
+        cr.arc(cx + pw2/2 - 10, py2 + 10, 10, 4.7124, 0)
+        cr.arc(cx + pw2/2 - 10, py2 + ph3 - 10, 10, 0, 1.5708)
+        cr.arc(cx - pw2/2 + 10, py2 + ph3 - 10, 10, 1.5708, 3.1416)
+        cr.close_path()
+        cr.set_source_rgba(*self._col(face_bg, .55)); cr.fill_preserve()
+        cr.set_source_rgba(*self._col("#DFE9EE", .28)); cr.set_line_width(1); cr.stroke()
         digits = self._time_text or "--:--"
         cr.select_font_face("DejaVu Sans Mono", 0, 0)
-        cr.set_font_size(24)
+        cr.set_font_size(25)
         ext = cr.text_extents(digits)
-        cr.set_source(self._mercury(cr, cx, cy - 2, cy + 40, a=.92))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + 26)
+        cr.set_source(self._mercury(cr, cx, py2 + 4, py2 + ph3, a=.95))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, py2 + 32)
         cr.show_text(digits)
-        # whispered caption
-        cr.select_font_face("DejaVu Sans", 0, 0)
-        cr.set_font_size(7.5)
-        ext = cr.text_extents("R E M A I N I N G")
-        cr.set_source(self._mercury(cr, cx, cy + 32, cy + 46, a=.45))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + 44)
-        cr.show_text("R E M A I N I N G")
         # the lid — a hinged cover at 6 o'clock; span shrinks as the face opens
         span = 5.58 - self._lid * 4.0
         a0 = 1.5708 - span/2
@@ -617,7 +620,7 @@ class ArcBreak:
     def _build_window(self):
         self.window = Gtk.ApplicationWindow(application=self.app, title=APP_NAME)
         self.window.set_app_paintable(True)
-        self.window.set_default_size(380, 360)
+        self.window.set_default_size(460, 440)
         self.window.set_decorated(False)
         self.window.set_resizable(False)
         self.window.set_position(Gtk.WindowPosition.CENTER)

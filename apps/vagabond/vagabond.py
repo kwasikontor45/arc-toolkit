@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import cairo
 import os
 import signal
 import sys
@@ -50,28 +51,37 @@ REST = "#ebbcba"
 
 
 class DialArea(Gtk.DrawingArea):
-    """Circular mechanical dial: bronze ring, minute ticks, phase progress arc,
-    phase and remaining time at the hub, and a live sweeping seconds hand.
-    Redraws at 10 Hz while mapped."""
+    """Round mechanical movement — vintage tower-clock style. Real hour,
+    minute and sweeping second hands on a roman ring. The face has a cover
+    that OPENS like a pocket-watch lid when a focus/rest block starts,
+    revealing the phase and remaining time beneath."""
+
+    ROMAN = ("XII", "I", "II", "III", "IIII", "V", "VI", "VII", "VIII", "IX", "X", "XI")
 
     def __init__(self):
         super().__init__()
-        self.set_size_request(300, 300)
+        self.set_size_request(340, 340)
         self._progress = 0.0
         self._color_hex = ACCENT
-        self._phase_text = "READY"
+        self._phase_text = ""
         self._time_text = ""
+        self._lid = 0.0
+        self._lid_target = 0.0
         self.connect("draw", self._draw)
-        GLib.timeout_add(100, self._sweep)
+        GLib.timeout_add(80, self._sweep)
 
     def set_state(self, progress, color_hex, phase_text, time_text):
         self._progress = progress
         self._color_hex = color_hex
         self._phase_text = phase_text
         self._time_text = time_text
+        self._lid_target = 1.0 if progress > 0 else 0.0
         self.queue_draw()
 
     def _sweep(self):
+        if abs(self._lid - self._lid_target) > 0.008:
+            step = 0.05 if self._lid_target > self._lid else -0.05
+            self._lid = max(0.0, min(1.0, self._lid + step))
         if self.get_mapped():
             self.queue_draw()
         return True
@@ -81,44 +91,137 @@ class DialArea(Gtk.DrawingArea):
         v = hex_color.lstrip('#')
         return (int(v[0:2], 16)/255, int(v[2:4], 16)/255, int(v[4:6], 16)/255, alpha)
 
-    def _center(self, cr, cx, y, text, size, color, bold=False):
-        cr.select_font_face("DejaVu Sans", 0, 1 if bold else 0)
-        cr.set_font_size(size)
-        ext = cr.text_extents(text)
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, y)
+    def _hand(self, cr, cx, cy, angle, length, tail, width, color):
+        """Tapered vintage hand with a counterweight disc — mercury on metal."""
+        ux, uy = math.cos(angle), math.sin(angle)
+        px, py = -uy, ux
         cr.set_source_rgba(*self._col(color))
-        cr.show_text(text)
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.set_line_width(1)
+        w_base = width; w_tip = max(1.2, width * 0.32)
+        bx, by = cx + length*ux, cy + length*uy
+        cr.move_to(cx - tail*ux + w_base*px*0.4, cy - tail*uy + w_base*py*0.4)
+        cr.line_to(bx + w_tip*px, by + w_tip*py)
+        cr.line_to(bx - w_tip*px, by - w_tip*py)
+        cr.line_to(cx - tail*ux - w_base*px*0.4, cy - tail*uy - w_base*py*0.4)
+        cr.close_path(); cr.fill()
+        cr.arc(cx - (tail + width)*ux, cy - (tail + width)*uy, width*1.15, 0, 6.2832)
+        cr.fill()
 
     def _draw(self, _widget, cr):
         w = self.get_allocated_width(); h = self.get_allocated_height()
         cx, cy = w/2.0, h/2.0
-        R = min(w, h)/2.0 - 10
+        R = min(w, h)/2.0 - 6
+        now = time.localtime()
+        pal = ui.circadian()
+        face_bg = pal.get("bg", BG); face_surface = pal.get("surface", SURFACE)
+        face_fg = pal.get("fg", TEXT)
+        # 3D: soft ambient shadow lifting the watch off the desk
+        sh = cairo.RadialGradient(cx, cy + 6, R*0.55, cx, cy + 6, R + 26)
+        sh.add_color_stop_rgba(0, 0, 0, 0, .42)
+        sh.add_color_stop_rgba(1, 0, 0, 0, 0)
+        cr.set_source(sh)
+        cr.arc(cx, cy + 6, R + 26, 0, 6.2832); cr.fill()
+        # face — tinted by the live circadian engine
         cr.arc(cx, cy, R, 0, 6.2832)
-        cr.set_source_rgba(*self._col(BG, .96)); cr.fill_preserve()
-        cr.set_source_rgba(*self._col("#A88452", .95)); cr.set_line_width(7); cr.stroke()
-        cr.arc(cx, cy, R - 9, 0, 6.2832)
-        cr.set_source_rgba(*self._col("#D4B27A", .55)); cr.set_line_width(2); cr.stroke()
+        pat = cairo.RadialGradient(cx - R*0.3, cy - R*0.35, R*0.1, cx, cy, R)
+        pat.add_color_stop_rgba(0, *self._col(face_surface, 1))
+        pat.add_color_stop_rgba(1, *self._col(face_bg, 1))
+        cr.set_source(pat); cr.fill_preserve()
+        cr.set_source_rgba(*self._col("#A88452", .95)); cr.set_line_width(9); cr.stroke()
+        cr.arc(cx, cy, R - 8, 0, 6.2832)
+        cr.set_source_rgba(*self._col("#D4B27A", .5)); cr.set_line_width(2); cr.stroke()
+        for qi in range(4):
+            a = qi * 1.5708
+            rx, ry = cx + (R - 4)*math.cos(a), cy + (R - 4)*math.sin(a)
+            cr.arc(rx, ry, 4.2, 0, 6.2832)
+            cr.set_source_rgba(*self._col("#E4C88E", .95)); cr.fill()
+        # 3D bevel: lit upper-left, shaded lower-right
+        cr.arc(cx, cy, R - 2, 2.6, 4.6)
+        cr.set_source_rgba(1, 1, 1, .16); cr.set_line_width(5); cr.stroke()
+        cr.arc(cx, cy, R - 2, -0.6, 1.2)
+        cr.set_source_rgba(0, 0, 0, .30); cr.stroke()
+        # soft sheen across the glass
+        sheen = cairo.LinearGradient(cx - R, cy - R, cx + R*0.4, cy + R*0.5)
+        sheen.add_color_stop_rgba(0, 1, 1, 1, .10)
+        sheen.add_color_stop_rgba(0.5, 1, 1, 1, .02)
+        sheen.add_color_stop_rgba(1, 1, 1, 1, .07)
+        cr.arc(cx, cy, R - 10, 0, 6.2832)
+        cr.set_source(sheen); cr.fill()
+        # minute track + roman numerals
         for i in range(60):
             a = i * 6.2832 / 60 - 1.5708
             big = i % 5 == 0
-            r0 = R - 16; r1 = R - (34 if big else 26)
-            cr.set_source_rgba(*(self._col("#D4B27A", .9) if big else self._col("#96A0AC", .5)))
-            cr.set_line_width(3 if big else 2)
+            r0 = R - 14; r1 = R - (30 if big else 22)
+            cr.set_source_rgba(*(self._col("#D4B27A", .85) if big else self._col("#96A0AC", .45)))
+            cr.set_line_width(2 if big else 1)
             cr.move_to(cx + r0*math.cos(a), cy + r0*math.sin(a))
             cr.line_to(cx + r1*math.cos(a), cy + r1*math.sin(a)); cr.stroke()
+        cr.select_font_face("DejaVu Serif", 0, 1)
+        for i, num in enumerate(self.ROMAN):
+            a = i * 6.2832 / 12 - 1.5708
+            rr = R - 52
+            x, y = cx + rr*math.cos(a), cy + rr*math.sin(a)
+            cr.set_font_size(21)
+            ext = cr.text_extents(num)
+            cr.set_source_rgba(*self._col(face_fg, .9))
+            cr.move_to(x - ext.width/2 - ext.x_bearing, y - ext.height/2 - ext.y_bearing)
+            cr.show_text(num)
+        # real clock hands: hour, minute, sweeping second
+        m = now.tm_min + now.tm_sec/60.0
+        hr = (now.tm_hour % 12) + m/60.0
+        self._hand(cr, cx, cy, hr*6.2832/12 - 1.5708, R*0.46, R*0.10, 6, "#E8E2D4")
+        self._hand(cr, cx, cy, m*6.2832/60 - 1.5708, R*0.68, R*0.12, 4, "#D9D2C0")
+        seca = (time.time() % 60) * 6.2832/60 - 1.5708
+        self._hand(cr, cx, cy, seca, R*0.78, R*0.16, 2, "#E8A33D")
+        cr.arc(cx, cy, 8, 0, 6.2832)
+        cr.set_source_rgba(*self._col("#D4B27A")); cr.fill()
+        cr.arc(cx, cy, 3.2, 0, 6.2832)
+        cr.set_source_rgba(*self._col("#1A1409")); cr.fill()
+        # phase complication (top aperture) — visible through the open lid
         if self._progress > 0:
             frac = 1.0 - self._progress
-            cr.arc(cx, cy, R - 46, -1.5708, -1.5708 + frac * 6.2832)
-            cr.set_source_rgba(*self._col(self._color_hex, .95))
-            cr.set_line_width(9); cr.stroke()
-        self._center(cr, cx, cy - 14, self._phase_text, 15, TEXT)
-        self._center(cr, cx, cy + 30, self._time_text or "--:--", 30, self._color_hex, bold=True)
-        sec = time.time() % 60
-        a = sec * 6.2832 / 60 - 1.5708
-        cr.set_source_rgba(*self._col("#E8A33D", .95)); cr.set_line_width(3)
-        cr.move_to(cx - 18*math.cos(a), cy - 18*math.sin(a))
-        cr.line_to(cx + (R - 56)*math.cos(a), cy + (R - 56)*math.sin(a)); cr.stroke()
-        cr.arc(cx, cy, 7, 0, 6.2832)
+            cr.arc(cx, cy, R - 88, -1.5708 - 1.05, -1.5708 + 1.05)
+            cr.set_source_rgba(*self._col(self._color_hex, .18)); cr.set_line_width(11); cr.stroke()
+            cr.arc(cx, cy, R - 88, -1.5708 - 1.05, -1.5708 - 1.05 + frac*2.1)
+            cr.set_source_rgba(*self._col(self._color_hex, .95)); cr.stroke()
+            ga = -1.5708 - 1.05 + frac*2.1
+            cr.arc(cx + (R - 88)*math.cos(ga), cy + (R - 88)*math.sin(ga), 5, 0, 6.2832)
+            cr.set_source_rgba(*self._col("#F2E3C2", .98)); cr.fill()
+        cr.select_font_face("DejaVu Sans", 0, 1)
+        cr.set_font_size(17)
+        ext = cr.text_extents(self._phase_text)
+        cr.set_source_rgba(*self._col(self._color_hex if self._progress > 0 else MUTED))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.36)
+        cr.show_text(self._phase_text)
+        cr.select_font_face("DejaVu Sans", 0, 0)
+        cr.set_font_size(15)
+        ext = cr.text_extents(self._time_text or "--:--")
+        cr.set_source_rgba(*self._col(face_fg))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.36 + 24)
+        cr.show_text(self._time_text or "--:--")
+        # circadian phase name — the watch always knows what hour it is
+        phase_name = str(pal.get("phase", "")).upper().replace("-", " ")
+        cr.select_font_face("DejaVu Sans", 0, 0)
+        cr.set_font_size(11)
+        ext = cr.text_extents(phase_name)
+        cr.set_source_rgba(*self._col(face_fg, .55))
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.36 + 44)
+        cr.show_text(phase_name)
+        # the lid — a hinged cover at 6 o'clock; span shrinks as the face opens
+        span = 5.58 - self._lid * 4.0
+        a0 = 1.5708 - span/2
+        cr.arc(cx, cy, R - 2, a0, a0 + span)
+        cr.close_path()
+        lidpat = cairo.LinearGradient(cx - R, cy, cx + R, cy + R)
+        lidpat.add_color_stop_rgba(0, *self._col("#232A33", .97))
+        lidpat.add_color_stop_rgba(1, *self._col("#12161C", .97))
+        cr.set_source(lidpat); cr.fill_preserve()
+        cr.set_source_rgba(*self._col("#A88452", .9)); cr.set_line_width(3); cr.stroke()
+        # lid crown nub
+        na = a0 + 0.12  # hinge edge
+        nx, ny = cx + (R-16)*math.cos(na), cy + (R-16)*math.sin(na)
+        cr.arc(nx, ny, 7, 0, 6.2832)
         cr.set_source_rgba(*self._col("#D4B27A")); cr.fill()
 
 
@@ -357,9 +460,10 @@ class ArcBreak:
 
     def _build_window(self):
         self.window = Gtk.ApplicationWindow(application=self.app, title=APP_NAME)
-        self.window.set_opacity(0.985)
-        self.window.set_default_size(580, 400 if self._window_timer_mode else 360)
-        self.window.set_resizable(True)
+        self.window.set_app_paintable(True)
+        self.window.set_default_size(380, 360)
+        self.window.set_decorated(False)
+        self.window.set_resizable(False)
         self.window.set_position(Gtk.WindowPosition.CENTER)
         if LOGO_FILE.exists():
             try:
@@ -370,65 +474,44 @@ class ArcBreak:
             self.window.set_icon_name("preferences-system-time")
         self.window.get_style_context().add_class("vagabond")
         self.window.connect("delete-event", self._close_window)
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=15)
-        box.set_border_width(16)
-        self.window.add(box)
-        face_column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        face_column.set_halign(Gtk.Align.CENTER)
-        face_column.set_valign(Gtk.Align.CENTER)
         self.dial = DialArea()
-        self.dial.set_tooltip_text("Mechanical timer dial · the hand sweeps every second; the arc tracks this block.")
+        self.dial.set_tooltip_text(
+            "Vagabond · left-click start/pause · right-click settings · Alt+drag moves the watch · the face opens when a block begins")
+        self.dial.connect("button-press-event", self._face_click)
         accessible = self.dial.get_accessible()
-        accessible.set_name("Mechanical focus and rest timer")
-        accessible.set_description("A circular dial. The amber hand sweeps each second; the colored arc tracks the elapsed part of the current block; remaining time sits at the hub.")
-        face_column.pack_start(self.dial, False, False, 0)
+        accessible.set_name("Vagabond mechanical timer")
+        accessible.set_description(
+            "A round mechanical clock with hour, minute and second hands. "
+            "Left click starts or pauses the focus and rest timer. Right click opens settings. "
+            "When a block begins, the face opens to reveal the phase and remaining time.")
+        self.window.add(self.dial)
         self.face_image = None
-        box.pack_start(face_column, False, False, 0)
-
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        content.set_valign(Gtk.Align.CENTER)
-        content.set_hexpand(True)
-        box.pack_start(content, True, True, 0)
-        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        title = Gtk.Label(label="VAGABOND", xalign=0)
-        title.get_style_context().add_class("arc-title")
-        header.pack_start(title, True, True, 0)
-        self.status_label = Gtk.Label(xalign=1)
-        self.status_label.get_style_context().add_class("arc-subtle")
-        header.pack_end(self.status_label, False, False, 0)
-        content.pack_start(header, False, False, 0)
-        self.clock_label = Gtk.Label(label="Ready when you are")
-        self.clock_label.get_style_context().add_class("arc-clock")
-        self.clock_label.set_xalign(0)
-        content.pack_start(self.clock_label, False, False, 0)
-        action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=7)
-        content.pack_start(action_row, False, False, 0)
-        self.primary_button = Gtk.Button(label="Start timer")
-        self.primary_button.get_style_context().add_class("arc-action")
-        self.primary_button.get_style_context().add_class("arc-primary")
-        self.primary_button.set_can_default(True)
-        self.primary_button.connect("clicked", self._primary_action)
-        self.window.set_default(self.primary_button)
-        action_row.pack_start(self.primary_button, True, True, 0)
-        self.settings_button = Gtk.Button(label="⚙  Timer settings")
-        self.settings_button.get_style_context().add_class("arc-action")
-        self.settings_button.connect("clicked", self._open_settings)
-        action_row.pack_start(self.settings_button, False, False, 0)
-        self.controls_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        content.pack_start(self.controls_row, False, False, 0)
-        for label, callback in (("Stop", self.stop), ("Skip", self.skip)):
-            button = Gtk.Button(label=label)
-            button.get_style_context().add_class("arc-action")
-            button.connect("clicked", lambda _button, cb=callback: cb())
-            self.controls_row.pack_start(button, True, True, 0)
-        self.cycle_hint = Gtk.Label()
-        self.cycle_hint.set_xalign(0)
-        self.cycle_hint.set_line_wrap(True)
-        self.cycle_hint.set_max_width_chars(36)
-        self.cycle_hint.get_style_context().add_class("arc-subtle")
-        content.pack_start(self.cycle_hint, False, False, 0)
         self.window.show_all()
-        self._update()
+        self.window.present()
+        GLib.idle_add(self._apply_round_shape)
+
+    def _apply_round_shape(self):
+        w = self.window.get_allocated_width() or 380
+        h = self.window.get_allocated_height() or 360
+        r = min(w, h) / 2.0
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+        cr = cairo.Context(surf)
+        cr.arc(w / 2.0, h / 2.0, r, 0, 6.2832)
+        cr.fill()
+        region = Gdk.cairo_region_create_from_surface(surf)
+        self.window.shape_combine_region(region)
+        self.window.input_shape_combine_region(region)
+        return False
+
+    def _face_click(self, _widget, event):
+        if event.button == 1:
+            if event.state & Gdk.ModifierType.MOD1_MASK:  # Alt+left: move the watch
+                self.window.begin_move_drag(event.button, int(event.x_root), int(event.y_root), event.time)
+            else:
+                self._primary_action()
+        elif event.button == 3:
+            self._open_settings()
+        return True
 
     def _open_settings(self, *_args):
         dialog = Gtk.Dialog(title="Vagabond · settings", transient_for=self.window,
@@ -604,16 +687,12 @@ class ArcBreak:
             time_text, primary_text = f"{mins:02d}:{secs:02d}", "Pause timer"
             progress = remaining / duration
         if self.window:
-            timer_mode = self.phase != "stopped"
-            if timer_mode != self._window_timer_mode:
-                self.window.resize(580, 400 if timer_mode else 360)
-                self._window_timer_mode = timer_mode
             if self.phase == "stopped":
                 self.window.set_title(APP_NAME)
             else:
                 self.window.set_title(f"Vagabond · {phase_text.title()} · {time_text}")
             self._set_taskbar_icon(progress, color)
-        if self.status_label:
+        if getattr(self, "status_label", None):
             self.controls_row.set_visible(self.phase != "stopped")
             self.clock_label.set_visible(self.phase != "stopped")
             self.status_label.set_text(phase_text)
@@ -625,9 +704,10 @@ class ArcBreak:
                 f"Focus {self.work_minutes} min  ·  Rest {self.break_minutes} min  ·  "
                 f"{'auto-continue' if self.auto_continue else 'manual next'}  ·  "
                 f"{'alerts on' if self.alerts_enabled else 'alerts off'}")
+        if getattr(self, "dial", None) is not None:
             self._set_timer_face(progress, color, phase_text, time_text)
             self.dial.get_accessible().set_description(
-                f"{phase_text}. The dial hand tracks the elapsed part of this block; remaining time is {time_text or 'not started'}.")
+                f"{phase_text}. The face opens when a block runs; remaining time is {time_text or 'not started'}.")
 
     def _notify(self, title, body):
         if not self.alerts_enabled:

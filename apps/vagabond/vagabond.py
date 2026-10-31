@@ -417,13 +417,43 @@ class ArcBreak:
         except (GLib.Error, TypeError, ValueError):
             return None
 
+    def _taskbar_pixbuf(self, progress, color, size):
+        """Miniature of the watch for the panel: bronze ring, the block's arc,
+        a phase hub. Present, not loud."""
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
+        cr = cairo.Context(surf)
+        s = size; c = s / 2.0
+        R = s / 2.0 - 1
+        def col(hexs, a=1.0):
+            v = hexs.lstrip('#')
+            return (int(v[0:2],16)/255, int(v[2:4],16)/255, int(v[4:6],16)/255, a)
+        # outer ring
+        cr.arc(c, c, R, 0, 6.2832)
+        cr.set_source_rgba(*col("#A88452")); cr.set_line_width(max(1.6, s*0.06)); cr.stroke()
+        # dim full track
+        cr.arc(c, c, R - s*0.09, 0, 6.2832)
+        cr.set_source_rgba(*col("#5A5648", .55)); cr.set_line_width(max(1.2, s*0.075)); cr.stroke()
+        if progress > 0:
+            frac = 1.0 - progress
+            cr.arc(c, c, R - s*0.09, -1.5708, -1.5708 + frac*6.2832)
+            cr.set_source_rgba(*col(color)); cr.set_line_width(max(1.2, s*0.075)); cr.stroke()
+        else:
+            # stopped: a quiet breathing dot so it's never fully invisible
+            cr.arc(c, c, s*0.16, 0, 6.2832)
+            cr.set_source_rgba(*col("#8E8468", .8)); cr.fill()
+        # phase hub
+        cr.arc(c, c, s*0.10, 0, 6.2832)
+        cr.set_source_rgba(*col(color if progress > 0 else "#6E6858"))
+        cr.fill()
+        return Gdk.pixbuf_get_from_surface(surf, 0, 0, s, s)
+
     def _set_taskbar_icon(self, progress, color):
         if self.window is None:
             return
-        key = (self.phase, round(progress, 4), color, bool(self.paused_left))
+        key = (self.phase, round(progress, 3), color, bool(self.paused_left))
         if key == self._taskbar_icon_key:
             return
-        pixbuf = self._timer_pixbuf(progress, color, 64)
+        pixbuf = self._taskbar_pixbuf(progress, color, 64)
         if pixbuf is not None:
             self.window.set_icon(pixbuf)
             self._taskbar_icon_key = key

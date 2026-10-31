@@ -182,6 +182,15 @@ missing or corrupt, `arc-sop recover` restores them and invalidates every prior 
 only way back in is re-reading and re-accepting. Stale override records from the old bypass era
 are ignored; the owner can delete them with `arc-sop gate-enable` (agents are refused).
 
+`arc-confirm "<action>" -- <cmd> [args...]` is the single-action sibling of the gate: it shows the
+exact command on a `/dev/tty` prompt (answers never come from stdin, so pipes can't auto-answer),
+offers run-once / allow-this-session / reject / reject-with-note, and execs the command only on
+approval. Session allowances bind to (session, calling script, action) and expire after 24h — never
+a blanket approval. No controlling terminal, an agent context, a 60s timeout, or an unknown key all
+fail closed (exit 2 or reject); automation belongs behind the SOP gate, not behind a prompt. Every
+choice lands in the same SQLite ledger — hashes and the declared action text, never command
+arguments, which may carry secrets.
+
 ## What's NOT in here, on purpose
 
 Credential files, API tokens, LUKS keyfiles, SQLite state/history databases, `.env` files docker

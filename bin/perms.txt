@@ -13,6 +13,7 @@
 711 arc-cf-watch
 711 arc-chkrootkit-check
 711 arc-clamav-watch
+711 arc-confirm
 755 arc-dns
 711 arc-dns-cold
 711 arc-dns-hot

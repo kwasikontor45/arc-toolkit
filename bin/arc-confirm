@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""
+arc-confirm — one action, one answer, one ledger row.
+
+Human confirmation gate for a single risky action. The SOP gate (arc-sop)
+decides whether a session may operate at all; arc-confirm decides whether
+one specific action runs. It reuses arc-sop's session identity and ledger.
+
+Usage:
+  arc-confirm "<action>" -- <command> [args...]   prompt, then exec on approval
+  arc-confirm --clear                             drop this session's approvals
+
+Rules:
+  - answers are read from /dev/tty, never stdin — pipes cannot auto-answer
+  - no controlling terminal -> refuse (exit 2); automation uses the SOP gate
+  - agents are refused (exit 2); the SOP gate is their path, not this prompt
+  - 60s timeout, ^C/EOF, or an unknown key -> reject (exit 1); fail closed
+  - "allow this session" binds to (session, calling script, action hash);
+    it is never a blanket approval, and rows expire after 24h
+  - the on-screen prompt shows the exact command (what you saw is what runs);
+    the ledger stores the declared action text and hashes only — never the
+    command's arguments, which may carry secrets
+"""
+
+import hashlib
+import importlib.util
+import io
+import os
+import select
+import shlex
+import sqlite3
+import sys
+import termios
+import time
+import tty
+from datetime import datetime, timedelta
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+_BIN = Path(__file__).resolve().parent
+_spec = importlib.util.spec_from_loader(
+    "arc_sop", SourceFileLoader("arc_sop", str(_BIN / "arc-sop")))
+arc_sop = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(arc_sop)
+
+G, R, Y, C, D, N = arc_sop.G, arc_sop.R, arc_sop.Y, arc_sop.C, arc_sop.D, arc_sop.N
+
+TIMEOUT_SECONDS = 60
+APPROVAL_TTL_HOURS = 24
+ACTION_MAX = 80
+NOTE_MAX = 160
+
+G2 = "\033[0;32m"
+
+
+def now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def init_db():
+    arc_sop.init_db()
+    conn = sqlite3.connect(arc_sop.DB_PATH)
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS confirm_approvals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            actor TEXT,
+            session_id TEXT,
+            script TEXT,
+            action_hash TEXT
+        );
+        CREATE TABLE IF NOT EXISTS confirm_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            actor TEXT,
+            session_id TEXT,
+            script TEXT,
+            action_hash TEXT,
+            choice TEXT,
+            note TEXT
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def db_exec(query: str, params=()):
+    conn = sqlite3.connect(arc_sop.DB_PATH)
+    conn.execute(query, params)
+    conn.commit()
+    conn.close()
+
+
+def _sanitize(text: str, limit: int) -> str:
+    keep = []
+    for ch in text:
+        if ch.isalnum() or ch in " _.-:@/+~":
+            keep.append(ch)
+    return "".join(keep)[:limit].strip()
+
+
+def _caller_script() -> str:
+    explicit = os.environ.get("ARC_SCRIPT_NAME")
+    if explicit:
+        return Path(explicit).name[:48]
+    try:
+        return Path(f"/proc/{os.getppid()}/comm").read_text().strip()[:48] or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def _action_key(sid: str, script: str, action: str) -> str:
+    h = hashlib.sha256()
+    for part in (sid, script, action):
+        h.update(part.encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def approval_exists(sid: str, script: str, action: str) -> bool:
+    cutoff = (datetime.now() - timedelta(hours=APPROVAL_TTL_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = arc_sop.db_query(
+        "SELECT id FROM confirm_approvals WHERE session_id = ? AND script = ? "
+        "AND action_hash = ? AND timestamp >= ? LIMIT 1",
+        (sid, script, _action_key(sid, script, action), cutoff),
+    )
+    return bool(rows)
+
+
+def grant_approval(aid: str, sid: str, script: str, action: str):
+    arc_sop.db_insert("confirm_approvals", timestamp=now(), actor=aid, session_id=sid,
+                      script=script, action_hash=_action_key(sid, script, action))
+
+
+def record_event(choice: str, aid: str, sid: str, script: str, action: str, note: str = ""):
+    arc_sop.db_insert("confirm_events", timestamp=now(), actor=aid, session_id=sid,
+                      script=script, action_hash=_action_key(sid, script, action),
+                      choice=choice, note=note[:NOTE_MAX])
+
+
+def open_tty():
+    try:
+        return open("/dev/tty", "r+b", buffering=0)
+    except OSError:
+        return None
+
+
+def _emit(tty_file, text: str):
+    data = text.encode()
+    try:
+        os.write(tty_file.fileno(), data)
+        return
+    except (AttributeError, io.UnsupportedOperation, OSError):
+        pass
+    try:
+        pos = tty_file.tell()
+        tty_file.write(data)
+        tty_file.seek(pos)
+    except (AttributeError, OSError):
+        pass
+
+
+def _read_key(tty_file) -> str:
+    """One keypress. Real tty: raw mode with timeout. Test doubles: read(1)."""
+    try:
+        fd = tty_file.fileno()
+    except (AttributeError, io.UnsupportedOperation):
+        ch = tty_file.read(1)
+        if isinstance(ch, bytes):
+            return ch.decode(errors="replace")
+        return ch or ""
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ready, _, _ = select.select([fd], [], [], TIMEOUT_SECONDS)
+        if not ready:
+            return ""
+        data = os.read(fd, 1)
+        return data.decode(errors="replace") if data else ""
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _read_line(tty_file, limit: int = NOTE_MAX + 16) -> str:
+    """One line of feedback. Runs in canonical mode (restored by _read_key)."""
+    try:
+        fd = tty_file.fileno()
+    except (AttributeError, io.UnsupportedOperation):
+        line = tty_file.readline()
+        if isinstance(line, bytes):
+            return line.decode(errors="replace")
+        return line or ""
+    buf = bytearray()
+    deadline = time.monotonic() + TIMEOUT_SECONDS
+    while len(buf) < limit:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        ready, _, _ = select.select([fd], [], [], remaining)
+        if not ready:
+            break
+        ch = os.read(fd, 1)
+        if not ch or ch == b"\n":
+            break
+        buf += ch
+    return bytes(buf).decode(errors="replace")
+
+
+def _render(action: str, script: str, aid: str, sid: str, command: list) -> str:
+    who = "User" if not arc_sop.is_agent_id(aid) else "Agent"
+    bar = "─" * 52
+    shown = shlex.join(command)
+    return (
+        f"\n{C}{bar}{N}\n"
+        f"{G2}▶ confirm · {script}{N}\n"
+        f"  action: {action}\n"
+        f"  $ {shown}\n"
+        f"  cwd:  {os.getcwd()}\n"
+        f"  actor: {who} {aid} · {sid[:40]}\n"
+        f"\n"
+        f"  {G2}1{N} · run once            {D}(y){N}\n"
+        f"  {G2}2{N} · allow this session  {D}(a){N}  {D}bound to this action{N}\n"
+        f"  {Y}3{N} · reject              {D}(n){N}\n"
+        f"  {Y}4{N} · reject + note       {D}(f){N}\n"
+        f"\n"
+        f"  choice [1-4] · default 3 · {TIMEOUT_SECONDS}s: "
+    )
+
+
+def prompt(action: str, script: str, aid: str, sid: str, command: list, tty_file) -> str:
+    """Returns: once | session | reject | feedback."""
+    _emit(tty_file, _render(action, script, aid, sid, command))
+    keys = {"1": "once", "y": "once",
+            "2": "session", "a": "session",
+            "3": "reject", "n": "reject",
+            "4": "feedback", "f": "feedback"}
+    while True:
+        ch = _read_key(tty_file).lower()
+        if ch in ("\x03", ""):
+            return "reject"
+        if ch in keys:
+            return keys[ch]
+        return "reject"  # unknown key: fail closed, do not loop all day
+
+
+def _usage(stream):
+    print("Usage: arc-confirm \"<action>\" -- <command> [args...]  |  arc-confirm --clear", file=stream)
+
+
+def _clear_session(sid: str):
+    init_db()
+    db_exec("DELETE FROM confirm_approvals WHERE session_id = ?", (sid,))
+    print(f"{G}✓{N}  session approvals cleared")
+
+
+def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    if argv == ["--clear"]:
+        _clear_session(arc_sop.session_id())
+        return 0
+    if not argv or argv in (["--help"], ["-h"]):
+        _usage(sys.stdout if argv else sys.stderr)
+        return 0 if argv else 2
+    if "--" not in argv:
+        _usage(sys.stderr)
+        return 2
+
+    sep = argv.index("--")
+    action = _sanitize(" ".join(argv[:sep]), ACTION_MAX)
+    command = argv[sep + 1:]
+    if not action or not command:
+        _usage(sys.stderr)
+        return 2
+
+    init_db()
+    aid = arc_sop.agent_id()
+    sid = arc_sop.session_id()
+    script = _caller_script()
+
+    if arc_sop.is_agent_id(aid):
+        record_event("refused-agent", aid, sid, script, action)
+        print(f"{R}✗{N}  agents cannot answer confirmation prompts; use the SOP gate: arc-sop start \"<task>\"", file=sys.stderr)
+        return 2
+
+    if approval_exists(sid, script, action):
+        record_event("pre-approved", aid, sid, script, action)
+        print(f"{D}✓ session-approved · {script} · {action}{N}")
+        os.execvp(command[0], command)
+        return 0
+
+    tty_file = open_tty()
+    if tty_file is None:
+        record_event("refused-no-tty", aid, sid, script, action)
+        print(f"{R}✗{N}  no controlling terminal — refusing. Automation belongs behind the SOP gate, not a prompt.", file=sys.stderr)
+        return 2
+
+    try:
+        choice = prompt(action, script, aid, sid, command, tty_file)
+        if choice == "feedback":
+            _emit(tty_file, "  note: ")
+            note = _sanitize(_read_line(tty_file), NOTE_MAX)
+            record_event("reject-feedback", aid, sid, script, action, note)
+            print(f"\n{Y}!{N}  rejected with note · nothing ran")
+            return 1
+        if choice == "reject":
+            record_event("reject", aid, sid, script, action)
+            print(f"\n{Y}!{N}  rejected · nothing ran")
+            return 1
+        if choice == "session":
+            grant_approval(aid, sid, script, action)
+        record_event(choice, aid, sid, script, action)
+        print(f"\n{G}✓{N}  approved ({choice}) · running: {shlex.join(command[:1])}")
+        os.execvp(command[0], command)
+        return 0
+    finally:
+        try:
+            tty_file.close()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    sys.exit(main())

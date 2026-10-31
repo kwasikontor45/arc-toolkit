@@ -157,29 +157,7 @@ class DialArea(Gtk.DrawingArea):
         pat.add_color_stop_rgba(0, *self._col(face_surface, 1))
         pat.add_color_stop_rgba(1, *self._col(face_bg, 1))
         cr.set_source(pat); cr.fill_preserve()
-        cr.set_source_rgba(*self._col("#A88452", .95)); cr.set_line_width(9); cr.stroke()
-        cr.arc(cx, cy, R - 8, 0, 6.2832)
-        cr.set_source_rgba(*self._col("#D4B27A", .5)); cr.set_line_width(2); cr.stroke()
-        for qi in range(4):
-            a = qi * 1.5708
-            rx, ry = cx + (R - 4)*math.cos(a), cy + (R - 4)*math.sin(a)
-            cr.arc(rx, ry, 4.2, 0, 6.2832)
-            cr.set_source_rgba(*self._col("#E4C88E", .95)); cr.fill()
-        # 3D bevel: lit upper-left, shaded lower-right
-        cr.arc(cx, cy, R - 2, 2.6, 4.6)
-        cr.set_source_rgba(1, 1, 1, .22); cr.set_line_width(5); cr.stroke()
-        cr.arc(cx, cy, R - 2, -0.6, 1.2)
-        cr.set_source_rgba(0, 0, 0, .34); cr.stroke()
-        # raised-band edges: bright crest on the outer lip, dark seat inside
-        cr.arc(cx, cy, R - 1, 2.4, 4.9)
-        cr.set_source_rgba(1, 1, 1, .30); cr.set_line_width(1.6); cr.stroke()
-        cr.arc(cx, cy, R - 7, 2.4, 4.9)
-        cr.set_source_rgba(0, 0, 0, .38); cr.set_line_width(1.6); cr.stroke()
-        cr.arc(cx, cy, R - 7, -0.5, 1.4)
-        cr.set_source_rgba(1, 1, 1, .12); cr.set_line_width(1.3); cr.stroke()
-        # seat shadow where face meets bezel (lower half)
-        cr.arc(cx, cy, R - 9, 0.4, 2.7)
-        cr.set_source_rgba(0, 0, 0, .30); cr.set_line_width(3); cr.stroke()
+        cr.set_source_rgba(*self._col("#3A414B", .9)); cr.set_line_width(2.5); cr.stroke()
         # soft sheen across the glass
         sheen = cairo.LinearGradient(cx - R, cy - R, cx + R*0.4, cy + R*0.5)
         sheen.add_color_stop_rgba(0, 1, 1, 1, .10)
@@ -206,35 +184,6 @@ class DialArea(Gtk.DrawingArea):
             cr.set_source_rgba(*self._col(face_fg, .9))
             cr.move_to(x - ext.width/2 - ext.x_bearing, y - ext.height/2 - ext.y_bearing)
             cr.show_text(num)
-        # skeleton movement — exposed gear train in the bezel band, always turning
-        def gear(gx, gy, gr, ang, teeth, col="#39414C", hub="#A88452"):
-            cr.save()
-            cr.translate(gx, gy); cr.rotate(ang)
-            cr.set_source_rgba(*self._col(col))
-            for i in range(teeth):
-                a = i * 6.2832 / teeth
-                cr.save(); cr.rotate(a)
-                cr.rectangle(gr - 3.5, -1.8, 5.5, 3.6)
-                cr.fill()
-                cr.restore()
-            cr.arc(0, 0, gr - 3, 0, 6.2832)
-            cr.set_source_rgba(*self._col("#2B313A")); cr.fill_preserve()
-            cr.set_source_rgba(*self._col("#4A5260", .9)); cr.set_line_width(1.4); cr.stroke()
-            for i in range(5):
-                a = i * 6.2832 / 5
-                cr.set_source_rgba(*self._col("#434C58"))
-                cr.set_line_width(2.6)
-                cr.move_to(0, 0)
-                cr.line_to((gr - 6)*math.cos(a), (gr - 6)*math.sin(a)); cr.stroke()
-            cr.arc(0, 0, 4.4, 0, 6.2832)
-            cr.set_source_rgba(*self._col(hub)); cr.fill()
-            cr.restore()
-        tt = time.time()
-        train = [(24, 0.5, 1), (17, -0.9, -1), (21, 0.34, 1), (15, -0.62, -1), (19, 0.78, 1)]
-        for gi, (gr, sp, direc) in enumerate(train):
-            ga = gi * 6.2832/5 - 1.5708
-            gx = cx + (R - 15)*math.cos(ga); gy = cy + (R - 15)*math.sin(ga)
-            gear(gx, gy, gr, direc * tt * sp, max(9, int(gr * 0.75)))
         # chapter ring: minute figures every five, tucked and quiet
         cr.select_font_face("DejaVu Serif", 0, 0)
         cr.set_font_size(10)
@@ -287,6 +236,42 @@ class DialArea(Gtk.DrawingArea):
             cr.arc(cx, cy, R - 34, 1.5708 + sgn*0.55 - 0.38, 1.5708 + sgn*0.55 + 0.38)
             cr.set_source_rgba(*self._col("#A88452", .4))
             cr.set_line_width(1.4); cr.stroke()
+        # the shell — three great gears meshed as the window's outside outline.
+        # No ring, no arcs: the case IS the train, each wheel turning.
+        def big_gear(gx, gy, gr, ang, teeth=22):
+            cr.save()
+            cr.translate(gx, gy); cr.rotate(ang)
+            cr.set_source_rgba(*self._col("#454E5A"))
+            for i in range(teeth):
+                a = i * 6.2832 / teeth
+                cr.save(); cr.rotate(a)
+                cr.rectangle(gr - 4, -2.6, 8.5, 5.2)
+                cr.fill()
+                cr.restore()
+            cr.arc(0, 0, gr - 4, 0, 6.2832)
+            cr.set_source_rgba(*self._col("#272D36", .96)); cr.fill_preserve()
+            cr.set_source_rgba(*self._col("#59636F", .95)); cr.set_line_width(2.2); cr.stroke()
+            cr.arc(0, 0, gr - 13, 0, 6.2832)
+            cr.set_source_rgba(*self._col("#454E5A", .5)); cr.set_line_width(1.2); cr.stroke()
+            for i in range(6):
+                a = i * 6.2832 / 6
+                cr.set_source_rgba(*self._col("#3E4650"))
+                cr.set_line_width(6)
+                cr.move_to(0, 0)
+                cr.line_to((gr - 16)*math.cos(a), (gr - 16)*math.sin(a)); cr.stroke()
+            cr.arc(0, 0, 9, 0, 6.2832)
+            cr.set_source_rgba(*self._col("#59636F")); cr.fill()
+            cr.arc(0, 0, 4.5, 0, 6.2832)
+            cr.set_source_rgba(*self._col("#20252C")); cr.fill()
+            cr.restore()
+        tt2 = time.time()
+        mesh = 0.22  # rad/s at the pitch circle; adjacent wheels counter-rotate
+        for gi in range(3):
+            ga = gi * 2.0944 - 1.5708  # 120° apart, one at 12 o'clock
+            gxr = R*0.60
+            gx = cx + gxr*math.cos(ga); gy = cy + gxr*math.sin(ga)
+            gr = R*0.46
+            big_gear(gx, gy, gr, (1 if gi % 2 == 0 else -1) * tt2 * mesh + gi * 0.31)
         # real clock hands: hour, minute, sweeping second
         m = now.tm_min + now.tm_sec/60.0
         hr = (now.tm_hour % 12) + m/60.0

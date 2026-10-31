@@ -1,8 +1,8 @@
-# Vagabond timer
+# Lilah timer
 
 A small GTK 3 timer for XFCE and other GTK desktops. Start it from the desktop menu, click **Start timer**, and it minimizes into the normal taskbar. A crafted mechanical dial sits beside the exact digital countdown; its hand and progress track follow the selected focus/rest block. The taskbar window icon uses the same timer face, tinted for the active block. Click the taskbar item to restore its controls. It needs no tray plugin or panel setup.
 
-The work cycle starts at **40 minutes focus / 18 minutes rest**, matching this workstation's current timer settings. Open **Timer settings** in the app to set focus/rest durations, automatic next cycles, and transition alerts. Settings are saved in `~/.config/vagabond/settings.json`; changes apply to the next cycle. The window follows the same live circadian palette as Khaos Lab and Arc Pine through the shared `_arc_ui.py` engine.
+The work cycle starts at **40 minutes focus / 18 minutes rest**, matching this workstation's current timer settings. Open **Timer settings** in the app to set focus/rest durations, automatic next cycles, and transition alerts. Settings are saved in `~/.config/lilah/settings.json`; changes apply to the next cycle. The window follows the same live circadian palette as Khaos Lab and Arc Pine through the shared `_arc_ui.py` engine.
 
 ## Install
 
@@ -15,24 +15,24 @@ sudo apt install python3-gi gir1.2-gtk-3.0
 Then clone this repository and run:
 
 ```sh
-./apps/vagabond/install.sh
+./apps/lilah/install.sh
 ```
 
-The installer copies this app and the shared circadian palette into `~/.local/opt/vagabond`, updates the existing Arc Break desktop-menu entry, and creates a `~/.local/bin/vagabond` launcher. If a prior Arc Break menu entry exists, the installer preserves a copy so uninstall can restore it. It uses no network, privilege escalation, Genmon, Arc command, or tray extension.
+The installer copies this app and the shared circadian palette into `~/.local/opt/lilah`, updates the existing Arc Break desktop-menu entry, and creates a `~/.local/bin/lilah` launcher. If a prior Arc Break menu entry exists, the installer preserves a copy so uninstall can restore it. It uses no network, privilege escalation, Genmon, Arc command, or tray extension.
 
 ## Local data and behavior
 
 - A new timer starts only when the user starts it. At login, a previously active timer resumes minimized with its saved remainder; explicit Stop prevents resuming. A paused timer stays paused. Powered-off time does not consume focus/rest time; state checkpoints every five seconds and at normal shutdown. Uninstall restores the previous login-resume entry.
-- Settings and resumable timer state are stored under `~/.config/vagabond/` and `~/.local/state/vagabond/`; files are written atomically with owner-only permissions. The four settings are focus length, rest length, automatic cycle continuation, and transition alerts.
+- Settings and resumable timer state are stored under `~/.config/lilah/` and `~/.local/state/lilah/`; files are written atomically with owner-only permissions. The four settings are focus length, rest length, automatic cycle continuation, and transition alerts.
 - The countdown uses a one-second GTK callback, sends desktop notifications at phase changes, and stores no account or personal data.
-- When Arc Pine is running, taskbar notifications inherit its `arc-break` sound, speech, and mute policy. Speech also respects Arc Pine's global speech toggle, snooze, and quiet hours. A separate app rule for `vagabond.py` overrides the inherited policy. Without Arc Pine, desktop notifications continue normally.
+- When Arc Pine is running, taskbar notifications inherit its `arc-break` sound, speech, and mute policy. Speech also respects Arc Pine's global speech toggle, snooze, and quiet hours. A separate app rule for `lilah.py` overrides the inherited policy. Without Arc Pine, desktop notifications continue normally.
 - Closing the window while the timer runs minimizes it to the taskbar, so it remains visible and keeps timing. Close the app after stopping the timer to exit.
-- Removing the app with `./apps/vagabond/uninstall.sh` removes only its own launcher and installed app files; it preserves the settings and state directories.
+- Removing the app with `./apps/lilah/uninstall.sh` removes only its own launcher and installed app files; it preserves the settings and state directories.
 
 ## Uninstall
 
 ```sh
-./apps/vagabond/uninstall.sh
+./apps/lilah/uninstall.sh
 ```
 
 The older `arc break start|stop|status` commands still control the supervised daemon, which keeps separate state and timing. `arc break gui` opens this standalone app. The daemon no longer configures Genmon; run only one timer at a time.

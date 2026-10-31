@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Vagabond — a small, standalone wandering break timer for GTK desktops.
+"""Lilah — the circadian timepiece for GTK desktops.
 
 The timer is local to this process and has no Arc CLI, Genmon, network, or
 systemd dependency. While running, closing the window minimizes it to the taskbar.
@@ -32,12 +32,12 @@ sys.path.insert(0, str(_shared_ui.parent))
 import _arc_ui as ui
 
 
-APP_ID = "studio.kontor.Vagabond"
-APP_NAME = "Vagabond"
+APP_ID = "studio.kontor.Lilah"
+APP_NAME = "Lilah"
 TIMER_FACE_FILE = Path(__file__).resolve().with_name('mechanical-timer.svg')
 LOGO_FILE = TIMER_FACE_FILE
-CONFIG_ROOT = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "vagabond"
-STATE_ROOT = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "vagabond"
+CONFIG_ROOT = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "lilah"
+STATE_ROOT = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "lilah"
 CONFIG_FILE = CONFIG_ROOT / "settings.json"
 STATE_FILE = STATE_ROOT / "timer.json"
 _INITIAL_PALETTE = ui.circadian()
@@ -302,10 +302,10 @@ class DialArea(Gtk.DrawingArea):
         cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - R*0.40)
         cr.show_text(phase_name)
 
-        # the maker's mark — arc · vagabond, tucked beneath the register
+        # the maker's mark — arc · lilah, tucked beneath the register
         cr.select_font_face("DejaVu Sans", 0, 0)
         cr.set_font_size(8)
-        mark = "arc · vagabond"
+        mark = "arc · lilah"
         ext = cr.text_extents(mark)
         cr.set_source_rgba(*self._col(face_fg, .34))
         cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.62)
@@ -526,8 +526,8 @@ class ArcBreak:
         edge = self._rgba(TEXT, .2)
         sheen = self._rgba("#ffffff", .16)
         self.css.load_from_data(f"""
-          window.vagabond {{ background-color: transparent; color: {TEXT}; }}
-          window.vagabond > box {{
+          window.lilah {{ background-color: transparent; color: {TEXT}; }}
+          window.lilah > box {{
             background-image: linear-gradient(145deg, {self._rgba(SURFACE, .97)}, {self._rgba(BG, .98)});
             border: 1px solid {edge}; border-top-color: {sheen}; border-radius: 22px;
             box-shadow: inset 0 1px {sheen}, 0 12px 36px {self._rgba("#000000", .28)};
@@ -547,10 +547,10 @@ class ArcBreak:
           button.arc-action:hover {{ border-color: {self._rgba(ACCENT, .6)}; }}
           spinbutton, spinbutton entry {{ background: {SURFACE}; color: {TEXT}; border-radius: 10px; }}
           checkbutton, label {{ color: {TEXT}; }}
-          window.vagabond dialog {{ background-color: {BG}; color: {TEXT}; }}
-          window.vagabond dialog > box {{ background-image: linear-gradient(145deg, {self._rgba(SURFACE, .98)}, {self._rgba(BG, .98)});
+          window.lilah dialog {{ background-color: {BG}; color: {TEXT}; }}
+          window.lilah dialog > box {{ background-image: linear-gradient(145deg, {self._rgba(SURFACE, .98)}, {self._rgba(BG, .98)});
             border: 1px solid {edge}; border-top-color: {sheen}; border-radius: 22px; padding: 8px; }}
-          window.vagabond dialog button {{ background-image: linear-gradient(145deg, {self._rgba(SURFACE, .95)}, {self._rgba(BG, .96)});
+          window.lilah dialog button {{ background-image: linear-gradient(145deg, {self._rgba(SURFACE, .95)}, {self._rgba(BG, .96)});
             color: {TEXT}; border: 1px solid {edge}; border-top-color: {sheen}; border-radius: 999px;
             padding: 8px 16px; min-height: 25px; }}
         """.encode())
@@ -589,14 +589,14 @@ class ArcBreak:
                 self.window.set_icon_name("preferences-system-time")
         else:
             self.window.set_icon_name("preferences-system-time")
-        self.window.get_style_context().add_class("vagabond")
+        self.window.get_style_context().add_class("lilah")
         self.window.connect("delete-event", self._close_window)
         self.dial = DialArea()
         self.dial.set_tooltip_text(
-            "Vagabond · left-click start/pause · right-click settings · Alt+drag moves the watch · the face opens when a block begins")
+            "Lilah · left-click start/pause · right-click settings · Alt+drag moves the watch · the face opens when a block begins")
         self.dial.connect("button-press-event", self._face_click)
         accessible = self.dial.get_accessible()
-        accessible.set_name("Vagabond mechanical timer")
+        accessible.set_name("Lilah timepiece")
         accessible.set_description(
             "A round mechanical clock with hour, minute and second hands. "
             "Left click starts or pauses the focus and rest timer. Right click opens settings. "
@@ -631,7 +631,7 @@ class ArcBreak:
         return True
 
     def _open_settings(self, *_args):
-        dialog = Gtk.Dialog(title="Vagabond · settings", transient_for=self.window,
+        dialog = Gtk.Dialog(title="Lilah · settings", transient_for=self.window,
                             modal=True, destroy_with_parent=True)
         dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
         dialog.add_button("Save settings", Gtk.ResponseType.OK)
@@ -807,7 +807,7 @@ class ArcBreak:
             if self.phase == "stopped":
                 self.window.set_title(APP_NAME)
             else:
-                self.window.set_title(f"Vagabond · {phase_text.title()} · {time_text}")
+                self.window.set_title(f"Lilah · {phase_text.title()} · {time_text}")
             self._set_taskbar_icon(progress, color)
         if getattr(self, "status_label", None):
             self.controls_row.set_visible(self.phase != "stopped")

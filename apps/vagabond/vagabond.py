@@ -218,6 +218,41 @@ class DialArea(Gtk.DrawingArea):
             cr.move_to(cx + rr*math.cos(a) - ext.width/2 - ext.x_bearing,
                        cy + rr*math.sin(a) - ext.height/2 - ext.y_bearing)
             cr.show_text(label)
+        # phase complication — a mechanical sub-dial at 3 o'clock, the way a
+        # real movement would carry the hour of day: one small hand, four stops
+        order = ["choice", "desire", "still-pine", "nyx"]
+        phase = str(pal.get("phase", "nyx"))
+        pidx = order.index(phase) if phase in order else 3
+        sx = cx + (R - 104); sy = cy
+        sr = 21
+        cr.arc(sx, sy, sr, 0, 6.2832)
+        cr.set_source_rgba(*self._col("#A88452", .8)); cr.set_line_width(2); cr.stroke()
+        cr.arc(sx, sy, sr - 3, 0, 6.2832)
+        cr.set_source_rgba(*self._col(face_bg, .9)); cr.set_line_width(1); cr.fill()
+        for i in range(4):
+            a = i * 1.5708 - 1.5708
+            big = i == pidx
+            cr.arc(sx + (sr-7)*math.cos(a), sy + (sr-7)*math.sin(a), 2.6 if big else 1.5, 0, 6.2832)
+            cr.set_source_rgba(*(self._col("#D4B27A", .95) if big else self._col("#6E6858", .7)))
+            cr.fill()
+        # roman stop labels I–IV
+        cr.select_font_face("DejaVu Serif", 0, 1)
+        cr.set_font_size(7.5)
+        for i, lab in enumerate(("I", "II", "III", "IV")):
+            a = i * 1.5708 - 1.5708
+            lx, ly = sx + (sr+7)*math.cos(a), sy + (sr+7)*math.sin(a)
+            ext = cr.text_extents(lab)
+            cr.set_source_rgba(*self._col("#8E8468", .75))
+            cr.move_to(lx - ext.width/2 - ext.x_bearing, ly - ext.height/2 - ext.y_bearing)
+            cr.show_text(lab)
+        # the phase hand
+        pa = pidx * 1.5708 - 1.5708
+        cr.set_source_rgba(*self._col("#E8A33D" if self._progress > 0 else "#9A917E"))
+        cr.set_line_width(2); cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.move_to(sx - 5*math.cos(pa), sy - 5*math.sin(pa))
+        cr.line_to(sx + (sr-10)*math.cos(pa), sy + (sr-10)*math.sin(pa)); cr.stroke()
+        cr.arc(sx, sy, 2.6, 0, 6.2832)
+        cr.set_source_rgba(*self._col("#D4B27A")); cr.fill()
         # filigree arcs flanking the hinge — baroque whisper, not noise
         for sgn in (-1, 1):
             cr.arc(cx, cy, R - 34, 1.5708 + sgn*0.55 - 0.38, 1.5708 + sgn*0.55 + 0.38)

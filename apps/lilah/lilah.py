@@ -287,7 +287,7 @@ class DialArea(Gtk.DrawingArea):
         cr.select_font_face("DejaVu Sans", 0, 1)
         cr.set_font_size(10.5)
         ext = cr.text_extents(self._phase_text or "")
-        cr.set_source_rgba(*self._col(self._color_hex if self._progress > 0 else MUTED))
+        cr.set_source_rgba(*self._col(self._color_hex if self._progress > 0 else MUTED, .6))
         cr.move_to(cx - ext.width/2 - ext.x_bearing, py2 + 52)
         cr.show_text(self._phase_text or "")
 
@@ -302,16 +302,28 @@ class DialArea(Gtk.DrawingArea):
         cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - R*0.40)
         cr.show_text(phase_name)
 
-        # the signature — just "lilah", calligraphed like a Geneva engraving
-        cr.select_font_face("DejaVu Serif", 0, 1)
-        cr.set_font_size(15)
+        # the signature — "lilah" is the face of the watch: calligraphic,
+        # phase-aware, calm. Morning flows, day reads warm, dusk leans,
+        # night whispers.
+        sig_fonts = {
+            "choice": ("Z003", 21),
+            "desire": ("URW Bookman", 16),
+            "still-pine": ("URW Bookman", 16),
+            "nyx": ("DejaVu Serif", 15),
+        }
+        sig_face, sig_size = sig_fonts.get(str(pal.get("phase", "")), ("DejaVu Serif", 15))
+        cr.select_font_face(sig_face, 0, 1)
+        cr.set_font_size(sig_size)
         mark = "lilah"
         ext = cr.text_extents(mark)
-        lx = cx - ext.width/2 - ext.x_bearing; ly = cy + R*0.60
-        cr.set_source_rgba(0, 0, 0, .5)
-        cr.move_to(lx + 0.7, ly + 0.9)
+        lx = cx - ext.width/2 - ext.x_bearing; ly = cy + R*0.62
+        cr.set_source_rgba(0, 0, 0, .55)
+        cr.move_to(lx + 0.7, ly + 1.0)
         cr.show_text(mark)
-        cr.set_source_rgba(*self._col("#EAD9B0", .92))
+        g2 = cairo.LinearGradient(cx, ly - sig_size, cx, ly + 4)
+        g2.add_color_stop_rgba(0, *self._col("#F3E7C8", .95))
+        g2.add_color_stop_rgba(1, *self._col(phase_accent, .55))
+        cr.set_source(g2)
         cr.move_to(lx, ly)
         cr.show_text(mark)
 
@@ -390,7 +402,6 @@ class ArcBreak:
         self.break_minutes = self._bounded(cfg.get("break_minutes"), 18, 1, 60)
         self.auto_continue = cfg.get("auto_continue", True) is True
         self.alerts_enabled = cfg.get("alerts_enabled", True) is True
-        self.popup_on_transition = cfg.get("popup_on_transition", True) is True
         if not CONFIG_FILE.exists():
             atomic_json(CONFIG_FILE, {"work_minutes": self.work_minutes,
                                       "break_minutes": self.break_minutes,
@@ -415,6 +426,8 @@ class ArcBreak:
         self._save()
         self.window = None
         self._window_timer_mode = self.phase != "stopped"
+        if self.phase in ("focus", "break"):
+            GLib.timeout_add_seconds(2, self._announce_resume)
         self.clock_label = None
         self.status_label = None
         self.primary_button = None
@@ -597,13 +610,13 @@ class ArcBreak:
         self.window.connect("delete-event", self._close_window)
         self.dial = DialArea()
         self.dial.set_tooltip_text(
-            "Lilah · left-click start/pause · right-click settings · Alt+drag moves the watch · the face opens when a block begins")
+            "Lilah · left-click starts or pauses · Alt+drag moves the watch")
         self.dial.connect("button-press-event", self._face_click)
         accessible = self.dial.get_accessible()
         accessible.set_name("Lilah timepiece")
         accessible.set_description(
             "A round mechanical clock with hour, minute and second hands. "
-            "Left click starts or pauses the focus and rest timer. Right click opens settings. "
+            "Left click starts or pauses the focus and rest timer. "
             "When a block begins, the face opens to reveal the phase and remaining time.")
         self.window.add(self.dial)
         self.face_image = None
@@ -630,71 +643,7 @@ class ArcBreak:
                 self.window.begin_move_drag(event.button, int(event.x_root), int(event.y_root), event.time)
             else:
                 self._primary_action()
-        elif event.button == 3:
-            self._open_settings()
         return True
-
-    def _open_settings(self, *_args):
-        dialog = Gtk.Dialog(title="Lilah · settings", transient_for=self.window,
-                            modal=True, destroy_with_parent=True)
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Save settings", Gtk.ResponseType.OK)
-        dialog.set_default_size(390, 360)
-        body = dialog.get_content_area()
-        body.set_border_width(20)
-        body.set_spacing(12)
-        heading = Gtk.Label(label="Shape your focus rhythm", xalign=0)
-        heading.get_style_context().add_class("arc-title")
-        body.pack_start(heading, False, False, 0)
-        hint = Gtk.Label(label="Changes are saved locally and take effect on the next cycle.", xalign=0)
-        hint.set_line_wrap(True)
-        hint.get_style_context().add_class("arc-subtle")
-        body.pack_start(hint, False, False, 0)
-
-        grid = Gtk.Grid(column_spacing=14, row_spacing=12)
-        body.pack_start(grid, False, False, 4)
-        focus = Gtk.SpinButton.new_with_range(5, 180, 1)
-        focus.set_value(self.work_minutes)
-        rest = Gtk.SpinButton.new_with_range(1, 60, 1)
-        rest.set_value(self.break_minutes)
-        auto = Gtk.Switch()
-        auto.set_active(self.auto_continue)
-        alerts = Gtk.Switch()
-        alerts.set_active(self.alerts_enabled)
-        rows = (
-            ("Focus block", "minutes", focus),
-            ("Rest block", "minutes", rest),
-            ("Start the next block automatically", "", auto),
-            ("Send desktop alerts at transitions", "", alerts),
-        )
-        for row, (title, unit, control) in enumerate(rows):
-            label = Gtk.Label(label=title, xalign=0)
-            grid.attach(label, 0, row, 1, 1)
-            if unit:
-                unit_label = Gtk.Label(label=unit, xalign=0)
-                unit_label.get_style_context().add_class("arc-subtle")
-                grid.attach(control, 1, row, 1, 1)
-                grid.attach(unit_label, 2, row, 1, 1)
-            else:
-                control.set_halign(Gtk.Align.END)
-                grid.attach(control, 2, row, 1, 1)
-        dialog.show_all()
-
-        def save_settings(window, response):
-            if response == Gtk.ResponseType.OK:
-                self.work_minutes = self._bounded(focus.get_value_as_int(), 40, 5, 180)
-                self.break_minutes = self._bounded(rest.get_value_as_int(), 18, 1, 60)
-                self.auto_continue = auto.get_active()
-                self.alerts_enabled = alerts.get_active()
-                saved = read_json(CONFIG_FILE, {})
-                saved.update({"work_minutes": self.work_minutes,
-                              "break_minutes": self.break_minutes,
-                              "auto_continue": self.auto_continue,
-                              "alerts_enabled": self.alerts_enabled})
-                atomic_json(CONFIG_FILE, saved)
-                self._update()
-            window.destroy()
-        dialog.connect("response", save_settings)
 
     def _close_window(self, *_args):
         if self.phase != "stopped":
@@ -742,17 +691,12 @@ class ArcBreak:
             return
         self._advance(notify=False)
 
-    def _clear_urgency(self):
-        if self.window:
-            self.window.set_urgency_hint(False)
+    def _announce_resume(self):
+        remaining = self.paused_left or max(0, int(self.deadline - time.time()))
+        mins = max(1, (remaining + 59) // 60)
+        state = "paused" if self.paused_left else "resumed"
+        self._notify("Lilah", f"{state} — {mins} minute{'s' if mins != 1 else ''} remaining on the {self.phase}.")
         return False
-
-    def _popup_on_transition(self):
-        if not self.popup_on_transition or not self.window:
-            return
-        self.window.present()
-        self.window.set_urgency_hint(True)
-        GLib.timeout_add_seconds(8, self._clear_urgency)
 
     def _advance(self, notify=True):
         self.phase = "break" if self.phase == "focus" else "focus"
@@ -763,7 +707,6 @@ class ArcBreak:
         if notify:
             label = "Rest time" if self.phase == "break" else "Focus time"
             self._notify(label, f"{minutes} minutes. Take the next small step.")
-        self._popup_on_transition()
         self._update()
 
     def _tick(self):

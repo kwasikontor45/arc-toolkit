@@ -7124,6 +7124,9 @@ case "${1:-}" in
   mic)             arc-mic "${2:-status}" ;;
   shell|reload)   echo -e "  ${D}arc ${1} runs as a shell function — reload your rc file first${N}" ;;
   help|-h|--help) cmd_help "${@:2}" ;;
+  osx-kvm)
+    exec /usr/local/bin/arc-osx-kvm "${@:2}"
+    ;;
   '')             cmd_status ;;
   *)              echo -e "${R}unknown:${N} $1  —  try ${C}arc help${N}"; exit 1 ;;
 esac

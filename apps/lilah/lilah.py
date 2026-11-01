@@ -148,17 +148,16 @@ class DialArea(Gtk.DrawingArea):
         phase_name = str(pal.get("phase", "")).upper().replace("-", " ")
         phase_accent = ui.PHASE_ACCENT.get(str(pal.get("phase", "")), "#9FB4BE")
 
-        # drop shadow lifting the movement off the desk
-        sh = cairo.RadialGradient(cx, cy + 5, R*0.92, cx, cy + 5, R + 18)
-        sh.add_color_stop_rgba(0, 0, 0, 0, .55)
-        sh.add_color_stop_rgba(0.75, 0, 0, 0, .28)
+        # soft cast shadow under the movement — a pool, not a ring
+        sh = cairo.RadialGradient(cx, cy + 9, R*0.5, cx, cy + 9, R + 16)
+        sh.add_color_stop_rgba(0, 0, 0, 0, .38)
         sh.add_color_stop_rgba(1, 0, 0, 0, 0)
         cr.set_source(sh)
-        cr.arc(cx, cy + 5, R + 18, 0, 6.2832); cr.fill()
+        cr.arc(cx, cy + 9, R + 16, 0, 6.2832); cr.fill()
 
-        # face
-        cr.arc(cx, cy, R, 0, 6.2832)
-        pat = cairo.RadialGradient(cx - R*0.3, cy - R*0.35, R*0.1, cx, cy, R)
+        # face — tucked inside the silhouette so the rim stays open skeleton
+        cr.arc(cx, cy, R*0.90, 0, 6.2832)
+        pat = cairo.RadialGradient(cx - R*0.28, cy - R*0.32, R*0.1, cx, cy, R*0.92)
         pat.add_color_stop_rgba(0, *self._col(face_surface, 1))
         pat.add_color_stop_rgba(1, *self._col(face_bg, 1))
         cr.set_source(pat); cr.fill()
@@ -167,7 +166,7 @@ class DialArea(Gtk.DrawingArea):
         for i in range(60):
             a = i * 6.2832 / 60 - 1.5708
             big = i % 5 == 0
-            r0 = R - 12; r1 = R - (24 if big else 19)
+            r0 = R*0.90 - 8; r1 = R*0.90 - (20 if big else 15)
             cr.set_source_rgba(*(self._col("#D4B27A", .7) if big else self._col("#96A0AC", .35)))
             cr.set_line_width(1.6 if big else 1)
             cr.move_to(cx + r0*math.cos(a), cy + r0*math.sin(a))
@@ -215,9 +214,9 @@ class DialArea(Gtk.DrawingArea):
         mesh = 0.22
         for gi in range(3):
             ga = gi * 2.0944 - 1.5708
-            gxr = R*0.52
+            gxr = R*0.53
             gx = cx + gxr*math.cos(ga); gy = cy + gxr*math.sin(ga)
-            gr = R*0.46
+            gr = R*0.52
             big_gear(gx, gy, gr, (1 if gi % 2 == 0 else -1) * tt2 * mesh + gi * 0.31)
 
         # phase complication at 3 o'clock — the hour of day, mechanically
@@ -628,12 +627,23 @@ class ArcBreak:
         GLib.idle_add(self._apply_round_shape)
 
     def _apply_round_shape(self):
-        w = self.window.get_allocated_width() or 380
-        h = self.window.get_allocated_height() or 360
-        r = min(w, h) / 2.0 + 14
+        w = self.window.get_allocated_width()
+        h = self.window.get_allocated_height()
+        if min(w, h) < 80:            # not laid out yet — retry shortly
+            GLib.timeout_add(200, self._apply_round_shape)
+            return False
+        R = min(w, h) / 2.0 - 6
+        if R < 40:
+            R = 200.0
+        cx, cy = w / 2.0, h / 2.0
         surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
         cr = cairo.Context(surf)
-        cr.arc(w / 2.0, h / 2.0, r, 0, 6.2832)
+        # the silhouette is the train: three solid wheel-discs + the center
+        # disc. The drawn teeth ride this edge; the gaps are see-through.
+        for gi in range(3):
+            ga = gi * 2.0944 - 1.5708
+            cr.arc(cx + R * 0.53 * math.cos(ga), cy + R * 0.53 * math.sin(ga), R * 0.52 + 6, 0, 6.2832)
+        cr.arc(cx, cy, R * 0.72, 0, 6.2832)
         cr.fill()
         region = Gdk.cairo_region_create_from_surface(surf)
         self.window.shape_combine_region(region)

@@ -2303,11 +2303,21 @@ cmd_vpn() {
   command -v protonvpn >/dev/null 2>&1 || { echo -e "  ${R}✗${N}  protonvpn not installed — sudo apt install proton-vpn-cli"; return 1; }
   case "$sub" in
     login)
-      # The login unit must honor an intentional disconnect saved in this
-      # session. Only an explicit connect or `autoconnect on` opts back in.
+      # Reboots refresh, they don't destroy: if the pre-shutdown marker says
+      # the VPN was connected, restore that intent even if a disconnect got
+      # recorded mid-shutdown. A deliberate in-session disconnect is captured
+      # by the marker itself at shutdown, so it still wins.
+      local _marker="$HOME/.config/arc/vpn-persist-intent"
       if [[ "$(cat "$(_vpn_state_file)" 2>/dev/null)" != "connected" ]]; then
-        echo -e "  ${D}·${N}  login reconnect skipped — desired VPN state is disconnected"
-        return 0
+        if [[ "$(cat "$_marker" 2>/dev/null)" == "connected" ]]; then
+          echo -e "  ${D}·${N}  reboot refresh — restoring pre-shutdown VPN intent (connected)"
+          mkdir -p "$(dirname "$(_vpn_state_file)")"
+          echo "connected" > "$(_vpn_state_file)"
+          rm -f "$_marker"
+        else
+          echo -e "  ${D}·${N}  login reconnect skipped — desired VPN state is disconnected"
+          return 0
+        fi
       fi
       shift
       cmd_vpn connect "$@"

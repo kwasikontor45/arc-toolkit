@@ -302,13 +302,17 @@ class DialArea(Gtk.DrawingArea):
         cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - R*0.40)
         cr.show_text(phase_name)
 
-        # the maker's mark — arc · lilah, tucked beneath the register
-        cr.select_font_face("DejaVu Sans", 0, 0)
-        cr.set_font_size(8)
-        mark = "arc · lilah"
+        # the signature — just "lilah", calligraphed like a Geneva engraving
+        cr.select_font_face("DejaVu Serif", 0, 1)
+        cr.set_font_size(15)
+        mark = "lilah"
         ext = cr.text_extents(mark)
-        cr.set_source_rgba(*self._col(face_fg, .34))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy + R*0.62)
+        lx = cx - ext.width/2 - ext.x_bearing; ly = cy + R*0.60
+        cr.set_source_rgba(0, 0, 0, .5)
+        cr.move_to(lx + 0.7, ly + 0.9)
+        cr.show_text(mark)
+        cr.set_source_rgba(*self._col("#EAD9B0", .92))
+        cr.move_to(lx, ly)
         cr.show_text(mark)
 
 

@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""
+lilah-rise — the break notification that arrives.
+
+Pops just above the panel, rises swift to the top of the screen, readable
+the whole way, pops at the crown, holds, then dissolves. No sound required;
+the entrance IS the alarm. Glass register, phase-tinted by the hour.
+
+usage: lilah-rise "TITLE" "subtitle text"
+"""
+
+import sys
+import time
+
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import GLib, Gtk, Gdk
+
+RiseMs = 1250       # swift, not tardy
+HoldMs = 5600       # long enough to actually read
+FadeMs = 720        # dissolve
+PopMs = 260         # the crown pop
+
+PHASE_TINT = {"dawn": "#e6a57f", "day": "#f6c177", "dusk": "#5ec9b4", "night": "#b8a8d0"}
+
+
+def phase_now():
+    h = time.localtime().tm_hour
+    if 5 <= h < 9:
+        return "dawn"
+    if 9 <= h < 17:
+        return "day"
+    if 17 <= h < 21:
+        return "dusk"
+    return "night"
+
+
+def main():
+    title = sys.argv[1] if len(sys.argv) > 1 else "break time"
+    body = sys.argv[2] if len(sys.argv) > 2 else "step away."
+
+    display = Gdk.Display.get_default()
+    monitor = display.get_primary_monitor() if hasattr(display, "get_primary_monitor") else None
+    if monitor is None:
+        monitor = display.get_monitor(0)
+    geo = monitor.get_geometry()
+    sw, sh = geo.width, geo.height
+
+    win = Gtk.Window(type=Gtk.WindowType.POPUP)
+    win.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
+    win.set_decorated(False)
+    win.set_resizable(False)
+    win.set_keep_above(True)
+    win.set_skip_taskbar_hint(True)
+    win.set_skip_pager_hint(True)
+    win.set_app_paintable(True)
+
+    screen = win.get_screen()
+    visual = screen.get_rgba_visual()
+    if visual is not None:
+        win.set_visual(visual)
+
+    tint = PHASE_TINT[phase_now()]
+    r, g, b = (int(tint[i:i+2], 16) for i in (1, 3, 5))
+    tint_edge = f"rgba({r},{g},{b},0.55)"
+    css = Gtk.CssProvider()
+    css.load_from_data(f"""
+      window {{
+        background-color: transparent;
+      }}
+      box.rise {{
+        background-image: linear-gradient(145deg, rgba(16,20,26,.92), rgba(8,11,14,.94));
+        border: 1px solid {tint_edge};
+        border-radius: 16px;
+        box-shadow: 0 10px 30px rgba(0,0,0,.45);
+        padding: 14px 26px;
+      }}
+      label.rise-title {{
+        color: {tint};
+        font-size: 26px;
+        font-weight: 700;
+        letter-spacing: 4px;
+      }}
+      label.rise-body {{
+        color: #dfe5ea;
+        font-size: 13px;
+        margin-top: 4px;
+      }}
+    """.encode())
+    Gtk.StyleContext.add_provider_for_screen(
+        screen, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    box.get_style_context().add_class("rise")
+    box.set_halign(Gtk.Align.CENTER)
+    l_title = Gtk.Label(label=title.lower())
+    l_title.get_style_context().add_class("rise-title")
+    l_body = Gtk.Label(label=body)
+    l_body.get_style_context().add_class("rise-body")
+    box.pack_start(l_title, False, False, 0)
+    box.pack_start(l_body, False, False, 0)
+    win.add(box)
+
+    win.show_all()
+    win.set_opacity(0.0)   # fade in with the rise
+
+    w, h = win.get_size()
+    x = geo.x + (sw - w) // 2
+    y_from = geo.y + sh - h - 46      # just above the panel
+    y_to = geo.y + 42                 # the crown
+
+    started = [time.monotonic()]
+    state = {"popped": False}
+
+    def ease_out_cubic(t):
+        return 1 - (1 - t) ** 3
+
+    def tick(widget, frame):
+        el = (time.monotonic() - started[0]) * 1000
+        if el < RiseMs:
+            t = ease_out_cubic(el / RiseMs)
+            y = y_from + (y_to - y_from) * t
+            win.move(int(x), int(y))
+            win.set_opacity(min(1.0, el / 220.0))
+            return GLib.SOURCE_CONTINUE
+        # crown: one pop, then hold
+        if not state["popped"]:
+            state["popped"] = True
+            win.move(int(x), y_to)
+            win.set_opacity(0.78)   # pop flash
+            GLib.timeout_add(90, lambda: (win.set_opacity(1.0), False)[1])
+        if el < RiseMs + PopMs + HoldMs:
+            return GLib.SOURCE_CONTINUE
+        # dissolve
+        fd = el - (RiseMs + PopMs + HoldMs)
+        if fd < FadeMs:
+            t = fd / FadeMs
+            win.set_opacity(1.0 - t)
+            win.move(int(x), int(y_to - 14 * t))
+            return GLib.SOURCE_CONTINUE
+        Gtk.main_quit()
+        return GLib.SOURCE_REMOVE
+
+    win.add_tick_callback(tick)
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

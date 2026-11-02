@@ -42,11 +42,10 @@ else
   fi
 fi
 
-SLAB_W=50
-edge_o="${T}╭──────────────────────────────────────────────╮${R}"
-edge_c="${M}│${R}                                                ${M}│${R}"
+INNER=48   # frame interior; every pane line totals INNER+2
+edge_o="${T}╭────────────────────────────────────────────────╮${R}"  # glass crown, hour pigment
 edge_i="${M}│${R}"
-edge_u="${M}╰──────────────────────────────────────────────╯${R}"
+edge_u="${P}╚════════════════════════════════════════════════╝${R}"  # onyx foot, stone weight
 
 whisper() { printf '%s\n' "${M}  $1${R}"; }
 slab_whisper() { slab_line "${M}  $1${R}"; }
@@ -68,15 +67,20 @@ slab_line() {
   raw_len=${#text}
   # visible width: strip escape sequences for padding math
   visual=$(printf '%s' "$text" | sed 's/\x1b\[[0-9;]*m//g')
-  if (( ${#visual} > SLAB_W - 4 )); then
-    text="${text:0:SLAB_W-7}…"; visual=$(printf '%s' "$text" | sed 's/\x1b\[[0-9;]*m//g')
+  if (( ${#visual} > INNER - 4 )); then
+    text="${text:0:INNER-7}…"; visual=$(printf '%s' "$text" | sed 's/\x1b\[[0-9;]*m//g')
   fi
-  pad=$(( SLAB_W - 2 - ${#visual} ))
+  pad=$(( INNER - 2 - ${#visual} ))
   (( pad < 0 )) && pad=0
   printf '%s  %s%s%*s%s%s\n' "$edge_i" "$text" "$R" "$pad" '' "$M" "│$R"
 }
 
-slab_blank() { printf '%s\n' "$edge_c"; }
+ONYX_BG=""
+[[ "$TTY" == 1 ]] && ONYX_BG="$(tput setab 234)"
+slab_blank() {
+  # banded stone: a faint dark striation across the blank row
+  printf '%s%s%*s%s%s\n' "$edge_i" "$ONYX_BG" "$INNER" '' "$R" "${M}│$R"
+}
 
 # the inscription: letters appear one tap at a time
 inscribe() {
@@ -93,7 +97,7 @@ inscribe() {
   else
     printf '%s' "$text"
   fi
-  local pad=$(( SLAB_W - 2 - ${#visual} ))
+  local pad=$(( INNER - 2 - ${#visual} ))
   printf '%*s%s\n' "$pad" '' "${M}│$R"
 }
 

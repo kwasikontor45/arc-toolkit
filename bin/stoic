@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
-#  stoic — a small walk at the waterline
-#  daily cognitive guide: sort the morning · review the evening · keep a log
+#  stoic — the walk, carved in stone
+#  a daily cognitive guide: sort the morning · review the evening · keep a log
 #
-#  standalone: bash + coreutils only. portable: any TERM, any OS with tput.
-#  register: glass panels · sky tint by hour · water entry · smoke between
-#  stops. motion only on a live TTY; everywhere else it stays still.
+#  standalone: bash + coreutils only. portable: any TERM, dumb or smart.
+#  register: stone tablet — chiseled slab, pigment only in the grooves,
+#  the sky's hour tint deciding the pigment. the chisel moves on a live
+#  TTY; everywhere else the tablet is simply, already carved.
 #
-#  usage: stoic                the full walk (morning or evening, by the hour)
+#  usage: stoic                the walk (morning or evening, by the hour)
 #         stoic morning        just the waterline
 #         stoic evening        just the glass
 #         stoic review         read the last seven days back
@@ -25,50 +26,98 @@ hour="$(date +%-H)"
 if [[ -t 1 && -t 0 && "${TERM:-dumb}" != "dumb" && "${TERM:-}" != "" ]]; then
   TTY=1
   B="$(tput bold)"; D="$(tput dim)"; R="$(tput sgr0)"
-  # the sky picks the hour's tint: dawn rose · day gold · dusk pine · night mist
+  # the sky picks the pigment: dawn rose · day gold · dusk pine · night mist
   if   (( hour >= 5 && hour < 9  )); then tint=181; phase="dawn"
   elif (( hour >= 9 && hour < 17 )); then tint=179; phase="day"
   elif (( hour >= 17 && hour < 21 )); then tint=37;  phase="dusk"
   else                                      tint=146; phase="night"
   fi
-  T="$(tput setaf "$tint")"; M="$(tput setaf 245)"; W="$(tput setaf 231)"
-  HAIR="${M}$(printf '─%.0s' $(seq 1 46))${R}"
+  T="$(tput setaf "$tint")"; M="$(tput setaf 245)"; W="$(tput setaf 250)"; P="$(tput setaf 238)"
 else
-  TTY=0; B=""; D=""; R=""; T=""; M=""; W=""; HAIR="──────────────────────────────────────────────"
+  TTY=0; B=""; D=""; R=""; T=""; M=""; W=""; P=""
+  if   (( hour >= 5 && hour < 9  )); then phase="dawn"
+  elif (( hour >= 9 && hour < 17 )); then phase="day"
+  elif (( hour >= 17 && hour < 21 )); then phase="dusk"
+  else phase="night"
+  fi
 fi
 
+SLAB_W=50
+edge_o="${P}▛▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▜${R}"
+edge_c="${P}▌${R}                                                ${P}▐${R}"
+edge_i="${P}▌${R}"
+edge_u="${P}▙▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▟${R}"
+
 whisper() { printf '%s\n' "${M}  $1${R}"; }
-rule()    { printf '%s\n' "$HAIR"; }
+slab_whisper() { slab_line "${M}  $1${R}"; }
 pause()   { [[ "$TTY" == 1 ]] && sleep "$1"; }
 
-# water entry: one slow left-to-right fill, then stillness
-water_in() {
+# chisel the slab in, left to right
+slab_open() {
+  if [[ "$TTY" != 1 ]]; then printf '%s\n' "$edge_o"; return; fi
+  printf '  %s' "${P}"
+  local i n=48
+  for (( i=0; i<n; i++ )); do printf '▀'; sleep 0.008; done
+  printf '%s\n' "$R"
+}
+
+slab_close() { printf '%s\n' "$edge_u"; }
+
+slab_line() {
+  # carve a line of text inside the slab, edges included
+  local text="$1" raw_len visual pad
+  raw_len=${#text}
+  # visible width: strip escape sequences for padding math
+  visual=$(printf '%s' "$text" | sed 's/\x1b\[[0-9;]*m//g')
+  if (( ${#visual} > SLAB_W - 4 )); then
+    text="${text:0:SLAB_W-7}…"; visual=$(printf '%s' "$text" | sed 's/\x1b\[[0-9;]*m//g')
+  fi
+  pad=$(( SLAB_W - 2 - ${#visual} ))
+  (( pad < 0 )) && pad=0
+  printf '%s  %s%s%*s%s%s\n' "$edge_i" "$text" "$R" "$pad" '' "$P" "▐$R"
+}
+
+slab_blank() { printf '%s\n' "$edge_c"; }
+
+# the inscription: letters appear one tap at a time
+inscribe() {
+  local text="$1" visual i ch
+  visual=$(printf '%s' "$text" | sed 's/\x1b\[[0-9;]*m//g')
+  printf '%s  ' "$edge_i"
+  if [[ "$TTY" == 1 ]]; then
+    for (( i=0; i<${#text}; i++ )); do
+      ch="${text:i:1}"
+      # print through escape-state simply: raw char-by-char works for plain text
+      printf '%s' "$ch"
+      [[ "$ch" != " " ]] && sleep 0.018
+    done
+  else
+    printf '%s' "$text"
+  fi
+  local pad=$(( SLAB_W - 2 - ${#visual} ))
+  printf '%*s%s\n' "$pad" '' "${P}▐$R"
+}
+
+say()  { slab_line "$T$B  $1$R"; }
+ask()  { slab_line "$W  $1$R"; printf '%s  %s❯ %s' "$edge_i" "$T" "$R"; }
+
+# three quiet chisel taps
+tap() {
   [[ "$TTY" != 1 ]] && return
   local i
-  printf '  %s' "${M}"
-  for i in $(seq 1 23); do printf '~'; sleep 0.025; done
-  printf '%s\n' "$R"
-  pause 0.2
+  for i in 1 2 3; do printf '%s  ·%s' "$P" "$R"; sleep 0.18; done
+  printf '\r%*s\r' 8 ''
 }
-
-# smoke between stops: a quiet beat
-smoke() {
-  [[ "$TTY" != 1 ]] && return
-  printf '%s' "${M}  · · ·${R}"; pause 0.5; printf '\r%*s\r' 10 ''
-}
-
-say()  { printf '%s%s%s\n' "$T" "$1" "$R"; }
-ask()  { printf '%s  %s%s > %s' "$W" "$1" "$R" "$M"; }
 
 # ── the whispers (original lines, in the family voice) ─────────────────────
-whisper_for() {
+slab_whisper_for() {
   local pick=$(( RANDOM % 4 + 1 ))
   if [[ "$1" == "morning" ]]; then
     case $pick in
       1) whisper "the water is quietest before the first step." ;;
       2) whisper "you don't owe the day your worry — only your attention." ;;
       3) whisper "sort what circles. keep what swims." ;;
-      4) whisper "a small true action outweighs a large imagined one." ;;
+      4) whisper "a small true action outweighs a large one." ;;
     esac
   else
     case $pick in
@@ -82,52 +131,74 @@ whisper_for() {
 
 # ── morning: the waterline ─────────────────────────────────────────────────
 morning() {
-  rule; say "  t h e   w a t e r l i n e"; rule
-  whisper_for morning; echo
-  water_in
+  slab_open
+  inscribe "${T}${B}S T O I C  ·  the waterline${R}"
+  slab_line "${M}  $(date '+%A, %B %d') — $phase${R}"
+  slab_blank
+  slab_whisper_for morning
+  slab_blank
 
   ask "what is circling the water today?"
   read -r topic
-  [[ -z "$topic" ]] && { whisper "nothing circling. step inside the day."; return; }
-  echo
+  printf '\n'
+  if [[ -z "$topic" ]]; then
+    slab_whisper "nothing circling. step inside the day."
+    slab_close; return
+  fi
+  slab_blank
 
-  ask "can it touch shore today — one small action? (y/n)"
+  ask "can it touch shore today? (y/n)"
   read -r yn
+  printf '\n'
+  slab_blank
   local entry="## $topic"$'\n'
   if [[ "$yn" =~ ^[Yy] ]]; then
     ask "name the smallest action that counts"
     read -r action
+  printf '\n'
     entry+="- [ ] ACTION: ${action:-(unnamed, still counts)}"$'\n'
     printf '%s\n' "$entry" >> "$logfile"
-    whisper "given to the shore. close the tab on the worry."
+    slab_whisper "given to the shore. let the worry go."
   else
     entry+="- [x] RELEASED: no shore today. the water keeps it."$'\n'
     printf '%s\n' "$entry" >> "$logfile"
-    whisper "let it sink. the water keeps it now."
+    slab_whisper "let it sink. the water keeps it now."
   fi
+  slab_blank
+  slab_close
 }
 
 # ── evening: the glass ─────────────────────────────────────────────────────
 evening() {
-  rule; say "  t h e   g l a s s"; rule
-  whisper_for evening; echo
-  smoke
+  slab_open
+  inscribe "${T}${B}S T O I C  ·  the glass${R}"
+  slab_line "${M}  $(date '+%A, %B %d') — $phase${R}"
+  slab_blank
+  slab_whisper_for evening
+  slab_blank
+  tap
 
-  ask "look through the glass: what would you shape differently?"
+  ask "through the glass: what would you reshape?"
   read -r q1
-  ask "and what held — name one thing that carried the day"
+  printf '\n'
+  ask "what held — one thing that carried the day?"
   read -r q2
+  printf '\n'
   {
     printf '## evening — %s\n' "$(date '+%H:%M')"
     printf -- '- reshape: %s\n' "${q1:-quiet}"
     printf -- '- held: %s\n' "${q2:-quiet}"
   } >> "$logfile"
-  whisper "settled. the glass fogs over until tomorrow."
+  slab_blank
+  slab_whisper "settled. the glass fogs over until tomorrow."
+  slab_blank
+  slab_close
 }
 
-# ── review: read the week back ─────────────────────────────────────────────
+# ── review: read the week back (kept on the desk, not the slab) ────────────
 review() {
-  rule; say "  s e v e n   d a y s   b a c k"; rule; echo
+  inscribe "${T}${B}s e v e n   d a y s   b a c k${R}"
+  echo
   local f n=0 open=0 released=0
   for i in 6 5 4 3 2 1 0; do
     f="$log_dir/$(date -d "-$i day" +%Y-%m-%d).md"
@@ -140,9 +211,8 @@ review() {
     echo
   done
   [[ $n -eq 0 ]] && { whisper "no entries yet. the water is unmarked."; return; }
-  rule
+  printf '%s%s%s\n' "$P" "  ──────────────────────────────────────────" "$R"
   whisper "$n day(s) on record · $open still open · $released released"
-  rule
 }
 
 # ── entry ──────────────────────────────────────────────────────────────────

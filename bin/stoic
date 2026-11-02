@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════════
+#  stoic — a small walk at the waterline
+#  daily cognitive guide: sort the morning · review the evening · keep a log
+#
+#  standalone: bash + coreutils only. portable: any TERM, any OS with tput.
+#  register: glass panels · sky tint by hour · water entry · smoke between
+#  stops. motion only on a live TTY; everywhere else it stays still.
+#
+#  usage: stoic                the full walk (morning or evening, by the hour)
+#         stoic morning        just the waterline
+#         stoic evening        just the glass
+#         stoic review         read the last seven days back
+#  log:   ~/.local/share/stoic/YYYY-MM-DD.md   (format unchanged since v1)
+# ═══════════════════════════════════════════════════════════════════════════
+set -uo pipefail
+
+log_dir="${STOIC_HOME:-$HOME/.local/share/stoic}"
+mkdir -p "$log_dir"
+today="$(date +%Y-%m-%d)"
+logfile="$log_dir/$today.md"
+hour="$(date +%-H)"
+
+# ── register ────────────────────────────────────────────────────────────────
+if [[ -t 1 && -t 0 && "${TERM:-dumb}" != "dumb" && "${TERM:-}" != "" ]]; then
+  TTY=1
+  B="$(tput bold)"; D="$(tput dim)"; R="$(tput sgr0)"
+  # the sky picks the hour's tint: dawn rose · day gold · dusk pine · night mist
+  if   (( hour >= 5 && hour < 9  )); then tint=181; phase="dawn"
+  elif (( hour >= 9 && hour < 17 )); then tint=179; phase="day"
+  elif (( hour >= 17 && hour < 21 )); then tint=37;  phase="dusk"
+  else                                      tint=146; phase="night"
+  fi
+  T="$(tput setaf "$tint")"; M="$(tput setaf 245)"; W="$(tput setaf 231)"
+  HAIR="${M}$(printf '─%.0s' $(seq 1 46))${R}"
+else
+  TTY=0; B=""; D=""; R=""; T=""; M=""; W=""; HAIR="──────────────────────────────────────────────"
+fi
+
+whisper() { printf '%s\n' "${M}  $1${R}"; }
+rule()    { printf '%s\n' "$HAIR"; }
+pause()   { [[ "$TTY" == 1 ]] && sleep "$1"; }
+
+# water entry: one slow left-to-right fill, then stillness
+water_in() {
+  [[ "$TTY" != 1 ]] && return
+  local i
+  printf '  %s' "${M}"
+  for i in $(seq 1 23); do printf '~'; sleep 0.025; done
+  printf '%s\n' "$R"
+  pause 0.2
+}
+
+# smoke between stops: a quiet beat
+smoke() {
+  [[ "$TTY" != 1 ]] && return
+  printf '%s' "${M}  · · ·${R}"; pause 0.5; printf '\r%*s\r' 10 ''
+}
+
+say()  { printf '%s%s%s\n' "$T" "$1" "$R"; }
+ask()  { printf '%s  %s%s > %s' "$W" "$1" "$R" "$M"; }
+
+# ── the whispers (original lines, in the family voice) ─────────────────────
+whisper_for() {
+  local pick=$(( RANDOM % 4 + 1 ))
+  if [[ "$1" == "morning" ]]; then
+    case $pick in
+      1) whisper "the water is quietest before the first step." ;;
+      2) whisper "you don't owe the day your worry — only your attention." ;;
+      3) whisper "sort what circles. keep what swims." ;;
+      4) whisper "a small true action outweighs a large imagined one." ;;
+    esac
+  else
+    case $pick in
+      1) whisper "review the build, not the builder." ;;
+      2) whisper "the glass shows what happened, not who you are." ;;
+      3) whisper "let the day settle. don't stir it." ;;
+      4) whisper "what held, holds. what broke, teaches." ;;
+    esac
+  fi
+}
+
+# ── morning: the waterline ─────────────────────────────────────────────────
+morning() {
+  rule; say "  t h e   w a t e r l i n e"; rule
+  whisper_for morning; echo
+  water_in
+
+  ask "what is circling the water today?"
+  read -r topic
+  [[ -z "$topic" ]] && { whisper "nothing circling. step inside the day."; return; }
+  echo
+
+  ask "can it touch shore today — one small action? (y/n)"
+  read -r yn
+  local entry="## $topic"$'\n'
+  if [[ "$yn" =~ ^[Yy] ]]; then
+    ask "name the smallest action that counts"
+    read -r action
+    entry+="- [ ] ACTION: ${action:-(unnamed, still counts)}"$'\n'
+    printf '%s\n' "$entry" >> "$logfile"
+    whisper "given to the shore. close the tab on the worry."
+  else
+    entry+="- [x] RELEASED: no shore today. the water keeps it."$'\n'
+    printf '%s\n' "$entry" >> "$logfile"
+    whisper "let it sink. the water keeps it now."
+  fi
+}
+
+# ── evening: the glass ─────────────────────────────────────────────────────
+evening() {
+  rule; say "  t h e   g l a s s"; rule
+  whisper_for evening; echo
+  smoke
+
+  ask "look through the glass: what would you shape differently?"
+  read -r q1
+  ask "and what held — name one thing that carried the day"
+  read -r q2
+  {
+    printf '## evening — %s\n' "$(date '+%H:%M')"
+    printf -- '- reshape: %s\n' "${q1:-quiet}"
+    printf -- '- held: %s\n' "${q2:-quiet}"
+  } >> "$logfile"
+  whisper "settled. the glass fogs over until tomorrow."
+}
+
+# ── review: read the week back ─────────────────────────────────────────────
+review() {
+  rule; say "  s e v e n   d a y s   b a c k"; rule; echo
+  local f n=0 open=0 released=0
+  for i in 6 5 4 3 2 1 0; do
+    f="$log_dir/$(date -d "-$i day" +%Y-%m-%d).md"
+    [[ -f "$f" ]] || continue
+    n=$((n+1))
+    open=$(( open + $(grep -c '^- \[ \] ACTION' "$f" 2>/dev/null || true) ))
+    released=$(( released + $(grep -c '^- \[x\] RELEASED' "$f" 2>/dev/null || true) ))
+    printf '%s%s%s\n' "$T" "  ── $(date -d "-$i day" '+%a %b %d') ──" "$R"
+    sed 's/^## /    /; s/^- \[ \] ACTION: /    ☐ /; s/^- \[x\] RELEASED: /    ~ /; s/^- /    · /' "$f"
+    echo
+  done
+  [[ $n -eq 0 ]] && { whisper "no entries yet. the water is unmarked."; return; }
+  rule
+  whisper "$n day(s) on record · $open still open · $released released"
+  rule
+}
+
+# ── entry ──────────────────────────────────────────────────────────────────
+case "${1:-}" in
+  morning) morning ;;
+  evening) evening ;;
+  review)  review ;;
+  ""|walk)
+    if (( hour >= 4 && hour < 17 )); then morning; else evening; fi
+    ;;
+  -h|--help|help)
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    printf 'stoic: unknown stop %q — try: morning · evening · review\n' "$1" >&2
+    exit 2 ;;
+esac

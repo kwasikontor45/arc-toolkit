@@ -612,15 +612,15 @@ class ArcBreak:
         return f"rgba({int(value[0:2],16)},{int(value[2:4],16)},{int(value[4:6],16)},{alpha})"
 
     def _load_style(self):
-        edge = self._rgba(TEXT, .2)
-        sheen = self._rgba("#ffffff", .16)
+        edge = self._rgba(TEXT, .30)
+        sheen = self._rgba("#ffffff", .10)
         self.css.load_from_data(f"""
           window.lilah {{ background-color: transparent; color: {TEXT}; }}
           window.lilah > box {{
-            background-image: linear-gradient(145deg, {self._rgba(SURFACE, .97)}, {self._rgba(BG, .98)});
-            border: 1px solid {edge}; border-top-color: {sheen}; border-radius: 22px;
-            box-shadow: inset 0 1px {sheen}, 0 12px 36px {self._rgba("#000000", .28)};
-            padding: 8px;
+            background-image: linear-gradient(145deg, {self._rgba(SURFACE, .74)}, {self._rgba(BG, .82)});
+            border: 1px solid {edge}; border-top-color: {sheen}; border-radius: 14px;
+            box-shadow: inset 0 1px {sheen}, 0 10px 30px {self._rgba("#000000", .30)};
+            padding: 7px;
           }}
           scrollbar {{ background: transparent; }}
           scrollbar trough {{ border-radius: 999px; }}
@@ -630,15 +630,15 @@ class ArcBreak:
           .arc-subtle {{ color: {MUTED}; font-size: 12px; }}
           button.arc-action {{ background-image: linear-gradient(145deg, {self._rgba(SURFACE, .96)}, {self._rgba(BG, .96)});
             color: {TEXT}; border: 1px solid {edge}; border-top-color: {sheen};
-            border-radius: 999px; padding: 8px 16px; min-height: 25px; box-shadow: inset 0 1px {self._rgba("#ffffff", .12)}, 0 2px 6px {self._rgba("#000000", .18)}; }}
+            border-radius: 999px; padding: 7px 15px; min-height: 24px; box-shadow: inset 0 1px {self._rgba("#ffffff", .08)}, 0 1px 4px {self._rgba("#000000", .16)}; }}
           button.arc-primary {{ background-image: linear-gradient(145deg, {self._rgba(ACCENT, .42)}, {self._rgba(ACCENT, .18)});
             color: {TEXT}; border-color: {self._rgba(ACCENT, .65)}; }}
           button.arc-action:hover {{ border-color: {self._rgba(ACCENT, .6)}; }}
           spinbutton, spinbutton entry {{ background: {SURFACE}; color: {TEXT}; border-radius: 10px; }}
           checkbutton, label {{ color: {TEXT}; }}
           window.lilah dialog {{ background-color: {BG}; color: {TEXT}; }}
-          window.lilah dialog > box {{ background-image: linear-gradient(145deg, {self._rgba(SURFACE, .98)}, {self._rgba(BG, .98)});
-            border: 1px solid {edge}; border-top-color: {sheen}; border-radius: 22px; padding: 8px; }}
+          window.lilah dialog > box {{ background-image: linear-gradient(145deg, {self._rgba(SURFACE, .80)}, {self._rgba(BG, .88)});
+            border: 1px solid {edge}; border-top-color: {sheen}; border-radius: 14px; padding: 7px; }}
           window.lilah dialog button {{ background-image: linear-gradient(145deg, {self._rgba(SURFACE, .95)}, {self._rgba(BG, .96)});
             color: {TEXT}; border: 1px solid {edge}; border-top-color: {sheen}; border-radius: 999px;
             padding: 8px 16px; min-height: 25px; }}
@@ -667,7 +667,7 @@ class ArcBreak:
     def _build_window(self):
         self.window = Gtk.ApplicationWindow(application=self.app, title=APP_NAME)
         self.window.set_app_paintable(True)
-        self.window.set_default_size(460, 440)
+        self.window.set_default_size(448, 428)
         self.window.set_decorated(False)
         self.window.set_resizable(False)
         self.window.set_position(Gtk.WindowPosition.CENTER)

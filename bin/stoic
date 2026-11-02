@@ -43,10 +43,10 @@ else
 fi
 
 SLAB_W=50
-edge_o="${P}▛▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▜${R}"
-edge_c="${P}▌${R}                                                ${P}▐${R}"
-edge_i="${P}▌${R}"
-edge_u="${P}▙▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▟${R}"
+edge_o="${T}╭──────────────────────────────────────────────╮${R}"
+edge_c="${M}│${R}                                                ${M}│${R}"
+edge_i="${M}│${R}"
+edge_u="${M}╰──────────────────────────────────────────────╯${R}"
 
 whisper() { printf '%s\n' "${M}  $1${R}"; }
 slab_whisper() { slab_line "${M}  $1${R}"; }
@@ -55,10 +55,9 @@ pause()   { [[ "$TTY" == 1 ]] && sleep "$1"; }
 # chisel the slab in, left to right
 slab_open() {
   if [[ "$TTY" != 1 ]]; then printf '%s\n' "$edge_o"; return; fi
-  printf '  %s' "${P}"
   local i n=48
-  for (( i=0; i<n; i++ )); do printf '▀'; sleep 0.008; done
-  printf '%s\n' "$R"
+  for (( i=0; i<n; i++ )); do printf '%s─' "$T"; sleep 0.008; done
+  printf '%s\n' "${M}╮$R"
 }
 
 slab_close() { printf '%s\n' "$edge_u"; }
@@ -74,7 +73,7 @@ slab_line() {
   fi
   pad=$(( SLAB_W - 2 - ${#visual} ))
   (( pad < 0 )) && pad=0
-  printf '%s  %s%s%*s%s%s\n' "$edge_i" "$text" "$R" "$pad" '' "$P" "▐$R"
+  printf '%s  %s%s%*s%s%s\n' "$edge_i" "$text" "$R" "$pad" '' "$M" "│$R"
 }
 
 slab_blank() { printf '%s\n' "$edge_c"; }
@@ -95,7 +94,7 @@ inscribe() {
     printf '%s' "$text"
   fi
   local pad=$(( SLAB_W - 2 - ${#visual} ))
-  printf '%*s%s\n' "$pad" '' "${P}▐$R"
+  printf '%*s%s\n' "$pad" '' "${M}│$R"
 }
 
 say()  { slab_line "$T$B  $1$R"; }
@@ -114,17 +113,17 @@ slab_whisper_for() {
   local pick=$(( RANDOM % 4 + 1 ))
   if [[ "$1" == "morning" ]]; then
     case $pick in
-      1) whisper "the water is quietest before the first step." ;;
-      2) whisper "you don't owe the day your worry — only your attention." ;;
-      3) whisper "sort what circles. keep what swims." ;;
-      4) whisper "a small true action outweighs a large one." ;;
+      1) slab_whisper "the water is quietest before the first step." ;;
+      2) slab_whisper "you don't owe the day your worry — only your attention." ;;
+      3) slab_whisper "sort what circles. keep what swims." ;;
+      4) slab_whisper "a small true action outweighs a large one." ;;
     esac
   else
     case $pick in
-      1) whisper "review the build, not the builder." ;;
-      2) whisper "the glass shows what happened, not who you are." ;;
-      3) whisper "let the day settle. don't stir it." ;;
-      4) whisper "what held, holds. what broke, teaches." ;;
+      1) slab_whisper "review the build, not the builder." ;;
+      2) slab_whisper "the glass shows what happened, not who you are." ;;
+      3) slab_whisper "let the day settle. don't stir it." ;;
+      4) slab_whisper "what held, holds. what broke, teaches." ;;
     esac
   fi
 }

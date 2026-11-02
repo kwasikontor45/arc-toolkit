@@ -196,7 +196,7 @@ class GreetingTests(unittest.TestCase):
   report=self.home/"khaos-lab/arc-heal-log/home-ip-latest.md"
   report.parent.mkdir(parents=True)
   cases=[
-   ("VPN, tunnel, or proxy detected (route proton0; interfaces tun0); deferred without reading or changing AWS rules","VPN/tunnel active",("proton0","tun0")),
+   ("VPN, tunnel, or proxy detected (route proton0; interfaces tun0); deferred without reading or changing AWS rules","VPN routes the path",("proton0","tun0")),
    ("current Wi-Fi SSID/gateway does not match the pinned home eero network; deferred","not on saved home Wi-Fi",("eero","SSID","gateway")),
    ("custom DNS is active (NextDNS or loopback resolver); deferred until plain Wi-Fi with custom DNS off","custom DNS active",("NextDNS","127.0.0.1")),
    ("default route is not confirmed as Wi-Fi (wlan0, type unknown); deferred","direct Wi-Fi unavailable",("wlan0","unknown")),
@@ -208,7 +208,7 @@ class GreetingTests(unittest.TestCase):
    with self.subTest(reason=reason):
     report.write_text("# arc-heal\nRun took 0s · 1 ok · 0 healed · 0 flagged\n\n- ✅ **aws-lab-ip** — "+reason+"\n")
     recent=self.runGreeting(ARC_GREETING_CACHE="0")
-    self.assertRegex(recent,r"LOCAL_IP\s+192\.0\.2\.2 · IP_CHECK deferred · "+re.escape(label)+r" · checked \d+m ago")
+    self.assertRegex(recent,r"LOCAL_IP\s+192\.0\.2\.2 · IP_CHECK sleeping · "+re.escape(label)+r" · checked \d+m ago")
     local_line=next(line for line in recent.splitlines() if "LOCAL_IP" in line)
     for private_detail in hidden:
      self.assertNotIn(private_detail,local_line)

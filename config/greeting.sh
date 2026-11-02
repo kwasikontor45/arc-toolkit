@@ -433,12 +433,12 @@ _arc_greeting_ip_check() {
   _line=$(awk '/aws-lab-ip/ { sub(/^.*—[[:space:]]*/, ""); print; exit }' "$_file" 2>/dev/null)
   case "$_line" in
     *deferred*|*DEFERRED*)
-      _state='deferred'
+      _state='sleeping'
       # Translate Arc Heal's detailed guard note into a short, safe explanation.
       # Do not print interface names, addresses, SSIDs, or the raw report text.
       _line_lower=$(printf '%s' "$_line" | tr '[:upper:]' '[:lower:]')
       case "$_line_lower" in
-        *vpn*|*tunnel*|*proxy*) _reason='VPN/tunnel active' ;;
+        *vpn*|*tunnel*|*proxy*) _reason='VPN routes the path' ;;
         *ssid*|*gateway*|*pinned\ home*) _reason='not on saved home Wi-Fi' ;;
         *not\ confirmed\ as\ wi-fi*|*default\ route*) _reason='direct Wi-Fi unavailable' ;;
         *custom\ dns*|*nextdns*|*loopback\ resolver*) _reason='custom DNS active' ;;
@@ -579,8 +579,9 @@ _arc_greeting_item_body() {
 }
 
 _arc_greeting_center_time() {
-  # Retain the caller interface; align time with the shared status grid.
-  _arc_greeting_item 'LOCAL_TIME' "$1 · $2" "$TEXT"
+  # The time side of the strip belongs to lilah now — the app is the clock.
+  # Letterspaced, tucked, with the hour small at the end.
+  _arc_greeting_item 'LILAH' "☾ l i l a h · kontor.studio/kataleya-demo · $1" "$TEXT"
 }
 
 # The closing instrument strip follows the last status row.
@@ -654,33 +655,39 @@ _arc_greeting_collect_rows() {
       route_text=$(_arc_greeting_public_ipv4 vpn)
       compare_ext_ip="$isp_ext_ip"
       if [[ -n "$compare_ext_ip" ]]; then
-        routePairOne="EXT $compare_ext_ip"
+        routePairOne="saved-ISP $compare_ext_ip"
       else
-        routePairOne='EXT unavailable'
+        routePairOne='ISP baseline unknown'
       fi
       if [[ -n "$vpn_ip" && "$vpn_ip" != "$compare_ext_ip" ]]; then
-        routePairOne+=" · TUN $vpn_ip"
+        routePairOne+=" · tunnel $vpn_ip up"
       fi
       route_ip=${route_text%% *}
       if [[ "$route_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
           && [[ -n "$compare_ext_ip" && "$route_ip" != "$compare_ext_ip" ]]; then
-        routePairTwo="EXIT $route_text"
+        routePairTwo="exit $route_text ✓ not your ISP"
+      elif [[ "$route_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+          && [[ -n "$compare_ext_ip" && "$route_ip" == "$compare_ext_ip" ]]; then
+        routePairTwo="exit $route_text ⚠ MATCHES saved ISP — VPN leak?"
       fi
     else
       route_text=$(_arc_greeting_public_ipv4 direct)
       route_ip=${route_text%% *}
       if [[ "$route_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         compare_ext_ip="$route_ip"
-        routePairOne="EXT $route_text"
+        routePairOne="exit $route_text (direct route)"
       elif [[ -n "$isp_ext_ip" ]]; then
         compare_ext_ip="$isp_ext_ip"
-        routePairOne="EXT $isp_ext_ip · saved"
+        routePairOne="exit $isp_ext_ip (saved baseline, live check unavailable)"
       else
-        routePairOne='EXT unavailable'
+        routePairOne='no route information'
       fi
     fi
     if [[ -n "$dns_ip" && "$dns_ip" != "$compare_ext_ip" ]]; then
-      routePairTwo="${routePairTwo:+$routePairTwo · }DNS $dns_ip"
+      case "$dns_ip" in
+        127.0.0.1|127.0.0.53) routePairTwo="${routePairTwo:+$routePairTwo · }resolver $dns_ip (local stub ✓)" ;;
+        *) routePairTwo="${routePairTwo:+$routePairTwo · }resolver $dns_ip ⚠ not local" ;;
+      esac
     fi
   fi
   if [[ "$profile" != cloud && -z "$vpn_ip" ]]; then

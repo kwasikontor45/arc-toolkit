@@ -7,7 +7,7 @@ class GreetingTests(unittest.TestCase):
   self.home=self.root/"home";self.home.mkdir()
   (self.home/".config/arc").mkdir(parents=True)
   (self.home/".local/share/lt").mkdir(parents=True)
-  (self.home/".config/arc/motd").write_text("I–III: WWSJD · Right & tight · Swiss cheese\nKHAOS-LAB: DEV-STUDIO\nMO: ~/dev-notes/intel-ops/MO.md\n")
+  (self.home/".config/arc/motd").write_text("I–III: WWSJD · Right & tight · Swiss cheese\nAFTERBURNERS: DEV-STUDIO\nMO: ~/dev-notes/intel-ops/MO.md\n")
   (self.home/".local/share/lt/focus").write_text("a-long-process-name-"*8)
   self.log=self.root/"probes"
   bodies={
@@ -128,7 +128,7 @@ class GreetingTests(unittest.TestCase):
   header=out.splitlines()[0]
   self.assertRegex(header,r"^\s+RIG 418 ·  b6ones6aw · ARCHITECT-OF-CHAOS$")
   self.assertGreater(len(header)-len(header.lstrip()),15)
-  brand=next(line for line in out.splitlines() if "KHAOS-LAB" in line)
+  brand=next(line for line in out.splitlines() if "AFTERBURNERS" in line)
   self.assertGreater(len(brand)-len(brand.lstrip()),25)
   time_line=next(line for line in out.splitlines() if re.search(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),? \d",line))
   self.assertRegex(time_line,r"\[ (?:NYX|CHOICE|DESIRE|STILL-PINE) \]")
@@ -138,7 +138,7 @@ class GreetingTests(unittest.TestCase):
   self.assertIn("METHOD",out)
   self.assertIn("Recognize > construct > visualize > analyze > interpret",out)
   self.assertIn("⌜ OPERATIONS",out);self.assertIn("⌜ SYSTEMS",out)
-  self.assertIn("⌜ KHAOS-LAB",out)
+  self.assertIn("⌜ AFTERBURNERS",out)
   self.assertIn("DEV-STUDIO",out)
   self.assertNotIn("KATALEYA",out);self.assertNotIn("COMPANION",out)
   self.assertIn("SUN TZU",out)
@@ -179,7 +179,7 @@ class GreetingTests(unittest.TestCase):
 
  def test_plain_cockpit_markers_are_ascii_and_art_free(self):
   out=self.runGreeting(ARC_GREETING_STYLE="plain",COLUMNS="52",ARC_GREETING_CACHE="0")
-  self.assertIn("> OPERATIONS",out);self.assertIn("> KHAOS-LAB - DEV-STUDIO",out)
+  self.assertIn("> OPERATIONS",out);self.assertIn("> AFTERBURNERS - DEV-STUDIO",out)
   marker_lines=[line for line in out.splitlines() if line.strip().startswith(">")]
   self.assertTrue(marker_lines and all(line.isascii() for line in marker_lines))
   self.assertNotIn("//",out);self.assertNotIn("____/",out);self.assertNotIn("||_/",out)

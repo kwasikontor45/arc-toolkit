@@ -1127,7 +1127,7 @@ for raw in Path(path).read_text(encoding="utf-8").splitlines():
  if len(f)<2:continue
  key,text=safe(f[0]),safe(f[1]);tag=f[2] if len(f)>2 else ""
  if key=="@SECTION":section={"IDENTITY & INTENT":"COMMAND","OPERATIONS":"OPERATIONS","SYSTEMS":"SYSTEMS","RADAR & NAV":"RADAR"}.get(text,text);continue
- if key=="KHAOS-LAB":
+ if key=="AFTERBURNERS":
   studioLabel=text
   continue
  base=next((c for marker,c in lookup.items() if marker in tag),white)
@@ -1563,14 +1563,14 @@ else:
   return out
  for chunk in wrap(headerText,limit):emit_center(header_line(chunk))
 if studioLabel:
- brand="KHAOS-LAB · "+studioLabel
+ brand="AFTERBURNERS · "+studioLabel
  if plain:brand=brand.replace("·","-")
  marker="> " if plain else "⌜ "
- brandLine=marker+"KHAOS-LAB "+("- " if plain else "· ")+studioLabel
+ brandLine=marker+"AFTERBURNERS "+("- " if plain else "· ")+studioLabel
  if cells(brandLine)<=limit:
-  emit_center(paint(marker+"KHAOS-LAB",phaseColor,True)+" "+paint(("- " if plain else "· ")+studioLabel,dim))
+  emit_center(paint(marker+"AFTERBURNERS",phaseColor,True)+" "+paint(("- " if plain else "· ")+studioLabel,dim))
  else:
-  emit_center(paint(marker+"KHAOS-LAB",phaseColor,True))
+  emit_center(paint(marker+"AFTERBURNERS",phaseColor,True))
   for chunk in wrap(studioLabel,limit):emit_center(paint(chunk,dim))
 # Put identity, brand, and the live local clock before rotating/status content.
 for key,text,base in groups.get("RADAR",[]):

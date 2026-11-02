@@ -283,12 +283,7 @@ class DialArea(Gtk.DrawingArea):
         cr.set_source(self._mercury(cr, cx, py2 + 2, py2 + 38, a=.95))
         cr.move_to(cx - ext.width/2 - ext.x_bearing, py2 + 30)
         cr.show_text(digits)
-        cr.select_font_face("DejaVu Sans", 0, 1)
-        cr.set_font_size(10.5)
-        ext = cr.text_extents(self._phase_text or "")
-        cr.set_source_rgba(*self._col(self._color_hex if self._progress > 0 else MUTED, .6))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, py2 + 52)
-        cr.show_text(self._phase_text or "")
+
 
         # the circadian hour — top, wearing the engine's phase color
         cr.select_font_face("DejaVu Sans Light,DejaVu Sans", 0, 0)
@@ -325,6 +320,81 @@ class DialArea(Gtk.DrawingArea):
         cr.set_source(g2)
         cr.move_to(lx, ly)
         cr.show_text(mark)
+
+
+class Bubble(Gtk.Window):
+    """Lilah's own notification: a glossy gum-drop balloon that drops in
+    beside the watch, settles, and floats away. Not a system notification."""
+
+    def __init__(self, text, accent, origin=(80, 120)):
+        super().__init__(type=Gtk.WindowType.POPUP)
+        self.set_decorated(False)
+        self.set_keep_above(True)
+        self.set_app_paintable(True)
+        self.set_resizable(False)
+        self.set_size_request(200, 128)
+        self._text, self._accent = text, accent
+        self._op = 1.0
+        self._ty = 0
+        area = Gtk.DrawingArea()
+        area.connect("draw", self._draw)
+        self.add(area)
+        self._ox, self._oy = origin
+        self.move(self._ox, self._oy - 26)
+        self.show_all()
+        GLib.timeout_add(60, self._drop)
+        GLib.timeout_add(4600, self._leave)
+
+    @staticmethod
+    def _col(hex_color, alpha=1.0):
+        v = hex_color.lstrip('#')
+        return (int(v[0:2],16)/255, int(v[2:4],16)/255, int(v[4:6],16)/255, alpha)
+
+    def _draw(self, _w, cr):
+        w = self.get_allocated_width(); h = self.get_allocated_height()
+        cx, cy = w/2.0, h/2.0 - 6
+        r = min(w, h)/2.0 - 12
+        a = self._accent
+        cr.set_source_rgba(*self._col(a, .30))
+        cr.arc(cx + 3, cy + 7, r, 0, 6.2832)
+        cr.arc(cx, cy + r + 4, 7, 0, 6.2832)   # little tail
+        cr.fill()
+        body = cairo.RadialGradient(cx - r*0.4, cy - r*0.5, r*0.15, cx, cy, r + 4)
+        body.add_color_stop_rgba(0, *self._col("#F4F7F9", .97))
+        body.add_color_stop_rgba(0.55, *self._col("#DDE6EC", .96))
+        body.add_color_stop_rgba(1, *self._col(a, .90))
+        cr.set_source(body)
+        cr.arc(cx, cy, r, 0, 6.2832)
+        cr.arc(cx, cy + r + 2, 6, 0, 6.2832)
+        cr.fill()
+        cr.set_source_rgba(1, 1, 1, .5)
+        cr.arc(cx - r*0.38, cy - r*0.45, r*0.30, 0, 6.2832)
+        cr.fill()
+        cr.select_font_face("DejaVu Sans", 0, 1)
+        cr.set_font_size(12.5)
+        lines = self._text.split("\n")
+        for i, line in enumerate(lines):
+            ext = cr.text_extents(line)
+            cr.set_source_rgba(*self._col("#1A222B", .92))
+            cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - 4 + i*16)
+            cr.show_text(line)
+
+    def _drop(self):
+        self._ty += 4
+        self.move(self._ox, self._oy - 26 + self._ty)
+        if self._ty < 26:
+            return True
+        return False
+
+    def _leave(self):
+        self._op -= 0.08
+        if self._op <= 0:
+            self.destroy()
+            return False
+        self.set_opacity(self._op)
+        self._oy -= 2
+        self.move(self._ox, self._oy)
+        return True
 
 
 def boot_id():
@@ -610,9 +680,10 @@ class ArcBreak:
             self.window.set_icon_name("preferences-system-time")
         self.window.get_style_context().add_class("lilah")
         self.window.connect("delete-event", self._close_window)
+        self.window.connect("key-press-event", self._key_press)
         self.dial = DialArea()
         self.dial.set_tooltip_text(
-            "Lilah · left-click starts or pauses · Alt+drag moves the watch")
+            "Lilah · left-click starts or pauses · right-click for menu · Esc hides · Alt+drag moves")
         self.dial.connect("button-press-event", self._face_click)
         accessible = self.dial.get_accessible()
         accessible.set_name("Lilah timepiece")
@@ -656,7 +727,36 @@ class ArcBreak:
                 self.window.begin_move_drag(event.button, int(event.x_root), int(event.y_root), event.time)
             else:
                 self._primary_action()
+        elif event.button == 3:
+            self._context_menu(event)
         return True
+
+    def _context_menu(self, event):
+        menu = Gtk.Menu()
+
+        hide_item = Gtk.MenuItem(label="Hide watch  ·  Esc")
+        hide_item.connect("activate", lambda *_: self.window.iconify())
+        menu.append(hide_item)
+
+        stop_item = Gtk.MenuItem(label="Stop timer")
+        stop_item.set_sensitive(self.phase != "stopped")
+        stop_item.connect("activate", lambda *_: self.stop())
+        menu.append(stop_item)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        quit_item = Gtk.MenuItem(label="Exit Lilah")
+        quit_item.connect("activate", lambda *_: self.app.quit())
+        menu.append(quit_item)
+
+        menu.show_all()
+        menu.popup_at_pointer(event)
+
+    def _key_press(self, _widget, event):
+        if event.keyval == Gdk.KEY_Escape:
+            self.window.iconify()
+            return True
+        return False
 
     def _close_window(self, *_args):
         if self.phase != "stopped":
@@ -789,9 +889,17 @@ class ArcBreak:
     def _notify(self, title, body):
         if not self.alerts_enabled:
             return
-        note = Gio.Notification.new(title)
-        note.set_body(body)
-        self.app.send_notification(None, note)
+        accent = ui.PHASE_ACCENT.get(str(ui.circadian().get("phase", "")), "#E8A33D")
+        pos = (80, 120)
+        if self.window:
+            pos = (self.window.get_position()[0] + self.window.get_size()[0] + 12,
+                   self.window.get_position()[1] + 60)
+        Bubble(f"{title}\n{body}", accent, pos)
+        try:
+            import subprocess
+            subprocess.Popen(["arc-pine-speak", f"lilah · {title}. {body}."])
+        except OSError:
+            pass
 
     def _quit_signal(self):
         self._save()

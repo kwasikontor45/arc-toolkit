@@ -564,17 +564,27 @@ class Ledger:
             arc = INV_DIR / c["file"]
             if not arc.exists():
                 return False, f"closing archive missing: {c['file']}"
-            if hashlib.sha256(arc.read_bytes()).hexdigest() != c["sha256"]:
-                return False, f"archive {c['file']} sha256 mismatch (tampered?)"
-            last = None
-            with open(arc) as f:
-                for last in f:
-                    pass
-            if not last:
-                return False, f"archive {c['file']} is empty"
-            d = json.loads(last)
+            # each closing's sha256 covers the archive PREFIX up to its seq
+            # (later rotations append; the whole-file hash would false-alarm)
+            h = hashlib.sha256()
+            end_record = None
+            n_read = 0
+            with open(arc, "rb") as f:
+                for raw in f:
+                    n_read += 1
+                    if n_read <= c["seq"]:
+                        h.update(raw)
+                        if n_read == c["seq"]:
+                            end_record = raw
+                    elif end_record is None:
+                        return False, f"archive {c['file']} shorter than closing seq {c['seq']}"
+            if end_record is None:
+                return False, f"archive {c['file']} shorter than closing seq {c['seq']}"
+            if h.hexdigest() != c["sha256"]:
+                return False, f"archive {c['file']} sha256 mismatch at seq {c['seq']} (tampered?)"
+            d = json.loads(end_record)
             if d["hash"] != c["hash"] or d["seq"] != c["seq"]:
-                return False, f"archive {c['file']} end does not match closing"
+                return False, f"archive {c['file']} record at seq {c['seq']} does not match closing"
             if c["seq"] <= last_seq:
                 return False, f"closing seq regression at seq {c['seq']}"
             last_seq = c["seq"]

@@ -5441,7 +5441,7 @@ class App:
         # className explicit: WM_CLASS was generic "Tk" (never "khaos-lab" as the .desktop
         # StartupWMClass assumed) -- a correctness fix independent of the taskbar-icon bug.
         self.root = root = tk.Tk(className="khaos-lab")
-        root.title("khaos☠️lab")
+        root.title("Battle Station")
         root.configure(bg=BG)
         try:
             root.attributes("-alpha", 0.985)

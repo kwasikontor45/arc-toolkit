@@ -891,8 +891,8 @@ except Exception:
   sw_used=$(printf '%s\n' "$_memSnapshot" | awk '/Swap:/ {print $3}')
   sw_total=$(printf '%s\n' "$_memSnapshot" | awk '/Swap:/ {print $2}')
   shell_name=$(basename "${SHELL:-zsh}")
-  shell_ver=$("$SHELL" --version 2>/dev/null | head -1 | awk '{print $2}' | cut -d. -f1,2)
-  [[ -d "$HOME/.oh-my-zsh" ]] && omz_tag='/omz'
+  shell_ver=$("$SHELL" --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+  [[ -d "$HOME/.oh-my-zsh" ]] && omz_tag=' · omz'
 
   sw_used=${sw_used:-unknown}; sw_total=${sw_total:-unknown}
 

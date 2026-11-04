@@ -53,11 +53,28 @@ from pathlib import Path
 from urllib.parse import unquote
 
 HOST = "127.0.0.1"
-PORT = 8642
-ROOT = Path.home() / "khaos-lab" / "local-cloud-hub" / "operations" / "current" / "notes-site"
+
+
+def _env_path(name, default):
+    return Path(os.environ.get(name, default)).expanduser()
+
+
+# One guarded-server design, any number of instances. The notes site is the
+# default; a second instance (the vision globe) runs from the same file with
+# ARC_SITE_* env overrides -- see vision-globe.service. Every hardening layer
+# (loopback bind, tailscale identity, token compare, uniform denials) is
+# instance-agnostic by construction.
+SITE_NAME = os.environ.get("ARC_SITE_NAME", "notes-site")
+PORT = int(os.environ.get("ARC_SITE_PORT", "8642"))
+ROOT = _env_path("ARC_SITE_ROOT",
+                 Path.home() / "khaos-lab" / "local-cloud-hub" / "operations" / "current" / "notes-site")
 CONF_DIR = Path.home() / ".config" / "arc"
-TOKEN_FILE = CONF_DIR / "site-token"
-LOGIN_FILE = CONF_DIR / "site-allowed-login"
+TOKEN_FILE = _env_path("ARC_SITE_TOKEN_FILE", CONF_DIR / "site-token")
+LOGIN_FILE = _env_path("ARC_SITE_LOGIN_FILE", CONF_DIR / "site-allowed-login")
+UNIT = os.environ.get("ARC_SITE_UNIT", "notes-site")
+# when mounted under a tailscale-serve path (e.g. /globe/), that prefix is
+# expected ahead of the token in every URL.
+PATH_PREFIX = os.environ.get("ARC_SITE_PATH_PREFIX", "").strip("/")
 
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -197,6 +214,10 @@ class Guard:
             return None
         path = unquote(raw_path.split("?", 1)[0].split("#", 1)[0])
         parts = [p for p in path.split("/") if p not in ("", ".")]
+        if PATH_PREFIX:
+            if not parts or parts[0] != PATH_PREFIX:
+                return None
+            parts = parts[1:]
         if not parts or ".." in parts:
             return None
         if not hmac.compare_digest(parts[0].encode(), token.encode()):
@@ -339,18 +360,24 @@ class Auditor:
         exposed = bool(web or tcp)
         if exposed:
             handlers = [h.get("Proxy", "") for w in web.values() for h in (w.get("Handlers") or {}).values()]
-            self.ok(all(p.rstrip("/") == f"http://127.0.0.1:{PORT}" for p in handlers) and len(web) == 1,
-                    "tailnet HTTPS exposure is exactly one mapping -> loopback", ", ".join(web.keys()))
+            # the security property: every proxied handler targets THIS
+            # instance's loopback port, and nothing is public. other loopback
+            # mounts (sister sites) are fine -- the port check pins each one.
+            self.ok(bool(handlers) and any(p.rstrip("/") == f"http://127.0.0.1:{PORT}" for p in handlers)
+                    and all(p.rstrip("/").startswith("http://127.0.0.1:") for p in handlers),
+                    "tailnet HTTPS proxies to loopback only (this site included)", ", ".join(web.keys()))
             self.results.append((None, "iPhone end-to-end path", "verify from iphone-se-gen-3; this workstation is not the allowed source"))
         else:
-            self.results.append((True, "not exposed on the tailnet yet (local only)", "run: arc site expose"))
+            self.results.append((True, "not exposed on the tailnet yet (local only)",
+                                 f"run: tailscale serve --bg /{SITE_NAME}/ {PORT} (from this node)"))
 
         # 3 content location
         self.ok(ROOT.is_dir() and (ROOT / "index.html").exists(), "site built", str(ROOT))
         self.ok(not str(ROOT.resolve()).startswith("/mnt"), "site is off the USB (local disk)", "")
 
         # 4 behavior probes
-        base = f"/{token}/"
+        mount = f"{PATH_PREFIX}/" if PATH_PREFIX else ""
+        base = f"/{mount}{token}/"
         s, h, _ = self._get(base)
         self.ok(s == 200, "valid token, local direct -> 200", str(s))
         for k in ("content-security-policy", "x-robots-tag", "cache-control", "x-content-type-options", "referrer-policy"):
@@ -363,18 +390,18 @@ class Auditor:
             "token, wrong owner login": self._get(base, {"Tailscale-User-Login": "intruder@example.com"}),
             "token, proxied w/o identity (Funnel-like)": self._get(base, {"X-Forwarded-For": "203.0.113.5"}),
             "POST": self._get(base, method="POST"),
-            "path traversal": self._get(f"/{token}/../../../../etc/passwd"),
-            "encoded traversal": self._get(f"/{token}/%2e%2e/%2e%2e/etc/passwd"),
+            "path traversal": self._get(f"/{mount}{token}/../../../../etc/passwd"),
+            "encoded traversal": self._get(f"/{mount}{token}/%2e%2e/%2e%2e/etc/passwd"),
         }
         for name, (st, _, body) in probes.items():
             self.ok(st == 404 and body == DENY_BODY, f"refused (uniform 404): {name}", str(st))
         st, _, _ = self._get(base, {"Tailscale-User-Login": login, "X-Forwarded-For": "100.64.0.9"}, host=me["dns"] or "x")
         self.ok(st == 200, "owner via tailscale-serve-style request -> 200", str(st))
-        st, _, body = self._get(f"/{token}/notes/")
+        st, _, body = self._get(f"/{token}/.never-here/")
         self.ok(st == 404, "no directory listing", str(st))
 
         # 5 process
-        r = subprocess.run(["systemctl", "--user", "show", "notes-site", "-p", "NoNewPrivileges,ProtectSystem,PrivateTmp,ActiveState"],
+        r = subprocess.run(["systemctl", "--user", "show", UNIT, "-p", "NoNewPrivileges,ProtectSystem,PrivateTmp,ActiveState"],
                            capture_output=True, text=True).stdout
         self.ok("ActiveState=active" in r, "systemd unit active", "")
         self.ok("NoNewPrivileges=yes" in r and "ProtectSystem=strict" in r and "PrivateTmp=yes" in r, "unit sandbox in effect", "")
@@ -415,11 +442,13 @@ def cmd_url():
     print("\n  Private URLs -- keep them to yourself. Work only from devices signed into your tailnet as")
     print(f"  {me['login']}, and only while this PC is on.\n")
     if me["dns"]:
-        print(f"    https://{me['dns']}/{token}/")
+        mount = f"{PATH_PREFIX}/" if PATH_PREFIX else ""
+        print(f"    https://{me['dns']}/{mount}{token}/")
         print("\n  (use the NAME, not the 100.x IP -- tailscale serve matches on hostname and 404s an IP.")
         print("   the name resolves on your phone via the Tailscale app's MagicDNS; on this PC it")
         print("   doesn't, because Tailscale DNS is off here so it can't fight NextDNS -- use `arc site open`.)")
-    print(f"\n  on this PC:  http://{HOST}:{PORT}/{token}/   (or: arc site open)")
+    mount = f"{PATH_PREFIX}/" if PATH_PREFIX else ""
+    print(f"\n  on this PC:  http://{HOST}:{PORT}/{mount}{token}/   (or: arc {'site' if SITE_NAME == 'notes-site' else 'globe-server'} open)")
     peers = [f"{n} ({o}) {'online' if on else 'OFFLINE'}" for n, o, on in me["peers"]]
     print("\n  devices on your tailnet: " + (", ".join(peers) or "none besides this PC"))
     print()
@@ -428,7 +457,8 @@ def cmd_url():
 
 def cmd_open():
     token = Secrets().token()
-    subprocess.Popen(["xdg-open", f"http://{HOST}:{PORT}/{token}/"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    mount = f"{PATH_PREFIX}/" if PATH_PREFIX else ""
+    subprocess.Popen(["xdg-open", f"http://{HOST}:{PORT}/{mount}{token}/"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print("opened in your browser (local, loopback)")
     return 0
 

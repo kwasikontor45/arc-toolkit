@@ -1,0 +1,35 @@
+[Unit]
+Description=vision-globe — private, tailnet-only vision board (guarded static server)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=ARC_SITE_NAME=vision-globe
+Environment=ARC_SITE_PORT=8643
+Environment=ARC_SITE_PATH_PREFIX=globe
+Environment=ARC_SITE_ROOT=%h/khaos-lab/local-cloud-hub/operations/current/vision-globe
+Environment=ARC_SITE_TOKEN_FILE=%h/.config/arc/globe-token
+Environment=ARC_SITE_LOGIN_FILE=%h/.config/arc/site-allowed-login
+Environment=ARC_SITE_UNIT=vision-globe
+ExecStart=%h/.local/bin/arc-site-server
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+MemoryMax=128M
+TasksMax=64
+
+[Install]
+WantedBy=default.target

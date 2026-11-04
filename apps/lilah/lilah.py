@@ -332,6 +332,8 @@ class Bubble(Gtk.Window):
         self.set_keep_above(True)
         self.set_app_paintable(True)
         self.set_resizable(False)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
         self.set_size_request(200, 128)
         self._text, self._accent = text, accent
         self._op = 1.0
@@ -343,7 +345,8 @@ class Bubble(Gtk.Window):
         self.move(self._ox, self._oy - 26)
         self.show_all()
         GLib.timeout_add(60, self._drop)
-        GLib.timeout_add(4600, self._leave)
+        GLib.timeout_add(3400, self._leave)
+        GLib.timeout_add_seconds(7, self._hard_destroy)
 
     @staticmethod
     def _col(hex_color, alpha=1.0):
@@ -384,6 +387,13 @@ class Bubble(Gtk.Window):
         self.move(self._ox, self._oy - 26 + self._ty)
         if self._ty < 26:
             return True
+        return False
+
+    def _hard_destroy(self):
+        try:
+            self.destroy()
+        except Exception:
+            pass
         return False
 
     def _leave(self):
@@ -734,6 +744,11 @@ class ArcBreak:
     def _context_menu(self, event):
         menu = Gtk.Menu()
 
+        settings_item = Gtk.MenuItem(label="Settings…")
+        settings_item.connect("activate", lambda *_: self._open_settings())
+        menu.append(settings_item)
+        menu.append(Gtk.SeparatorMenuItem())
+
         hide_item = Gtk.MenuItem(label="Hide watch  ·  Esc")
         hide_item.connect("activate", lambda *_: self.window.iconify())
         menu.append(hide_item)
@@ -808,8 +823,53 @@ class ArcBreak:
         remaining = self.paused_left or max(0, int(self.deadline - time.time()))
         mins = max(1, (remaining + 59) // 60)
         state = "paused" if self.paused_left else "resumed"
+        # if the watch is already on screen, she IS the announcement — no balloon
+        if self.window and self.window.is_visible() and not self.window.is_iconified():
+            return False
         self._notify("Lilah", f"{state} — {mins} minute{'s' if mins != 1 else ''} remaining on the {self.phase}.")
         return False
+
+    def _open_settings(self, *_args):
+        dlg = Gtk.Dialog(title="Lilah · settings", transient_for=self.window, modal=True)
+        dlg.set_default_size(300, -1)
+        box = dlg.get_content_box()
+        box.set_spacing(8); box.set_border_width(14)
+
+        def row(label, widget):
+            r = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            l = Gtk.Label(label=label, xalign=0); l.set_hexpand(True)
+            r.pack_start(l, True, True, 0); r.pack_start(widget, False, False, 0)
+            box.pack_start(r, False, False, 0)
+            return widget
+
+        adj_f = Gtk.Adjustment(value=self.work_minutes, lower=5, upper=180, step_increment=1)
+        spin_f = Gtk.SpinButton(adjustment=adj_f, climb_rate=1, digits=0)
+        row("Focus minutes", spin_f)
+        adj_b = Gtk.Adjustment(value=self.break_minutes, lower=1, upper=60, step_increment=1)
+        spin_b = Gtk.SpinButton(adjustment=adj_b, climb_rate=1, digits=0)
+        row("Rest minutes", spin_b)
+        chk_auto = Gtk.CheckButton(label="Auto-continue to next block")
+        chk_auto.set_active(self.auto_continue)
+        box.pack_start(chk_auto, False, False, 0)
+        chk_alerts = Gtk.CheckButton(label="Announce blocks (bubble + voice)")
+        chk_alerts.set_active(self.alerts_enabled)
+        box.pack_start(chk_alerts, False, False, 0)
+
+        dlg.add_button("Close", Gtk.ResponseType.CLOSE)
+        dlg.show_all()
+        dlg.connect("response", lambda d, _r: d.destroy())
+        def save(*_a):
+            self.work_minutes = self._bounded(spin_f.get_value_as_int(), 40, 5, 180)
+            self.break_minutes = self._bounded(spin_b.get_value_as_int(), 18, 1, 60)
+            self.auto_continue = chk_auto.get_active()
+            self.alerts_enabled = chk_alerts.get_active()
+            import json as _j
+            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            CONFIG_FILE.write_text(_j.dumps({"work_minutes": self.work_minutes, "break_minutes": self.break_minutes,
+                                             "auto_continue": self.auto_continue, "alerts_enabled": self.alerts_enabled}) + "\n")
+            self._update()
+        spin_f.connect("value-changed", save); spin_b.connect("value-changed", save)
+        chk_auto.connect("toggled", save); chk_alerts.connect("toggled", save)
 
     def _advance(self, notify=True):
         self.phase = "break" if self.phase == "focus" else "focus"

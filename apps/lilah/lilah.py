@@ -51,12 +51,29 @@ REST = "#ebbcba"
 
 
 class DialArea(Gtk.DrawingArea):
-    """Round mechanical movement — vintage tower-clock style. Real hour,
-    minute and sweeping second hands on a roman ring. The face has a cover
-    that OPENS like a pocket-watch lid when a focus/rest block starts,
-    revealing the phase and remaining time beneath."""
+    """The movement is three meshing gears -- no hands. The hour wheel, the
+    minute wheel and the second wheel each carry their own chapter of
+    numerals; a fixed brass dart at each wheel's crown marks the reading.
+    The wheels turn at true time rates and counter-rotate like a real train.
+    A running block rides the minute wheel: a thin mercury arc drains with
+    the remaining time, whispered under the circadian word."""
 
-    ROMAN = ("XII", "I", "II", "III", "IIII", "V", "VI", "VII", "VIII", "IX", "X", "XI")
+    # train layout in unit space: a horizontal chain -- HOURS (left, largest),
+    # MINUTES (center), SECONDS (right, smallest). centers are mesh-tangent.
+    TRAIN = ((-0.48, 0.30), (0.03, 0.21), (0.37, 0.13))
+
+    @classmethod
+    def layout(cls, w, h):
+        """The one place that decides where the wheels sit. _draw and the
+        window silhouette both call this, so the see-through gaps always
+        line up with the steel."""
+        cx, cy = w / 2.0, h / 2.0
+        R = min(w, h) / 2.0 - 6
+        s = 1.099 * R
+        discs = [(cx + ux * s, r * s) for ux, r in cls.TRAIN]
+        left = min(x - r for x, r in discs); right = max(x + r for x, r in discs)
+        shift = (left + right) / 2.0 - cx
+        return cx, cy, R, [(x - shift, r) for x, r in discs]
 
     def __init__(self):
         super().__init__()
@@ -93,210 +110,153 @@ class DialArea(Gtk.DrawingArea):
         g.add_color_stop_rgba(1, *DialArea._col(mid, a * 0.18))
         return g
 
-    def _hand(self, cr, cx, cy, angle, length, tail, width, color, ornate=False):
-        """Baroque tapered hand: brushed-brass gradient, pierced tip, ringed
-        counterweight — mercury on metal, dressed for the dark."""
-        ux, uy = math.cos(angle), math.sin(angle)
-        px, py = -uy, ux
-        w_base = width; w_tip = max(1.2, width * 0.30)
-        bx, by = cx + length*ux, cy + length*uy
-        # cast shadow first (offset down-right), then the hand floats above it
-        cr.save()
-        cr.translate(1.6, 2.2)
-        cr.move_to(cx - tail*ux + w_base*px*0.4, cy - tail*uy + w_base*py*0.4)
-        cr.line_to(bx + w_tip*px, by + w_tip*py)
-        cr.line_to(bx - w_tip*px, by - w_tip*py)
-        cr.line_to(cx - tail*ux - w_base*px*0.4, cy - tail*uy - w_base*py*0.4)
-        cr.close_path()
-        cr.set_source_rgba(0, 0, 0, .32); cr.fill()
-        cr.restore()
-        grad = cairo.LinearGradient(cx - tail*ux, cy - tail*uy, bx, by)
-        grad.add_color_stop_rgba(0, *self._col("#8A6B3E"))
-        grad.add_color_stop_rgba(0.55, *self._col(color))
-        grad.add_color_stop_rgba(1, *self._col("#F2E3C2"))
-        cr.set_source(grad)
-        cr.move_to(cx - tail*ux + w_base*px*0.4, cy - tail*uy + w_base*py*0.4)
-        cr.line_to(bx + w_tip*px, by + w_tip*py)
-        cr.line_to(bx - w_tip*px, by - w_tip*py)
-        cr.line_to(cx - tail*ux - w_base*px*0.4, cy - tail*uy - w_base*py*0.4)
-        cr.close_path(); cr.fill()
-        if ornate:
-            # pierced diamond near the tip
-            dpos = length * 0.72; dw = width * 0.9
-            dx, dy = cx + dpos*ux, cy + dpos*uy
-            cr.set_source_rgba(*self._col("#0B0D10", .85))
-            cr.move_to(dx + dw*ux, dy + dw*uy)
-            cr.line_to(dx + dw*px*0.7, dy + dw*py*0.7)
-            cr.line_to(dx - dw*ux, dy - dw*uy)
-            cr.line_to(dx - dw*px*0.7, dy - dw*py*0.7)
-            cr.close_path(); cr.fill()
-        # ringed counterweight
-        ccx, ccy = cx - (tail + width)*ux, cy - (tail + width)*uy
-        cr.arc(ccx, ccy, width*1.25, 0, 6.2832)
-        cr.set_source_rgba(*self._col(color)); cr.fill()
-        cr.arc(ccx, ccy, width*0.55, 0, 6.2832)
-        cr.set_source_rgba(*self._col("#0B0D10", .8)); cr.fill()
-
     def _draw(self, _widget, cr):
         w = self.get_allocated_width(); h = self.get_allocated_height()
+        self._paint_box = (w, h)     # the silhouette reads this same box
         cx, cy = w/2.0, h/2.0
         R = min(w, h)/2.0 - 6
-        now = time.localtime()
+        t = time.time()
+        lt = time.localtime(t)
         pal = ui.circadian()
         face_bg = pal.get("bg", BG); face_surface = pal.get("surface", SURFACE)
         face_fg = pal.get("fg", TEXT)
         phase_name = str(pal.get("phase", "")).upper().replace("-", " ")
         phase_accent = ui.PHASE_ACCENT.get(str(pal.get("phase", "")), "#9FB4BE")
 
-        # soft cast shadow under the movement — a pool, not a ring
+        # soft cast shadow under the movement -- a pool, not a ring
         sh = cairo.RadialGradient(cx, cy + 9, R*0.5, cx, cy + 9, R + 16)
         sh.add_color_stop_rgba(0, 0, 0, 0, .38)
         sh.add_color_stop_rgba(1, 0, 0, 0, 0)
         cr.set_source(sh)
         cr.arc(cx, cy + 9, R + 16, 0, 6.2832); cr.fill()
 
-        # face — tucked inside the silhouette so the rim stays open skeleton
-        cr.arc(cx, cy, R*0.90, 0, 6.2832)
-        pat = cairo.RadialGradient(cx - R*0.28, cy - R*0.32, R*0.1, cx, cy, R*0.92)
-        pat.add_color_stop_rgba(0, *self._col(face_surface, 1))
-        pat.add_color_stop_rgba(1, *self._col(face_bg, 1))
+        # face -- the quiet backdrop the steel reads against
+        cr.arc(cx, cy, R*0.92, 0, 6.2832)
+        pat = cairo.RadialGradient(cx - R*0.28, cy - R*0.32, R*0.1, cx, cy, R*0.94)
+        pat.add_color_stop_rgba(0, *self._col(face_surface, .92))
+        pat.add_color_stop_rgba(1, *self._col(face_bg, .92))
         cr.set_source(pat); cr.fill()
 
-        # minute track, tucked at the rim
-        for i in range(60):
-            a = i * 6.2832 / 60 - 1.5708
-            big = i % 5 == 0
-            r0 = R*0.90 - 8; r1 = R*0.90 - (20 if big else 15)
-            cr.set_source_rgba(*(self._col("#D4B27A", .7) if big else self._col("#96A0AC", .35)))
-            cr.set_line_width(1.6 if big else 1)
-            cr.move_to(cx + r0*math.cos(a), cy + r0*math.sin(a))
-            cr.line_to(cx + r1*math.cos(a), cy + r1*math.sin(a)); cr.stroke()
+        STEEL = "#6E7887"; STEEL_D = "#39414C"; HUB = "#2C333C"
+        gy = cy
+        cx, cy, R, discs = self.layout(w, h)
+        (hx, rh), (mx, rm), (sx_, rs) = discs
+        hy = my = sy_ = gy
 
-        # THE SHELL — three wheels meshed as one movement, each carrying 1-12.
-        def big_gear(gx, gy, gr, ang):
+        def gear(x, y, r, teeth, theta, labels, direction, spokes):
+            tooth_h = r * 0.13
+            pitch = 6.2832 / teeth
             cr.save()
-            cr.translate(gx, gy); cr.rotate(ang)
-            teeth = 20
-            cr.set_source_rgba(*self._col("#454E5A"))
+            cr.translate(x, y)
+            cr.rotate(theta)
+            # teeth
+            cr.set_source_rgba(*self._col(STEEL))
             for i in range(teeth):
-                a = i * 6.2832 / teeth
-                cr.save(); cr.rotate(a)
-                cr.rectangle(gr - 4, -2.6, 8.5, 5.2)
+                cr.save()
+                cr.rotate(i * pitch)
+                tw = r * pitch * 0.36
+                cr.rectangle(r - tooth_h * 0.25, -tw / 2, tooth_h * 1.2, tw)
                 cr.fill()
                 cr.restore()
-            cr.arc(0, 0, gr - 4, 0, 6.2832)
-            cr.set_source_rgba(*self._col("#272D36", .95)); cr.fill_preserve()
-            cr.set_source_rgba(*self._col("#59636F", .9)); cr.set_line_width(2); cr.stroke()
-            for i in range(5):
-                a = i * 6.2832 / 5
-                cr.set_source_rgba(*self._col("#3E4650", .85))
-                cr.set_line_width(3.4)
-                cr.move_to(0, 0)
-                cr.line_to((gr - 14)*math.cos(a), (gr - 14)*math.sin(a)); cr.stroke()
-            cr.arc(0, 0, 8, 0, 6.2832)
-            cr.set_source_rgba(*self._col("#59636F")); cr.fill()
-            cr.arc(0, 0, 4, 0, 6.2832)
-            cr.set_source_rgba(*self._col("#20252C")); cr.fill()
-            cr.restore()
-            # the wheel's own 1-12 chapter, upright, quiet
-            cr.select_font_face("DejaVu Sans", 0, 0)
-            cr.set_font_size(9.5)
-            for i in range(12):
-                a = i * 6.2832 / 12 - 1.5708
-                lab = str(12 if i == 0 else i)
-                lx = gx + (gr - 22)*math.cos(a); ly = gy + (gr - 22)*math.sin(a)
+            # rim -- dark band with a steel glint on top
+            cr.arc(0, 0, r - tooth_h * 0.4, 0, 6.2832)
+            cr.set_source_rgba(*self._col(STEEL_D))
+            cr.set_line_width(tooth_h * 0.85)
+            cr.stroke()
+            cr.arc(0, 0, r - tooth_h * 0.4, 0, 6.2832)
+            cr.set_source_rgba(*self._col(STEEL, .55))
+            cr.set_line_width(tooth_h * 0.3)
+            cr.stroke()
+            # spokes
+            inner, outer = r * 0.16, r * 0.62
+            for i in range(spokes):
+                a = i * 6.2832 / spokes
+                ux, uy = math.cos(a), math.sin(a)
+                px, py = -uy, ux
+                w_h, w_o = r * 0.055, r * 0.028
+                cr.set_source_rgba(*self._col(STEEL, .9))
+                cr.move_to(inner*ux + w_h*px, inner*uy + w_h*py)
+                cr.line_to(outer*ux + w_o*px, outer*uy + w_o*py)
+                cr.line_to(outer*ux - w_o*px, outer*uy - w_o*py)
+                cr.line_to(inner*ux - w_h*px, inner*uy - w_h*py)
+                cr.close_path(); cr.fill()
+            # hub
+            cr.arc(0, 0, r * 0.11, 0, 6.2832)
+            cr.set_source_rgba(*self._col(HUB)); cr.fill()
+            cr.arc(0, 0, r * 0.05, 0, 6.2832)
+            cr.set_source_rgba(*self._col("#171C22")); cr.fill()
+            # numerals ride the wheel; the home chapter mark wears the accent
+            n = len(labels)
+            rn = r - tooth_h - r * 0.20
+            fsize = max(8.0, r * 0.20)
+            for i, lab in enumerate(labels):
+                av = direction * 6.2832 * i / n
+                home = i == 0
+                cr.save()
+                cr.rotate(av)
+                cr.translate(0, -rn)
+                cr.select_font_face("DejaVu Sans", 0, 1 if home else 0)
+                cr.set_font_size(fsize * (1.18 if home else 1.0))
                 ext = cr.text_extents(lab)
-                cr.set_source_rgba(*self._col(face_fg, .5))
-                cr.move_to(lx - ext.width/2 - ext.x_bearing, ly - ext.height/2 - ext.y_bearing)
+                cr.set_source_rgba(*(self._col(phase_accent if home else face_fg,
+                                               .95 if home else .55)))
+                cr.move_to(-ext.width/2 - ext.x_bearing, -ext.height/2 - ext.y_bearing)
                 cr.show_text(lab)
+                cr.restore()
+            cr.restore()
 
-        tt2 = time.time()
-        mesh = 0.22
-        for gi in range(3):
-            ga = gi * 2.0944 - 1.5708
-            gxr = R*0.53
-            gx = cx + gxr*math.cos(ga); gy = cy + gxr*math.sin(ga)
-            gr = R*0.52
-            big_gear(gx, gy, gr, (1 if gi % 2 == 0 else -1) * tt2 * mesh + gi * 0.31)
+        mfloat = lt.tm_min + lt.tm_sec / 60.0
+        hfloat = (lt.tm_hour % 12) + mfloat / 60.0
+        sfloat = t % 60.0
+        labels_h = ["12"] + [str(i) for i in range(1, 12)]
+        labels_m = ["%02d" % i for i in range(0, 60, 5)]
+        labels_s = ["%02d" % i for i in range(0, 60, 10)]
+        # block progress drains around the minute wheel, behind its teeth
+        if self._progress > 0:
+            cr.save()
+            cr.translate(mx, my)
+            arc_r = rm * 0.82
+            cr.set_source(self._mercury(cr, 0, -arc_r, arc_r, a=.85))
+            cr.set_line_width(2.2)
+            cr.set_line_cap(cairo.LINE_CAP_ROUND)
+            cr.arc(0, 0, arc_r, -1.5708, -1.5708 + 6.2832 * self._progress)
+            cr.stroke()
+            cr.restore()
 
-        # phase complication at 3 o'clock — the hour of day, mechanically
-        order = ["choice", "desire", "still-pine", "nyx"]
-        phase = str(pal.get("phase", "nyx"))
-        pidx = order.index(phase) if phase in order else 3
-        sx = cx + (R - 96); sy = cy
-        sr = 20
-        cr.arc(sx, sy, sr, 0, 6.2832)
-        cr.set_source_rgba(*self._col("#A88452", .8)); cr.set_line_width(2); cr.stroke()
-        for i in range(4):
-            a = i * 1.5708 - 1.5708
-            big = i == pidx
-            cr.arc(sx + (sr-6)*math.cos(a), sy + (sr-6)*math.sin(a), 2.4 if big else 1.4, 0, 6.2832)
-            cr.set_source_rgba(*(self._col("#D4B27A", .95) if big else self._col("#6E6858", .7)))
-            cr.fill()
-        cr.select_font_face("DejaVu Serif", 0, 1)
-        cr.set_font_size(7)
-        for i, lab in enumerate(("I", "II", "III", "IV")):
-            a = i * 1.5708 - 1.5708
-            lx, ly = sx + (sr+6)*math.cos(a), sy + (sr+6)*math.sin(a)
-            ext = cr.text_extents(lab)
-            cr.set_source_rgba(*self._col("#8E8468", .75))
-            cr.move_to(lx - ext.width/2 - ext.x_bearing, ly - ext.height/2 - ext.y_bearing)
-            cr.show_text(lab)
-        pa = pidx * 1.5708 - 1.5708
-        cr.set_source_rgba(*self._col("#E8A33D" if self._progress > 0 else "#9A917E"))
-        cr.set_line_width(2); cr.set_line_cap(cairo.LINE_CAP_ROUND)
-        cr.move_to(sx - 5*math.cos(pa), sy - 5*math.sin(pa))
-        cr.line_to(sx + (sr-9)*math.cos(pa), sy + (sr-9)*math.sin(pa)); cr.stroke()
-        cr.arc(sx, sy, 2.4, 0, 6.2832)
-        cr.set_source_rgba(*self._col("#D4B27A")); cr.fill()
+        gear(hx, hy, rh, 40, -6.2832 * hfloat / 12, labels_h, +1, 5)
+        gear(mx, my, rm, 32, +6.2832 * mfloat / 60, labels_m, -1, 5)
+        gear(sx_, sy_, rs, 20, -6.2832 * sfloat / 60, labels_s, +1, 4)
 
-        # hands at the true center
-        m = now.tm_min + now.tm_sec/60.0
-        hr = (now.tm_hour % 12) + m/60.0
-        self._hand(cr, cx, cy, hr*6.2832/12 - 1.5708, R*0.40, R*0.09, 6.5, "#E8E2D4", ornate=True)
-        self._hand(cr, cx, cy, m*6.2832/60 - 1.5708, R*0.60, R*0.11, 4.5, "#D9D2C0", ornate=True)
-        seca = (time.time() % 60) * 6.2832/60 - 1.5708
-        self._hand(cr, cx, cy, seca, R*0.70, R*0.16, 1.8, "#E8A33D")
-        for i in range(8):
-            a = i * 6.2832/8
-            cr.arc(cx + 11*math.cos(a), cy + 11*math.sin(a), 2.1, 0, 6.2832)
-            cr.set_source_rgba(*self._col("#A88452", .8)); cr.fill()
-        cr.arc(cx, cy, 8, 0, 6.2832)
-        cr.set_source_rgba(*self._col("#D4B27A")); cr.fill()
-        cr.arc(cx, cy, 3.2, 0, 6.2832)
-        cr.set_source_rgba(*self._col("#1A1409")); cr.fill()
+        # the fixed darts at each wheel's crown -- the reading reference
+        for px_, pr in ((hx, rh), (mx, rm), (sx_, rs)):
+            tip_y = gy - pr - pr * 0.13 + 3
+            cr.set_source_rgba(*self._col("#D4B27A", .92))
+            cr.move_to(px_ - 4.5, tip_y - 9)
+            cr.line_to(px_ + 4.5, tip_y - 9)
+            cr.line_to(px_, tip_y)
+            cr.close_path(); cr.fill()
 
-        # glass register — countdown + block together, framed, unmistakable
-        pw2, ph3 = 156, 64
-        py2 = cy + 34
-        cr.arc(cx - pw2/2 + 10, py2 + 10, 10, 3.1416, 4.7124)
-        cr.arc(cx + pw2/2 - 10, py2 + 10, 10, 4.7124, 0)
-        cr.arc(cx + pw2/2 - 10, py2 + ph3 - 10, 10, 0, 1.5708)
-        cr.arc(cx - pw2/2 + 10, py2 + ph3 - 10, 10, 1.5708, 3.1416)
-        cr.close_path()
-        cr.set_source_rgba(*self._col(face_bg, .6)); cr.fill_preserve()
-        cr.set_source_rgba(*self._col("#DFE9EE", .3)); cr.set_line_width(1); cr.stroke()
-        digits = self._time_text or "--:--"
-        cr.select_font_face("DejaVu Sans Mono", 0, 0)
-        cr.set_font_size(25)
-        ext = cr.text_extents(digits)
-        cr.set_source(self._mercury(cr, cx, py2 + 2, py2 + 38, a=.95))
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, py2 + 30)
-        cr.show_text(digits)
+        # remaining minutes, whispered under the circadian word
+        if self._time_text and self._progress > 0:
+            cr.select_font_face("DejaVu Sans Mono", 0, 0)
+            cr.set_font_size(13)
+            ext = cr.text_extents(self._time_text)
+            cr.set_source(self._mercury(cr, cx, cy - 0.70*R - 8, cy - 0.70*R + 8, a=.9))
+            cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - 0.70*R)
+            cr.show_text(self._time_text)
 
-
-        # the circadian hour — top, wearing the engine's phase color
+        # the circadian hour -- top, wearing the engine's phase color
         cr.select_font_face("DejaVu Sans Light,DejaVu Sans", 0, 0)
         cr.set_font_size(12.5)
         ext = cr.text_extents(phase_name)
-        g = cairo.LinearGradient(cx, cy - R*0.40 - 12, cx, cy - R*0.40 + 8)
+        g = cairo.LinearGradient(cx, cy - R*0.84 - 12, cx, cy - R*0.84 + 8)
         g.add_color_stop_rgba(0, *self._col(phase_accent, .95))
         g.add_color_stop_rgba(1, *self._col(phase_accent, .30))
         cr.set_source(g)
-        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - R*0.40)
+        cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - R*0.84)
         cr.show_text(phase_name)
 
-        # the signature — "lilah" is the face of the watch: calligraphic,
+        # the signature -- "lilah" is the face of the watch: calligraphic,
         # phase-aware, calm. Morning flows, day reads warm, dusk leans,
         # night whispers.
         sig_fonts = {
@@ -310,7 +270,7 @@ class DialArea(Gtk.DrawingArea):
         cr.set_font_size(sig_size)
         mark = "lilah"
         ext = cr.text_extents(mark)
-        lx = cx - ext.width/2 - ext.x_bearing; ly = cy + R*0.62
+        lx = cx - ext.width/2 - ext.x_bearing; ly = cy + R*0.84
         cr.set_source_rgba(0, 0, 0, .55)
         cr.move_to(lx + 0.7, ly + 1.0)
         cr.show_text(mark)
@@ -320,91 +280,6 @@ class DialArea(Gtk.DrawingArea):
         cr.set_source(g2)
         cr.move_to(lx, ly)
         cr.show_text(mark)
-
-
-class Bubble(Gtk.Window):
-    """Lilah's own notification: a glossy gum-drop balloon that drops in
-    beside the watch, settles, and floats away. Not a system notification."""
-
-    def __init__(self, text, accent, origin=(80, 120)):
-        super().__init__(type=Gtk.WindowType.POPUP)
-        self.set_decorated(False)
-        self.set_keep_above(True)
-        self.set_app_paintable(True)
-        self.set_resizable(False)
-        self.set_skip_taskbar_hint(True)
-        self.set_skip_pager_hint(True)
-        self.set_size_request(200, 128)
-        self._text, self._accent = text, accent
-        self._op = 1.0
-        self._ty = 0
-        area = Gtk.DrawingArea()
-        area.connect("draw", self._draw)
-        self.add(area)
-        self._ox, self._oy = origin
-        self.move(self._ox, self._oy - 26)
-        self.show_all()
-        GLib.timeout_add(60, self._drop)
-        GLib.timeout_add(3400, self._leave)
-        GLib.timeout_add_seconds(7, self._hard_destroy)
-
-    @staticmethod
-    def _col(hex_color, alpha=1.0):
-        v = hex_color.lstrip('#')
-        return (int(v[0:2],16)/255, int(v[2:4],16)/255, int(v[4:6],16)/255, alpha)
-
-    def _draw(self, _w, cr):
-        w = self.get_allocated_width(); h = self.get_allocated_height()
-        cx, cy = w/2.0, h/2.0 - 6
-        r = min(w, h)/2.0 - 12
-        a = self._accent
-        cr.set_source_rgba(*self._col(a, .30))
-        cr.arc(cx + 3, cy + 7, r, 0, 6.2832)
-        cr.arc(cx, cy + r + 4, 7, 0, 6.2832)   # little tail
-        cr.fill()
-        body = cairo.RadialGradient(cx - r*0.4, cy - r*0.5, r*0.15, cx, cy, r + 4)
-        body.add_color_stop_rgba(0, *self._col("#F4F7F9", .97))
-        body.add_color_stop_rgba(0.55, *self._col("#DDE6EC", .96))
-        body.add_color_stop_rgba(1, *self._col(a, .90))
-        cr.set_source(body)
-        cr.arc(cx, cy, r, 0, 6.2832)
-        cr.arc(cx, cy + r + 2, 6, 0, 6.2832)
-        cr.fill()
-        cr.set_source_rgba(1, 1, 1, .5)
-        cr.arc(cx - r*0.38, cy - r*0.45, r*0.30, 0, 6.2832)
-        cr.fill()
-        cr.select_font_face("DejaVu Sans", 0, 1)
-        cr.set_font_size(12.5)
-        lines = self._text.split("\n")
-        for i, line in enumerate(lines):
-            ext = cr.text_extents(line)
-            cr.set_source_rgba(*self._col("#1A222B", .92))
-            cr.move_to(cx - ext.width/2 - ext.x_bearing, cy - 4 + i*16)
-            cr.show_text(line)
-
-    def _drop(self):
-        self._ty += 4
-        self.move(self._ox, self._oy - 26 + self._ty)
-        if self._ty < 26:
-            return True
-        return False
-
-    def _hard_destroy(self):
-        try:
-            self.destroy()
-        except Exception:
-            pass
-        return False
-
-    def _leave(self):
-        self._op -= 0.08
-        if self._op <= 0:
-            self.destroy()
-            return False
-        self.set_opacity(self._op)
-        self._oy -= 2
-        self.move(self._ox, self._oy)
-        return True
 
 
 def boot_id():
@@ -714,38 +589,35 @@ class ArcBreak:
         self.window.connect("key-press-event", self._key_press)
         self.dial = DialArea()
         self.dial.set_tooltip_text(
-            "Lilah · left-click starts or pauses · right-click for menu · Esc hides · Alt+drag moves")
+            "Lilah · left-click starts or pauses · right-click for settings · Esc hides · Alt+drag moves")
         self.dial.connect("button-press-event", self._face_click)
         accessible = self.dial.get_accessible()
         accessible.set_name("Lilah timepiece")
         accessible.set_description(
-            "A round mechanical clock with hour, minute and second hands. "
-            "Left click starts or pauses the focus and rest timer. "
-            "When a block begins, the face opens to reveal the phase and remaining time.")
+            "A clock built from three meshing gears: the hour, minute and "
+            "second wheels each carry their numerals past a fixed pointer. "
+            "Left click starts or pauses the focus and rest timer; a running "
+            "block drains a mercury arc on the minute wheel.")
         self.window.add(self.dial)
         self.face_image = None
+        self.dial.connect("size-allocate", self._apply_round_shape)
         self.window.show_all()
         self.window.present()
         GLib.idle_add(self._apply_round_shape)
 
-    def _apply_round_shape(self):
-        w = self.window.get_allocated_width()
-        h = self.window.get_allocated_height()
-        if min(w, h) < 80:            # not laid out yet — retry shortly
+    def _apply_round_shape(self, *_args):
+        # the silhouette is the round face itself. it is built from the very
+        # box _draw last painted, so window and drawing can never drift apart.
+        box = getattr(self, "_paint_box", None)
+        if not box or min(box) < 80:  # not painted yet -- retry shortly
             GLib.timeout_add(200, self._apply_round_shape)
             return False
-        R = min(w, h) / 2.0 - 6
-        if R < 40:
-            R = 200.0
+        w, h = box
         cx, cy = w / 2.0, h / 2.0
+        R = min(w, h) / 2.0 - 6
         surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
         cr = cairo.Context(surf)
-        # the silhouette is the train: three solid wheel-discs + the center
-        # disc. The drawn teeth ride this edge; the gaps are see-through.
-        for gi in range(3):
-            ga = gi * 2.0944 - 1.5708
-            cr.arc(cx + R * 0.53 * math.cos(ga), cy + R * 0.53 * math.sin(ga), R * 0.52 + 6, 0, 6.2832)
-        cr.arc(cx, cy, R * 0.72, 0, 6.2832)
+        cr.arc(cx, cy, R * 0.96, 0, 6.2832)
         cr.fill()
         region = Gdk.cairo_region_create_from_surface(surf)
         self.window.shape_combine_region(region)
@@ -764,6 +636,11 @@ class ArcBreak:
 
     def _context_menu(self, event):
         menu = Gtk.Menu()
+
+        settings_item = Gtk.MenuItem(label="Settings…")
+        settings_item.connect("activate", lambda *_: self._open_settings())
+        menu.append(settings_item)
+        menu.append(Gtk.SeparatorMenuItem())
 
         hide_item = Gtk.MenuItem(label="Hide watch  ·  Esc")
         hide_item.connect("activate", lambda *_: self.window.iconify())
@@ -845,6 +722,49 @@ class ArcBreak:
         self._notify("Lilah", f"{state} — {mins} minute{'s' if mins != 1 else ''} remaining on the {self.phase}.")
         return False
 
+    def _open_settings(self, *_args):
+        dlg = Gtk.Dialog(title="Lilah · settings", transient_for=self.window, modal=True)
+        dlg.set_default_size(300, -1)
+        box = dlg.get_content_box()
+        box.set_spacing(8); box.set_border_width(14)
+
+        def row(label, widget):
+            r = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            l = Gtk.Label(label=label, xalign=0); l.set_hexpand(True)
+            r.pack_start(l, True, True, 0); r.pack_start(widget, False, False, 0)
+            box.pack_start(r, False, False, 0)
+            return widget
+
+        adj_f = Gtk.Adjustment(value=self.work_minutes, lower=5, upper=180, step_increment=1)
+        spin_f = Gtk.SpinButton(adjustment=adj_f, climb_rate=1, digits=0)
+        row("Focus minutes", spin_f)
+        adj_b = Gtk.Adjustment(value=self.break_minutes, lower=1, upper=60, step_increment=1)
+        spin_b = Gtk.SpinButton(adjustment=adj_b, climb_rate=1, digits=0)
+        row("Rest minutes", spin_b)
+        chk_auto = Gtk.CheckButton(label="Auto-continue to next block")
+        chk_auto.set_active(self.auto_continue)
+        box.pack_start(chk_auto, False, False, 0)
+        chk_alerts = Gtk.CheckButton(label="Announce blocks (notify + voice)")
+        chk_alerts.set_active(self.alerts_enabled)
+        box.pack_start(chk_alerts, False, False, 0)
+
+        dlg.add_button("Close", Gtk.ResponseType.CLOSE)
+        dlg.show_all()
+        dlg.connect("response", lambda d, _r: d.destroy())
+        def save(*_a):
+            self.work_minutes = self._bounded(spin_f.get_value_as_int(), 40, 5, 180)
+            self.break_minutes = self._bounded(spin_b.get_value_as_int(), 18, 1, 60)
+            self.auto_continue = chk_auto.get_active()
+            self.alerts_enabled = chk_alerts.get_active()
+            atomic_json(CONFIG_FILE, {"work_minutes": self.work_minutes,
+                                      "break_minutes": self.break_minutes,
+                                      "auto_continue": self.auto_continue,
+                                      "alerts_enabled": self.alerts_enabled})
+            self._cfg_mtime = self._config_mtime()
+            self._update()
+        spin_f.connect("value-changed", save); spin_b.connect("value-changed", save)
+        chk_auto.connect("toggled", save); chk_alerts.connect("toggled", save)
+
     def _advance(self, notify=True):
         self.phase = "break" if self.phase == "focus" else "focus"
         minutes = self.break_minutes if self.phase == "break" else self.work_minutes
@@ -924,15 +844,11 @@ class ArcBreak:
     def _notify(self, title, body):
         if not self.alerts_enabled:
             return
-        accent = ui.PHASE_ACCENT.get(str(ui.circadian().get("phase", "")), "#E8A33D")
-        pos = (80, 120)
-        if self.window:
-            pos = (self.window.get_position()[0] + self.window.get_size()[0] + 12,
-                   self.window.get_position()[1] + 60)
-        Bubble(f"{title}\n{body}", accent, pos)
+        # one estate pipeline: history + sound + voice + the shared popup
+        # renderer. no custom balloon of our own.
         try:
             import subprocess
-            subprocess.Popen(["arc-pine-speak", f"lilah · {title}. {body}."])
+            subprocess.Popen(["arc-pine-notify", "normal", "lilah", title, body])
         except OSError:
             pass
 

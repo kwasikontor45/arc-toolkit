@@ -1382,7 +1382,6 @@ CATEGORIES = {
     "SOP": [],        # read the rules, review GAMEPLAN, start + acknowledge a session
     "Status": [],     # special view: live host/security dashboard
     "Time Sync": [],  # special view: read-only clock and NTP health
-    "Lilah": [],      # special view: the watch's workbench (block lengths, auto-continue, alerts)
     "Audio": [        # default output controls; the system mixers remain the advanced path
         Action("Open full audio mixer (pavucontrol)", "pavucontrol", detach=True),
         Action("Open hardware mixer (alsamixer)", "konsole --hold -e alsamixer", detach=True),
@@ -2537,15 +2536,6 @@ def time_sync_summary(snapshot):
     return f"{label}  ·  {provider}"
 
 
-def read_lilah_config():
-    """The watch's knobs as a dict -- empty when the watch has never run."""
-    try:
-        cfg = json.loads(LILAH_CONFIG_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return cfg if isinstance(cfg, dict) else {}
-
-
 def read_lilah_status():
     """One status line from the watch's state file; None when there is no state
     yet (watch never ran). Shared by the Status tile and the Lilah workbench."""
@@ -2904,175 +2894,6 @@ class TimeSyncView(View):
             lines.extend(["", "NTP peer query returned no selected/reachable peer yet."])
         self.details.configure(text="\n".join(lines))
         self.updated.configure(text=f"updated {time.strftime('%H:%M:%S')}")
-        self.app.refresh_scroll(self.frame)
-
-
-class LilahView(View):
-    """The watch's workbench. The face stays pure -- start/pause, Alt-drag, and a
-    minimal Hide/Exit menu live on the watch itself. Every knob lives here:
-    block lengths, auto-continue, and alerts. Both sides share one config file
-    that the watch re-reads live, so a change lands within about a second."""
-
-    scrollable = True
-    NAME = "lilah-view"
-    EVERY = 2000
-    BOUNDS = {"work_minutes": (5, 180), "break_minutes": (1, 60)}
-
-    def build(self):
-        f = self.app.f
-        heading = tk.Frame(self.frame, bg=SURFACE)
-        heading.pack(fill="x", pady=(0, 10))
-        tk.Label(heading, text="SYSTEMS  /  LILAH", font=f.small, bg=SURFACE,
-                 fg=self.app.phase_accent, anchor="w").pack(fill="x")
-        tk.Label(heading, text="The watch's workbench", font=f.big, bg=SURFACE,
-                 fg=FG, anchor="w").pack(fill="x", pady=(3, 2))
-        tk.Label(heading,
-                 text="The face stays pure — start and pause live on the watch. Every knob lives here: "
-                      "block lengths, auto-continue, and alerts. Changes save to one config the watch re-reads live.",
-                 font=f.small, bg=SURFACE, fg=FG_MUTED, anchor="w", justify="left",
-                 wraplength=680).pack(fill="x")
-        heading.bind("<Configure>", lambda event: [
-            child.configure(wraplength=max(event.width - 8, 140))
-            for child in heading.winfo_children()
-            if isinstance(child, tk.Label) and child.cget("justify") == "left"
-        ], add="+")
-
-        shell, body = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16)
-        shell.pack(fill="x", pady=(8, 4))
-        tk.Frame(body, bg=self.app.phase_accent, height=1).pack(fill="x")
-        self.summary = tk.Label(body, text="Reading the watch…", font=f.label, bg=OVERLAY,
-                                fg=FG, anchor="w", justify="left", wraplength=680)
-        self.summary.pack(fill="x", padx=12, pady=(10, 4))
-        self.details = tk.Label(body, text="", font=f.small, bg=OVERLAY, fg=FG_MUTED,
-                                anchor="nw", justify="left", wraplength=680)
-        self.details.pack(fill="x", padx=12, pady=(0, 10))
-        body.bind("<Configure>", lambda event: [
-            label.configure(wraplength=max(event.width - 28, 140))
-            for label in (self.summary, self.details)
-        ], add="+")
-
-        shell2, knobs = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16)
-        shell2.pack(fill="x", pady=(4, 8))
-        tk.Frame(knobs, bg=self.app.phase_accent, height=1).pack(fill="x")
-        self.work_var = owned_variable(self.frame, tk.StringVar, value="40")
-        self.rest_var = owned_variable(self.frame, tk.StringVar, value="18")
-        self.auto_var = owned_variable(self.frame, tk.BooleanVar, value=True)
-        self.alerts_var = owned_variable(self.frame, tk.BooleanVar, value=True)
-
-        def spin_row(parent, label, var, low, high):
-            row = tk.Frame(parent, bg=OVERLAY)
-            row.pack(fill="x", padx=12, pady=(8, 0))
-            tk.Label(row, text=label, font=f.label, bg=OVERLAY, fg=FG, anchor="w").pack(side="left")
-            sp = tk.Spinbox(row, from_=low, to=high, increment=1, textvariable=var,
-                            width=5, font=f.label, bg=BG, fg=FG, buttonbackground=OVERLAY,
-                            insertbackground=FG, relief="flat", highlightthickness=1,
-                            highlightbackground=BORDER, highlightcolor=self.app.phase_accent,
-                            command=self._save_settings)
-            sp.pack(side="right")
-            sp.bind("<FocusOut>", lambda _e: self._save_settings())
-            sp.bind("<Return>", lambda _e: self._save_settings())
-            return sp
-
-        self.work_spin = spin_row(knobs, "Focus block · minutes", self.work_var, 5, 180)
-        self.rest_spin = spin_row(knobs, "Rest block · minutes", self.rest_var, 1, 60)
-
-        def toggle_row(parent, label, var):
-            tk.Checkbutton(parent, text=label, variable=var, command=self._save_settings,
-                           bg=OVERLAY, fg=FG, selectcolor=BG, activebackground=OVERLAY,
-                           activeforeground=TEAL, anchor="w", justify="left",
-                           font=f.label, padx=5, pady=4, relief="flat", bd=0
-                           ).pack(fill="x", padx=12, pady=(6, 0))
-
-        toggle_row(knobs, "Auto-continue to the next block", self.auto_var)
-        toggle_row(knobs, "Announce blocks (bubble + voice)", self.alerts_var)
-
-        foot = tk.Frame(knobs, bg=OVERLAY)
-        foot.pack(fill="x", padx=12, pady=(8, 10))
-        self.saved = tk.Label(foot, text="", font=f.small, bg=OVERLAY, fg=FG_MUTED, anchor="w")
-        self.saved.pack(side="left")
-
-        self.poll(self.NAME, self.EVERY, self.read_snapshot, self.apply_snapshot)
-        self.kick(self.NAME)
-
-    @staticmethod
-    def _clamp_var(var, low, high):
-        try:
-            value = int(var.get())
-        except (ValueError, tk.TclError):
-            return None
-        return max(low, min(high, value))
-
-    @staticmethod
-    def _clamp_cfg(value, default, low, high):
-        try:
-            return max(low, min(high, int(value)))
-        except (TypeError, ValueError):
-            return default
-
-    @staticmethod
-    def _write_config(cfg):
-        data = (json.dumps(cfg, indent=2) + "\n").encode()
-        try:
-            st = LILAH_CONFIG_FILE.lstat()
-        except FileNotFoundError:
-            LILAH_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_owned_write(LILAH_CONFIG_FILE, data, 0o600, create=True)
-        else:
-            _atomic_owned_write(LILAH_CONFIG_FILE, data, stat.S_IMODE(st.st_mode))
-
-    def _save_settings(self):
-        work = self._clamp_var(self.work_var, *self.BOUNDS["work_minutes"])
-        rest = self._clamp_var(self.rest_var, *self.BOUNDS["break_minutes"])
-        if work is None or rest is None:
-            self.saved.configure(text="numbers only, please", fg=ROSE)
-            return
-        if self.work_var.get() != str(work):
-            self.work_var.set(str(work))
-        if self.rest_var.get() != str(rest):
-            self.rest_var.set(str(rest))
-        cfg = read_lilah_config()
-        cfg.update({"work_minutes": work, "break_minutes": rest,
-                    "auto_continue": bool(self.auto_var.get()),
-                    "alerts_enabled": bool(self.alerts_var.get())})
-        try:
-            self._write_config(cfg)
-        except OSError as exc:
-            self.saved.configure(text=f"write refused: {exc}", fg=ROSE)
-            return
-        self.saved.configure(text=f"saved {time.strftime('%H:%M:%S')} · live", fg=FG_MUTED)
-
-    def read_snapshot(self):
-        return {"cfg": read_lilah_config(), "status": read_lilah_status()}
-
-    def apply_snapshot(self, snap):
-        if not self.alive():
-            return
-        cfg = snap["cfg"]
-        work = self._clamp_cfg(cfg.get("work_minutes"), 40, *self.BOUNDS["work_minutes"])
-        rest = self._clamp_cfg(cfg.get("break_minutes"), 18, *self.BOUNDS["break_minutes"])
-        auto = cfg.get("auto_continue", True) is True
-        alerts = cfg.get("alerts_enabled", True) is True
-        # adopt external edits (a hand-tuned config) without fighting a focused widget
-        if self.frame.focus_get() not in (self.work_spin, self.rest_spin):
-            if self.work_var.get() != str(work):
-                self.work_var.set(str(work))
-            if self.rest_var.get() != str(rest):
-                self.rest_var.set(str(rest))
-        if bool(self.auto_var.get()) is not auto:
-            self.auto_var.set(auto)
-        if bool(self.alerts_var.get()) is not alerts:
-            self.alerts_var.set(alerts)
-        status = snap["status"]
-        if status is None:
-            self.summary.configure(text="lilah has not run yet", fg=FG_MUTED)
-        else:
-            color = (GOLD if status.startswith("focus")
-                     else ROSE if status.startswith("rest") else FG_MUTED)
-            self.summary.configure(text=status, fg=color)
-        self.details.configure(text=(
-            f"Focus {work} min  ·  Rest {rest} min  ·  "
-            f"{'auto-continue' if auto else 'manual next'}  ·  "
-            f"{'alerts on' if alerts else 'alerts off'}"))
         self.app.refresh_scroll(self.frame)
 
 
@@ -5297,7 +5118,6 @@ class HelpView(View):
         "SOP": "Read SOT/GAMEPLAN, satisfy the gate, and review compliance",
         "Status": "Live workstation health and security snapshot",
         "Time Sync": "Local time, clock synchronization, NTP daemon, and selected peer",
-        "Lilah": "The break watch's workbench — block lengths, auto-continue, and alerts",
         "Audio": "Default output level and mute controls · full and hardware mixers",
         "Calendar": "Check events and to-dos; shared live with local Khaos Hub",
         "LT": "Personal focus and tasks from the existing lt board",
@@ -5611,7 +5431,7 @@ class ActionsView(View):
 # ── the app ──────────────────────────────────────────────────────────────────
 class App:
     SPECIAL_VIEWS = {"Help": HelpView, "SOP": SopView, "Status": StatusView,
-                     "Time Sync": TimeSyncView, "Lilah": LilahView, "Calendar": CalendarView,
+                     "Time Sync": TimeSyncView, "Calendar": CalendarView,
                      "Audio": AudioView, "LT": LtView, "Commands": CommandsView,
                      "Cockpit": CockpitView, "Garage": GarageView, "Inventory": InventoryView,
                      "Display": DisplayView, "Logs": LogsView, "Find": FindView,

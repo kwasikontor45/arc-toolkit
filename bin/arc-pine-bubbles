@@ -348,6 +348,18 @@ class Bubble(Gtk.Window):
         if self.dismissed and self.fade <= 0.0:
             return False
         dt = 0.040
+        # Trust pointer position, not enter/leave delivery: override-redirect
+        # POPUP windows can take a phantom EnterNotify whose LeaveNotify never
+        # arrives (compositors/keep-above), which parked hover=True and froze
+        # the countdown -- the stuck-forever bubble. Derive hover from where
+        # the pointer actually is, once the window exists.
+        if self.get_realized():
+            try:
+                _scr, px, py = self.get_display().get_default_seat().get_pointer().get_position()
+                wx, wy = self.get_position()
+                self.hover = wx <= px < wx + self.w and wy <= py < wy + self.h
+            except Exception:
+                pass  # probe failed; keep the event-delivered hover state
         # fade / slide
         if self.dismissed:
             self.fade = max(0.0, self.fade - dt / 0.22)
@@ -356,8 +368,12 @@ class Bubble(Gtk.Window):
             self.slide = 14.0 * (1 - _ease_out((time.monotonic() - self._anim_start) / 0.22))
             if not self.hover:
                 self.elapsed += 40
-                if self.elapsed >= self.duration:
-                    self.dismiss()
+            # never-forever ceiling: a parked pointer may pause the countdown
+            # long enough to read, but no bubble outlives its duration plus
+            # a 25s reading grace -- parked cursors must not pin notifications
+            if self.elapsed >= self.duration or \
+                    time.monotonic() - self._anim_start > self.duration / 1000.0 + 25.0:
+                self.dismiss()
         self.set_opacity(self.fade)
         # ease toward target y (stack reflow)
         if self.cur_y is not None and abs(self.cur_y - self.target_y) > 0.5:

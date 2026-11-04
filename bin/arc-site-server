@@ -360,11 +360,19 @@ class Auditor:
         exposed = bool(web or tcp)
         if exposed:
             handlers = [h.get("Proxy", "") for w in web.values() for h in (w.get("Handlers") or {}).values()]
-            # the security property: every proxied handler targets THIS
-            # instance's loopback port, and nothing is public. other loopback
-            # mounts (sister sites) are fine -- the port check pins each one.
-            self.ok(bool(handlers) and any(p.rstrip("/") == f"http://127.0.0.1:{PORT}" for p in handlers)
-                    and all(p.rstrip("/").startswith("http://127.0.0.1:") for p in handlers),
+            # the security property: every proxied handler targets loopback
+            # (localhost or 127.0.0.1 -- both are the same loopback) and this
+            # site's own mapping is among them. sister sites on other
+            # loopback ports are fine; anything else is a fail.
+            def _loopback_port(proxy):
+                try:
+                    host, port = proxy.rsplit(":", 1)
+                    host = host.rsplit("/", 1)[-1]
+                    return int(port) if host in ("127.0.0.1", "localhost", "::1") else None
+                except ValueError:
+                    return None
+            ports = [_loopback_port(pr) for pr in handlers]
+            self.ok(bool(handlers) and None not in ports and PORT in ports,
                     "tailnet HTTPS proxies to loopback only (this site included)", ", ".join(web.keys()))
             self.results.append((None, "iPhone end-to-end path", "verify from iphone-se-gen-3; this workstation is not the allowed source"))
         else:

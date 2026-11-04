@@ -4668,7 +4668,7 @@ cmd_help_full() {
   echo -e "  ${D}arc ${C}sop check${N}             ${M}run SOP compliance checks${N}"
   echo -e "  ${D}arc ${C}sop status${N}            ${M}show SOP DB status and last ack${N}"
   echo -e "  ${D}arc ${C}sop violations${N}        ${M}list open unresolved violations${N}"
-  echo -e "  ${D}arc ${C}sop resolve ${W}<id>${N}     ${M}mark a violation resolved${N}"
+  echo -e "  ${D}arc ${C}sop resolve ${W}<id|--all>${N}     ${M}mark a violation resolved (or --all to clear the board)${N}"
   echo -e "  ${D}arc ${C}sop bundle${N}            ${M}export SOP files to a tarball${N}"
   echo -e "  ${D}arc ${C}sop root-copy${N}         ${M}copy SOP DB to /usr/local/share/arc/sop (DR)${N}"
   echo -e "  ${D}arc ${C}sop recover${N}           ${M}restore SOP DB from /usr/local/share/arc/sop${N}"

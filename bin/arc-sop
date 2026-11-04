@@ -1001,6 +1001,23 @@ def cmd_violations(watch: bool = False):
         print("\nStopped watching.")
 
 
+def cmd_resolve_all():
+    """Resolve every open violation — the owner's clear-the-board."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id FROM violations WHERE resolved = 0 ORDER BY id")
+    ids = [r[0] for r in c.fetchall()]
+    if not ids:
+        print(f"{G}✓{N}  No open violations")
+        conn.close()
+        return
+    c.executemany("UPDATE violations SET resolved = 1 WHERE id = ?", [(i,) for i in ids])
+    conn.commit()
+    conn.close()
+    print(f"{G}✓{N}  Resolved {len(ids)} violation(s): {', '.join(str(i) for i in ids)}")
+
+
 def cmd_resolve(vid: str):
     """Mark a violation as resolved."""
     init_db()
@@ -1363,9 +1380,12 @@ def main():
         sys.exit(cmd_record_violation(sys.argv[2], sys.argv[3]))
     elif cmd == "resolve":
         if len(sys.argv) < 3:
-            print("Usage: arc-sop resolve <id>")
+            print("Usage: arc-sop resolve <id|--all>")
             sys.exit(1)
-        cmd_resolve(sys.argv[2])
+        if sys.argv[2] == "--all":
+            cmd_resolve_all()
+        else:
+            cmd_resolve(sys.argv[2])
     elif cmd == "start":
         args = sys.argv[2:]
         accepted_digest = ""

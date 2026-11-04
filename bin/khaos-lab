@@ -99,12 +99,12 @@ WORKBENCH_DRILL_DIR = HOME / "khaos-lab/local-cloud-hub/operations/workbench/17o
 WORKBENCH_DRILL_INDEX = WORKBENCH_DRILL_DIR / "README.md"
 IPHONE_PRIVACY_CARD = WORKBENCH_DRILL_DIR / "iphone-cleanup-privacy-card.md"
 CONTROL_CENTER_ICON_DIR = Path(__file__).resolve().parent.parent / "assets/khaos-lab"
-HEADER_ICON_PATH = CONTROL_CENTER_ICON_DIR / "afterburn-flamingo-64.png"
+HEADER_ICON_PATH = CONTROL_CENTER_ICON_DIR / "skull-crossbones-64.png"
 HEADER_BG_PATH   = Path(__file__).resolve().parent.parent / "apps/surgery-workshop/horizon-panel.png"
 SIDEBAR_BG_PATH  = HOME / ".local/share/khaos-lab/sidebar-bg.png"
 SIDEBAR_ICON_PATH = HOME / ".local/share/khaos-lab/sidebar-icon.png"
 CONTENT_BG_PATH  = HOME / ".local/share/khaos-lab/content-bg.png"
-TASKBAR_ICON_PATH = CONTROL_CENTER_ICON_DIR / "afterburn-flamingo-48.png"
+TASKBAR_ICON_PATH = CONTROL_CENTER_ICON_DIR / "skull-crossbones-48.png"
 # Lilah (the break watch) talks to the panel through two JSON files -- one config
 # the panel writes, one state file the watch writes. No subprocess, no socket.
 LILAH_CONFIG_FILE = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "lilah" / "settings.json"

@@ -94,6 +94,14 @@ class DialArea(Gtk.DrawingArea):
         self.connect("draw", self._draw)
         GLib.timeout_add(80, self._sweep)
 
+    def menu_hit(self, x, y):
+        """True when a click at dial-local (x, y) lands on the tucked dot."""
+        mp = getattr(self, "_menu_pos", None)
+        if not mp:
+            return False
+        mx, my, mr = mp
+        return math.hypot(x - mx, y - my) <= mr + 5
+
     def set_state(self, progress, color_hex, phase_text, time_text):
         self._progress = progress
         self._color_hex = color_hex
@@ -103,8 +111,28 @@ class DialArea(Gtk.DrawingArea):
 
     def _sweep(self):
         if self.get_mapped():
+            self._track_pointer()
             self.queue_draw()
         return True
+
+    def _track_pointer(self):
+        """Find the tucked dot under the pointer: brighten it, swap the cursor."""
+        try:
+            _scr, px, py = self.get_display().get_default_seat().get_pointer().get_position()
+            win = self._face_window
+            fx, fy = win.get_position() if win is not None else (0, 0)
+            mp = getattr(self, "_menu_pos", None)
+            if mp:
+                mx, my, mr = mp
+                hot = math.hypot(px - (fx + mx), py - (fy + my)) <= mr + 4
+            else:
+                hot = False
+            if hot != getattr(self, "_menu_hot", False):
+                self._menu_hot = hot
+                self.get_window().set_cursor(
+                    Gdk.Cursor.new_from_name(self.get_display(), "pointer" if hot else "default"))
+        except Exception:
+            pass
 
     @staticmethod
     def _col(hex_color, alpha=1.0):
@@ -204,8 +232,8 @@ class DialArea(Gtk.DrawingArea):
                 cr.set_source_rgba(*self._col(STEEL, .22))
                 cr.set_line_width(1)
                 cr.stroke()
-            rn = r - tooth_h - r * 0.24
-            fsize = max(8.0, r * 0.24)
+            rn = r + tooth_h * 0.05   # the numbers hang on the tooth tips
+            fsize = max(8.0, r * 0.21)
             for i, lab in enumerate(labels):
                 av = direction * 6.2832 * i / n
                 home = i == 0
@@ -256,6 +284,19 @@ class DialArea(Gtk.DrawingArea):
             cr.line_to(px_ + 4.5, tip_y - 9)
             cr.line_to(px_, tip_y)
             cr.close_path(); cr.fill()
+
+        # the tucked menu dot — a quiet glyph low on the face; it brightens
+        # when the pointer finds it and drops the menu on click
+        self._menu_pos = (cx + R * 0.60, cy + R * 0.62, max(10.0, R * 0.052))
+        mx, my, mr = self._menu_pos
+        hot = getattr(self, "_menu_hot", False)
+        cr.arc(mx, my, mr, 0, 6.2832)
+        cr.set_source_rgba(*self._col(face_fg, .78 if hot else .30)); cr.fill()
+        cr.arc(mx, my, mr, 0, 6.2832)
+        cr.set_source_rgba(*self._col(phase_accent, .9 if hot else .35)); cr.set_line_width(1.4); cr.stroke()
+        cr.set_source_rgba(*self._col(face_bg, .92))
+        for off in (-mr * 0.42, 0.0, mr * 0.42):
+            cr.arc(mx, my + off, max(1.1, mr * 0.14), 0, 6.2832); cr.fill()
 
         # remaining minutes, whispered under the circadian word
         if self._time_text and self._progress > 0:
@@ -609,8 +650,9 @@ class ArcBreak:
         self.window.connect("delete-event", self._close_window)
         self.window.connect("key-press-event", self._key_press)
         self.dial = DialArea()
+        self.dial._face_window = None
         self.dial.set_tooltip_text(
-            "Lilah · left-click starts or pauses · right-click for settings · Esc hides · Alt+drag moves")
+            "Lilah · click the face to start or pause · the tucked dot opens the menu · Esc hides · Alt+drag moves")
         self.dial.connect("button-press-event", self._face_click)
         accessible = self.dial.get_accessible()
         accessible.set_name("Lilah timepiece")
@@ -620,6 +662,7 @@ class ArcBreak:
             "Left click starts or pauses the focus and rest timer; a running "
             "block drains a mercury arc on the minute wheel.")
         self.window.add(self.dial)
+        self.dial._face_window = self.window
         self.face_image = None
         self.dial.connect("size-allocate", self._apply_round_shape)
         self.window.show_all()
@@ -646,16 +689,17 @@ class ArcBreak:
         return False
 
     def _face_click(self, _widget, event):
-        if event.button == 1:
-            if event.state & Gdk.ModifierType.MOD1_MASK:  # Alt+left: move the watch
-                self.window.begin_move_drag(event.button, int(event.x_root), int(event.y_root), event.time)
-            else:
-                self._primary_action()
-        elif event.button == 3:
-            self._context_menu(event)
+        if event.button != 1:
+            return True
+        if event.state & Gdk.ModifierType.MOD1_MASK:  # Alt+left: move the watch
+            self.window.begin_move_drag(event.button, int(event.x_root), int(event.y_root), event.time)
+        elif self.dial.menu_hit(event.x, event.y):
+            self._popup_menu(event)
+        else:
+            self._primary_action()
         return True
 
-    def _context_menu(self, event):
+    def _popup_menu(self, event):
         menu = Gtk.Menu()
 
         settings_item = Gtk.MenuItem(label="Settings…")

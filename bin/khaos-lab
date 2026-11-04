@@ -797,6 +797,14 @@ def _validate_private_state_dir(path):
             raise OSError(f"state directory must be private and user-owned: {item}")
 
 
+def _mix(c1, c2, t):
+    """Blend two #rrggbb colors -- t=0 keeps c1, t=1 reaches c2. The panel's
+    flat black boxes pick up a breath of the hour's accent through this."""
+    a = [int(c1.lstrip('#')[i:i + 2], 16) for i in (0, 2, 4)]
+    b = [int(c2.lstrip('#')[i:i + 2], 16) for i in (0, 2, 4)]
+    return '#%02x%02x%02x' % tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
 def _atomic_owned_write(path, data, mode, expected=None, create=False):
     """Atomically replace a user's regular file, optionally checking its inode."""
     path = Path(path)
@@ -1997,17 +2005,22 @@ class TileView(View):
     def build(self):
         self.labels = {}
         self._tile_frames = []
+        tile_bg = _mix(OVERLAY, self.app.phase_accent, 0.10)
         for _row, _col, key, title in self.TILES:
-            shell, f = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16)
+            shell, f = ui.rounded_frame(self.frame, SURFACE, bg=tile_bg, radius=20)
             self._tile_frames.append(shell)
             accent = tk.Frame(f, bg=self.app.phase_accent, height=1)
             accent.pack(fill="x")
             self.app.phase_lines.append(accent)
-            tk.Label(f, text=title, font=self.app.f.small, bg=OVERLAY, fg=FG_MUTED).pack(
-                anchor="w", padx=10, pady=(8, 2))
-            val = tk.Label(f, text="checking…", font=self.app.f.label, bg=OVERLAY, fg=FG, justify="left",
+            tk.Label(f, text=title, font=self.app.f.small, bg=tile_bg, fg=FG_MUTED).pack(
+                anchor="w", padx=13, pady=(10, 3))
+            val = tk.Label(f, text="checking…", font=self.app.f.label, bg=tile_bg, fg=FG, justify="left",
                            anchor="w")
-            val.pack(anchor="w", fill="x", padx=10, pady=(0, 8))
+            val.pack(anchor="w", fill="x", padx=13, pady=(0, 10))
+            # a living outline: the tile swells toward the accent under the pointer
+            for w in (shell, f):
+                w.bind("<Enter>", lambda _e, s=shell: s.set_outline_state("hover"), add="+")
+                w.bind("<Leave>", lambda _e, s=shell: s.set_outline_state("rest"), add="+")
             # wrap long values to the tile instead of clipping them off both edges
             f.bind("<Configure>", lambda e, v=val: v.configure(wraplength=max(e.width - 30, 80)), add='+')
             self.labels[key] = val
@@ -2059,6 +2072,7 @@ class TileView(View):
         lbl = self.labels.get(key)
         if lbl is None or not self.alive():
             return
+        # (tile labels keep the tinted ground set at build time)
         lbl.configure(text=text, fg=color)
         self.app.refresh_scroll(self.frame)
 
@@ -2589,7 +2603,9 @@ class StatusView(TileView):
                   padx=12, pady=5).pack(anchor='w', padx=10, pady=(0, 8))
 
     def _build_word_banner(self):
-        self._tile_banner, inner = ui.rounded_frame(self.frame, SURFACE, bg=OVERLAY, radius=16)
+        self._tile_banner, inner = ui.rounded_frame(self.frame, SURFACE,
+                                                    bg=_mix(OVERLAY, self.app.phase_accent, 0.12),
+                                                    radius=20)
         accent = tk.Frame(inner, bg=self.app.phase_accent, height=1)
         accent.pack(fill="x")
         self.app.phase_lines.append(accent)
@@ -5854,12 +5870,12 @@ class App:
         y = 112
         for cat in CATEGORIES:
             b = ui.button(sb, cat, command=lambda c=cat: self.select(c), font=self.f.nav, bg=BG, fg=FG_MUTED,
-                          hover_bg=OVERLAY, hover_fg=GOLD, padx=14, pady=6)
+                          hover_bg=OVERLAY, hover_fg=GOLD, padx=14, pady=9)
             b.configure(anchor="w")
             sb.create_window(9, y, anchor="nw", window=b, width=170)
             b.update_idletasks()
             self.nav_y[cat] = (y, b.winfo_reqheight())
-            y += b.winfo_reqheight() + 1
+            y += b.winfo_reqheight() + 3
             self.nav_buttons[cat] = b
             # Bound on each button (they cover most of the canvas), not bind_all: the content
             # pane's scrollable views already use bind_all for their own wheel handling.

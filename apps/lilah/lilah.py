@@ -58,9 +58,12 @@ class DialArea(Gtk.DrawingArea):
     A running block rides the minute wheel: a thin mercury arc drains with
     the remaining time, whispered under the circadian word."""
 
-    # train layout in unit space: a horizontal chain -- HOURS (left, largest),
-    # MINUTES (center), SECONDS (right, smallest). centers are mesh-tangent.
-    TRAIN = ((-0.48, 0.30), (0.03, 0.21), (0.37, 0.13))
+    # the movement, after Tomas Osinski's sculptural clock: a loose
+    # constellation of overlapping openwork wheels -- HOURS large low-left,
+    # MINUTES above-center, SECONDS small at right -- with tiny idler
+    # pinions riding the mesh points.
+    TRAIN = ((-0.34, 0.14, 0.34), (0.16, -0.16, 0.26), (0.47, 0.12, 0.15))
+    IDLERS = ((-0.048, -0.035, 0.06), (0.353, 0.014, 0.045))
 
     @classmethod
     def layout(cls, w, h):
@@ -69,11 +72,17 @@ class DialArea(Gtk.DrawingArea):
         line up with the steel."""
         cx, cy = w / 2.0, h / 2.0
         R = min(w, h) / 2.0 - 6
-        s = 1.099 * R
-        discs = [(cx + ux * s, r * s) for ux, r in cls.TRAIN]
-        left = min(x - r for x, r in discs); right = max(x + r for x, r in discs)
-        shift = (left + right) / 2.0 - cx
-        return cx, cy, R, [(x - shift, r) for x, r in discs]
+        s = min(R * 0.96 / 0.72, R * 0.66 / 0.50)
+        wheels = [(cx + ux * s, cy + uy * s, r * s) for ux, uy, r in cls.TRAIN]
+        idlers = [(cx + ux * s, cy + uy * s, r * s) for ux, uy, r in cls.IDLERS]
+        allw = wheels + idlers
+        left = min(x - r for x, _, r in allw); right = max(x + r for x, _, r in allw)
+        top = min(y - r for _, y, r in allw); bottom = max(y + r for _, y, r in allw)
+        sx = (left + right) / 2.0 - cx
+        sy = (top + bottom) / 2.0 - cy
+        return (cx, cy, R,
+                [(x - sx, y - sy, r) for x, y, r in wheels],
+                [(x - sx, y - sy, r) for x, y, r in idlers])
 
     def __init__(self):
         super().__init__()
@@ -138,10 +147,9 @@ class DialArea(Gtk.DrawingArea):
         cr.set_source(pat); cr.fill()
 
         STEEL = "#6E7887"; STEEL_D = "#39414C"; HUB = "#2C333C"
+        cx, cy, R, wheels, idlers = self.layout(w, h)
+        (hx, hy, rh), (mx, my, rm), (sx_, sy_, rs) = wheels
         gy = cy
-        cx, cy, R, discs = self.layout(w, h)
-        (hx, rh), (mx, rm), (sx_, rs) = discs
-        hy = my = sy_ = gy
 
         def gear(x, y, r, teeth, theta, labels, direction, spokes):
             tooth_h = r * 0.13
@@ -187,19 +195,28 @@ class DialArea(Gtk.DrawingArea):
             cr.set_source_rgba(*self._col("#171C22")); cr.fill()
             # numerals ride the wheel; the home chapter mark wears the accent
             n = len(labels)
-            rn = r - tooth_h - r * 0.20
-            fsize = max(8.0, r * 0.20)
+            if n == 0:            # idler pinions carry none
+                cr.restore()
+                return
+            # graduated concentric rings -- the Osinski wire-work
+            for frac in (0.55, 0.68, 0.80, 0.90):
+                cr.arc(0, 0, r * frac, 0, 6.2832)
+                cr.set_source_rgba(*self._col(STEEL, .22))
+                cr.set_line_width(1)
+                cr.stroke()
+            rn = r - tooth_h - r * 0.24
+            fsize = max(8.0, r * 0.24)
             for i, lab in enumerate(labels):
                 av = direction * 6.2832 * i / n
                 home = i == 0
                 cr.save()
                 cr.rotate(av)
                 cr.translate(0, -rn)
-                cr.select_font_face("DejaVu Sans", 0, 1 if home else 0)
-                cr.set_font_size(fsize * (1.18 if home else 1.0))
+                cr.select_font_face("DejaVu Sans", 0, 1)
+                cr.set_font_size(fsize * (1.15 if home else 1.0))
                 ext = cr.text_extents(lab)
                 cr.set_source_rgba(*(self._col(phase_accent if home else face_fg,
-                                               .95 if home else .55)))
+                                               .95 if home else .8)))
                 cr.move_to(-ext.width/2 - ext.x_bearing, -ext.height/2 - ext.y_bearing)
                 cr.show_text(lab)
                 cr.restore()
@@ -226,10 +243,14 @@ class DialArea(Gtk.DrawingArea):
         gear(hx, hy, rh, 40, -6.2832 * hfloat / 12, labels_h, +1, 5)
         gear(mx, my, rm, 32, +6.2832 * mfloat / 60, labels_m, -1, 5)
         gear(sx_, sy_, rs, 20, -6.2832 * sfloat / 60, labels_s, +1, 4)
+        # idler pinions at the mesh points, spinning fast on their own axes
+        for k, (ix, iy, ir) in enumerate(idlers):
+            direction = -1 if k % 2 == 0 else 1
+            gear(ix, iy, ir, 12, direction * 6.2832 * (t % 60) * 0.5, [], direction, 3)
 
         # the fixed darts at each wheel's crown -- the reading reference
-        for px_, pr in ((hx, rh), (mx, rm), (sx_, rs)):
-            tip_y = gy - pr - pr * 0.13 + 3
+        for px_, py_, pr in ((hx, hy, rh), (mx, my, rm), (sx_, sy_, rs)):
+            tip_y = py_ - pr - pr * 0.13 + 3
             cr.set_source_rgba(*self._col("#D4B27A", .92))
             cr.move_to(px_ - 4.5, tip_y - 9)
             cr.line_to(px_ + 4.5, tip_y - 9)

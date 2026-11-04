@@ -485,8 +485,8 @@ class ArcBreak:
             atomic_json(CONFIG_FILE, {"work_minutes": self.work_minutes,
                                       "break_minutes": self.break_minutes,
                                       "auto_continue": self.auto_continue,
-                                      "alerts_enabled": self.alerts_enabled,
-                                      "popup_on_transition": self.popup_on_transition})
+                                      "alerts_enabled": self.alerts_enabled})
+        self._cfg_mtime = self._config_mtime()
         saved = read_json(STATE_FILE, {})
         self.phase = saved.get("phase") if saved.get("phase") in ("focus", "break") else "stopped"
         try:
@@ -511,7 +511,6 @@ class ArcBreak:
         self.status_label = None
         self.primary_button = None
         self.controls_row = None
-        self.settings_button = None
         self.cycle_hint = None
         self.face_image = None
         self._last_palette_minute = None
@@ -533,6 +532,28 @@ class ArcBreak:
             return max(low, min(high, int(value)))
         except (TypeError, ValueError):
             return default
+
+    def _config_mtime(self):
+        try:
+            return CONFIG_FILE.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _reload_config_if_changed(self):
+        """The Battle Station workbench writes this same config; pick its edits
+        up live instead of needing a restart. A missing or empty file keeps the
+        current values."""
+        mtime = self._config_mtime()
+        if mtime == self._cfg_mtime:
+            return
+        self._cfg_mtime = mtime
+        cfg = read_json(CONFIG_FILE, {})
+        if not cfg:
+            return
+        self.work_minutes = self._bounded(cfg.get("work_minutes"), self.work_minutes, 5, 180)
+        self.break_minutes = self._bounded(cfg.get("break_minutes"), self.break_minutes, 1, 60)
+        self.auto_continue = cfg.get("auto_continue", self.auto_continue) is True
+        self.alerts_enabled = cfg.get("alerts_enabled", self.alerts_enabled) is True
 
     @staticmethod
     def _color(value):
@@ -744,11 +765,6 @@ class ArcBreak:
     def _context_menu(self, event):
         menu = Gtk.Menu()
 
-        settings_item = Gtk.MenuItem(label="Settings…")
-        settings_item.connect("activate", lambda *_: self._open_settings())
-        menu.append(settings_item)
-        menu.append(Gtk.SeparatorMenuItem())
-
         hide_item = Gtk.MenuItem(label="Hide watch  ·  Esc")
         hide_item.connect("activate", lambda *_: self.window.iconify())
         menu.append(hide_item)
@@ -829,48 +845,6 @@ class ArcBreak:
         self._notify("Lilah", f"{state} — {mins} minute{'s' if mins != 1 else ''} remaining on the {self.phase}.")
         return False
 
-    def _open_settings(self, *_args):
-        dlg = Gtk.Dialog(title="Lilah · settings", transient_for=self.window, modal=True)
-        dlg.set_default_size(300, -1)
-        box = dlg.get_content_box()
-        box.set_spacing(8); box.set_border_width(14)
-
-        def row(label, widget):
-            r = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-            l = Gtk.Label(label=label, xalign=0); l.set_hexpand(True)
-            r.pack_start(l, True, True, 0); r.pack_start(widget, False, False, 0)
-            box.pack_start(r, False, False, 0)
-            return widget
-
-        adj_f = Gtk.Adjustment(value=self.work_minutes, lower=5, upper=180, step_increment=1)
-        spin_f = Gtk.SpinButton(adjustment=adj_f, climb_rate=1, digits=0)
-        row("Focus minutes", spin_f)
-        adj_b = Gtk.Adjustment(value=self.break_minutes, lower=1, upper=60, step_increment=1)
-        spin_b = Gtk.SpinButton(adjustment=adj_b, climb_rate=1, digits=0)
-        row("Rest minutes", spin_b)
-        chk_auto = Gtk.CheckButton(label="Auto-continue to next block")
-        chk_auto.set_active(self.auto_continue)
-        box.pack_start(chk_auto, False, False, 0)
-        chk_alerts = Gtk.CheckButton(label="Announce blocks (bubble + voice)")
-        chk_alerts.set_active(self.alerts_enabled)
-        box.pack_start(chk_alerts, False, False, 0)
-
-        dlg.add_button("Close", Gtk.ResponseType.CLOSE)
-        dlg.show_all()
-        dlg.connect("response", lambda d, _r: d.destroy())
-        def save(*_a):
-            self.work_minutes = self._bounded(spin_f.get_value_as_int(), 40, 5, 180)
-            self.break_minutes = self._bounded(spin_b.get_value_as_int(), 18, 1, 60)
-            self.auto_continue = chk_auto.get_active()
-            self.alerts_enabled = chk_alerts.get_active()
-            import json as _j
-            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-            CONFIG_FILE.write_text(_j.dumps({"work_minutes": self.work_minutes, "break_minutes": self.break_minutes,
-                                             "auto_continue": self.auto_continue, "alerts_enabled": self.alerts_enabled}) + "\n")
-            self._update()
-        spin_f.connect("value-changed", save); spin_b.connect("value-changed", save)
-        chk_auto.connect("toggled", save); chk_alerts.connect("toggled", save)
-
     def _advance(self, notify=True):
         self.phase = "break" if self.phase == "focus" else "focus"
         minutes = self.break_minutes if self.phase == "break" else self.work_minutes
@@ -883,6 +857,7 @@ class ArcBreak:
         self._update()
 
     def _tick(self):
+        self._reload_config_if_changed()
         if self.phase != "stopped" and not self.paused_left and time.time() >= self.deadline:
             if self.auto_continue:
                 self._advance()

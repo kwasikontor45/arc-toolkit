@@ -3,7 +3,7 @@ import math
 import unittest
 from pathlib import Path
 
-path = Path(__file__).resolve().parents[1] / 'apps/arc-break-taskbar/arc_break_taskbar.py'
+path = Path(__file__).resolve().parents[1] / 'apps/lilah/lilah.py'
 source = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
 restore_node = next(node for node in source.body
                     if isinstance(node, ast.FunctionDef) and node.name == 'restore_timer')

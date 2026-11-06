@@ -1542,6 +1542,12 @@ def record(key,text,base,labelWidth=9):
   tint=green if any(x in text.lower() for x in ("up","station_ready","✓","open")) else red if "no_carrier" in text.lower() else amber
  if key=="TASKS":tint=amber if re.search(r"[1-9]",text) else green
  if key=="FOCUS":tint=palette["choice"]
+ if key=="IDENTITY":
+  parts=text.split(" · ")
+  if len(parts)==3:
+   val=paint(parts[0],red)+" "+paint("·",dim)+" "+paint(parts[1],phaseColor)+" "+paint("·",dim)+" "+paint(parts[2],red)
+   line="  "+paint(key.ljust(labelWidth),dim)+"  "+val
+   if cells(safe(line))<=limit:return [line]
  chunks=wrap(text,max(8,limit-labelWidth-4))
  return ["  "+paint(key.ljust(labelWidth),dim)+"  "+paint(chunks[0],tint)]+["  "+" "*labelWidth+"  "+paint(x,tint) for x in chunks[1:]]
 limit=width-4

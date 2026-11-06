@@ -33,19 +33,19 @@ SIZE = 320
 STATE = Path.home() / ".local/share/ambush/state.json"
 RISE = Path.home() / ".local/bin/lilah-rise"
 
-TINTS = {"dawn": "#e6a57f", "day": "#f6c177", "dusk": "#5ec9b4", "night": "#b8a8d0"}
-NAMES = {"dawn": "dawn", "day": "day", "dusk": "dusk", "night": "nyx"}
+TINTS = {"nyx": "#ea9a97", "choice": "#5ec8ed", "desire": "#f6c177", "still-pine": "#5ec9b4"}
+NAMES = {"nyx": "nyx", "choice": "choice", "desire": "desire", "still-pine": "still-pine"}
 
 
 def phase_now():
     h = time.localtime().tm_hour
-    if 5 <= h < 9:
-        return "dawn"
-    if 9 <= h < 17:
-        return "day"
+    if 6 <= h < 11:
+        return "choice"
+    if 11 <= h < 17:
+        return "desire"
     if 17 <= h < 21:
-        return "dusk"
-    return "night"
+        return "still-pine"
+    return "nyx"
 
 
 def rgba(hexs, a=1.0):

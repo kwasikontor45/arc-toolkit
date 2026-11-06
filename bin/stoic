@@ -26,19 +26,19 @@ hour="$(date +%-H)"
 if [[ -t 1 && -t 0 && "${TERM:-dumb}" != "dumb" && "${TERM:-}" != "" ]]; then
   TTY=1
   B="$(tput bold)"; D="$(tput dim)"; R="$(tput sgr0)"
-  # the sky picks the pigment: dawn rose · day gold · dusk pine · night mist
-  if   (( hour >= 5 && hour < 9  )); then tint=181; phase="dawn"
-  elif (( hour >= 9 && hour < 17 )); then tint=179; phase="day"
-  elif (( hour >= 17 && hour < 21 )); then tint=37;  phase="dusk"
-  else                                      tint=146; phase="night"
+  # the sky picks the pigment — ouroboros language: choice · desire · still-pine · nyx
+  if   (( hour >= 6 && hour < 11 )); then tint=117; phase="choice"
+  elif (( hour >= 11 && hour < 17 )); then tint=179; phase="desire"
+  elif (( hour >= 17 && hour < 21 )); then tint=37;  phase="still-pine"
+  else                                      tint=146; phase="nyx"
   fi
   T="$(tput setaf "$tint")"; M="$(tput setaf 245)"; W="$(tput setaf 250)"; P="$(tput setaf 238)"
 else
   TTY=0; B=""; D=""; R=""; T=""; M=""; W=""; P=""
-  if   (( hour >= 5 && hour < 9  )); then phase="dawn"
-  elif (( hour >= 9 && hour < 17 )); then phase="day"
-  elif (( hour >= 17 && hour < 21 )); then phase="dusk"
-  else phase="night"
+  if   (( hour >= 6 && hour < 11 )); then phase="choice"
+  elif (( hour >= 11 && hour < 17 )); then phase="desire"
+  elif (( hour >= 17 && hour < 21 )); then phase="still-pine"
+  else phase="nyx"
   fi
 fi
 

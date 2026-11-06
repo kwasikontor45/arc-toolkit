@@ -11,6 +11,8 @@ for uri in ('http://127.0.0.1:8766/','http://127.0.0.1:8766/library','http://127
     assert app.is_local_hub_uri(uri),uri
 for uri in ('https://127.0.0.1:8766/','http://localhost:8766/','http://127.0.0.1/','http://u@127.0.0.1:8766/','file:///etc/passwd','http://127.0.0.2:8766/'):
     assert not app.is_local_hub_uri(uri),uri
+assert app.hub_url_for_page('library') == 'http://127.0.0.1:8766/?page=library'
+assert app.hub_url_for_page('unexpected') == 'http://127.0.0.1:8766/'
 for uri in ('https://example.com','http://8.8.8.8'):
     assert app.HubWindow._is_safe_external_uri(uri),uri
 for uri in ('file:///etc/passwd','http://127.0.0.1','http://192.168.1.1','http://localhost','http://host.local','https://user@example.com'):

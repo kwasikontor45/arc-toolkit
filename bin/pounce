@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-ambush — the focus timer that waits, then springs.
+pounce — the focus timer that waits, then springs.
 
 One file. One autostart entry. One instance (flock).
 A quiet glass dial: tooth-tip numerals on the rim, the hour's tint,
 the remaining time breathing in the center. Left-click starts/pauses,
 Esc hides, Alt-drag moves, the dot low on the face drops the menu.
-When focus ends, the ambush: lilah-rise bursts the break bubble with
+When focus ends, the pounce: lilah-rise bursts the break bubble with
 its languid voice. Right-click is retired — the dot is the remote.
 
-state: ~/.local/share/ambush/state.json (work/break minutes, phase)
+state: ~/.local/share/pounce/state.json (work/break minutes, phase)
 """
 
 import cairo
@@ -28,9 +28,10 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import GLib, Gtk, Gdk
 
-APP = "ambush"
+APP = "pounce"
 SIZE = 320
-STATE = Path.home() / ".local/share/ambush/state.json"
+STATE = Path.home() / ".local/share/pounce/state.json"
+LIVE = Path.home() / ".local/share/pounce/live.json"
 RISE = Path.home() / ".local/bin/lilah-rise"
 
 TINTS = {"nyx": "#ea9a97", "choice": "#5ec8ed", "desire": "#f6c177", "still-pine": "#5ec9b4"}
@@ -46,6 +47,13 @@ def phase_now():
     if 17 <= h < 21:
         return "still-pine"
     return "nyx"
+
+
+def boot_id():
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return ""
 
 
 def rgba(hexs, a=1.0):
@@ -122,9 +130,9 @@ class Dial(Gtk.DrawingArea):
         cr.show_text(label)
 
 
-class Ambush(Gtk.Application):
+class Pounce(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="studio.kontor.ambush")
+        super().__init__(application_id="studio.kontor.pounce")
         self.tint_key = phase_now()
         self.phase = "idle"          # idle | focus | break
         self.paused = False
@@ -133,6 +141,55 @@ class Ambush(Gtk.Application):
         self.work_min, self.break_min = self._load()
         self.window = None
         self._dot_hover = False
+
+    # ── live state: resume across reboots, per the old spec ──
+    # stop() clears it; hide/quit keep it. Paused survives everything.
+    # On a genuine reboot (boot_id changed), the saved remainder is honored —
+    # powered-off time is not focus/rest time.
+    def _save_live(self):
+        try:
+            LIVE.parent.mkdir(parents=True, exist_ok=True)
+            LIVE.write_text(json.dumps({
+                "phase": self.phase,
+                "deadline": self.deadline,
+                "left": self.left,
+                "paused": self.paused,
+                "boot_id": boot_id(),
+            }))
+            LIVE.chmod(0o600)
+        except OSError:
+            pass
+
+    def _clear_live(self):
+        try:
+            LIVE.unlink()
+        except OSError:
+            pass
+
+    def _restore_live(self):
+        try:
+            saved = json.loads(LIVE.read_text())
+        except Exception:
+            return
+        if saved.get("phase") not in ("focus", "break"):
+            return
+        self.phase = saved["phase"]
+        self.paused = bool(saved.get("paused"))
+        self.left = int(saved.get("left", 0))
+        if self.paused:
+            return                       # a pause survives everything
+        now = time.time()
+        if saved.get("boot_id") != boot_id():
+            # genuine reboot: honor the saved remainder, not the wall clock
+            total = (self.work_min if self.phase == "focus" else self.break_min) * 60
+            self.left = max(1, min(total, self.left or total))
+            self.deadline = now + self.left
+            return
+        if float(saved.get("deadline", 0)) > now:
+            self.deadline = float(saved["deadline"])
+            self.left = int(self.deadline - now)
+        else:
+            self._turn()                 # same boot, time's up: flip and restart
 
     # ── state ──────────────────────────────────────────────
     def _load(self):
@@ -161,7 +218,7 @@ class Ambush(Gtk.Application):
 
     def phase_label(self):
         if self.phase == "idle":
-            return f"ambush · {NAMES[self.tint_key]}"
+            return f"pounce · {NAMES[self.tint_key]}"
         if self.phase == "focus":
             return "in focus" + (" · paused" if self.paused else "")
         return "break — breathe"
@@ -171,10 +228,13 @@ class Ambush(Gtk.Application):
             self.left = int(self.deadline - time.time())
             if self.left <= 0:
                 self._turn()
+        if self.phase != "idle" and not self.paused and self.left % 30 == 0:
+            self._save_live()
         self.dial.queue_draw()
         return GLib.SOURCE_CONTINUE
 
     def _turn(self):
+        self._save_live()
         if self.phase == "focus":
             self.phase = "break"
             self.left = self.break_min * 60
@@ -203,23 +263,26 @@ class Ambush(Gtk.Application):
             self.paused = not self.paused
             if not self.paused:
                 self.deadline = time.time() + self.left
+        self._save_live()
         self.dial.queue_draw()
 
     def stop(self):
         self.phase, self.paused = "idle", False
         self.left = 0
+        self._clear_live()               # stop means: do not come back
         self.dial.queue_draw()
 
     def skip(self):
         if self.phase != "idle":
             self._turn()
+            self._save_live()
 
     # ── window ─────────────────────────────────────────────
     def do_activate(self):
         if self.window:
             self.window.present()
             return
-        win = Gtk.ApplicationWindow(application=self, title="Ambush")
+        win = Gtk.ApplicationWindow(application=self, title="Pounce")
         self.window = win
         win.set_default_size(SIZE, SIZE)
         win.set_resizable(False)
@@ -231,16 +294,19 @@ class Ambush(Gtk.Application):
         visual = win.get_screen().get_rgba_visual()
         if visual:
             win.set_visual(visual)
-        win.get_style_context().add_class("ambush")
+        win.get_style_context().add_class("pounce")
 
         self.dial = Dial(self)
-        self.dial.set_tooltip_text("ambush · left-click starts/pauses · Esc hides · Alt+drag moves")
+        self.dial.set_tooltip_text("pounce · left-click starts/pauses · Esc hides · Alt+drag moves")
         self.dial.connect("button-press-event", self._press)
         self.dial.connect("motion-notify-event", self._motion)
         win.add(self.dial)
         win.connect("key-press-event", self._key)
         win.connect("delete-event", self._close)
         win.show_all()
+        self._restore_live()
+        if self.phase != "idle":
+            self.dial.queue_draw()
         GLib.timeout_add(500, self._tick)
         GLib.timeout_add(60_000, self._retint)
 
@@ -290,7 +356,7 @@ class Ambush(Gtk.Application):
         for label, fn in (("Hide  ·  Esc", lambda *_: self.window.hide()),
                           ("Skip", lambda *_: self.skip()),
                           ("Stop", lambda *_: self.stop()),
-                          ("Exit ambush", lambda *_: self.quit())):
+                          ("Exit pounce", lambda *_: self.quit())):
             item = Gtk.MenuItem(label=label)
             item.connect("activate", fn)
             menu.append(item)
@@ -299,13 +365,13 @@ class Ambush(Gtk.Application):
 
 
 def main():
-    lock = Path(tempfile.gettempdir()) / f"ambush-{os.getuid()}.lock"
+    lock = Path(tempfile.gettempdir()) / f"pounce-{os.getuid()}.lock"
     fh = open(lock, "w")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         sys.exit(0)   # already lurking
-    Ambush().run(sys.argv)
+    Pounce().run(sys.argv)
 
 
 if __name__ == "__main__":

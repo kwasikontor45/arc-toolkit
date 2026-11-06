@@ -136,6 +136,94 @@ class GarageHealthReportChecks(unittest.TestCase):
         self.assertNotIn("token-value", payload_text)
 
 
+class GarageFleetTelemetryChecks(unittest.TestCase):
+    def test_inventory_is_bounded_sanitized_and_timestamped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "inventory.json"
+            generated = datetime.now(timezone.utc) - timedelta(hours=1)
+            path.write_text(json.dumps({
+                "generated": generated.isoformat(),
+                "assets": [
+                    {"id": "cloud.gvm-cloud", "kind": "cloud-instance", "name": "gvm-cloud",
+                     "status": "on-demand", "observed": "stopped", "health": "ok",
+                     "private_detail": "must not reach UI"},
+                    {"id": "ctr.sagan", "kind": "container", "name": "sagan",
+                     "status": "active", "observed": "running", "health": "ok"},
+                    {"id": "vm.local-soc", "kind": "virtual-machine", "name": "local-soc",
+                     "status": "active", "observed": "running", "health": "ok"},
+                    {"id": "../escape", "kind": "cloud-instance", "name": "escape",
+                     "status": "active", "observed": "running", "health": "ok"},
+                    {"id": "cloud.retired", "kind": "cloud-instance", "name": "retired",
+                     "status": "retired", "observed": "absent", "health": "ok"},
+                ],
+            }), encoding="utf-8")
+            path.chmod(0o600)
+            with mock.patch.object(garage_health.Path, "home", return_value=Path(directory)):
+                result = garage_health.read_fleet_inventory(path)
+        self.assertTrue(result["stale"])
+        self.assertEqual({row["id"] for row in result["resources"]},
+                         {"cloud.gvm-cloud", "ctr.sagan", "vm.local-soc"})
+        self.assertNotIn("private_detail", result["resources"][0])
+
+    def test_inventory_rejects_group_access_and_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "inventory.json"
+            target.write_text(json.dumps({"generated": datetime.now(timezone.utc).isoformat(),
+                                          "assets": []}), encoding="utf-8")
+            target.chmod(0o640)
+            root.chmod(0o755)
+            with mock.patch.object(garage_health.Path, "home", return_value=root):
+                with self.assertRaisesRegex(ValueError, "private enough"):
+                    garage_health.read_fleet_inventory(target)
+            link = root / "link.json"
+            link.symlink_to(target)
+            with mock.patch.object(garage_health.Path, "home", return_value=root):
+                with self.assertRaisesRegex(ValueError, "regular file"):
+                    garage_health.read_fleet_inventory(link)
+
+    @mock.patch.object(garage_health.shutil, "which", return_value="/usr/bin/docker")
+    @mock.patch.object(garage_health.subprocess, "run")
+    def test_docker_reader_is_pinned_local_and_discards_untrusted_fields(self, run, _which):
+        run.return_value = subprocess.CompletedProcess([], 0,
+            "sagan\trunning\tUp 5 hours (healthy)\n"
+            "soc-lab-splunk\texited\tExited (137) 3 weeks ago\n"
+            "bad\u001bname\trunning\tUp\n", "")
+        result = garage_health.read_docker_snapshot()
+        self.assertTrue(result["available"])
+        self.assertEqual(result["containers"], [
+            {"name": "sagan", "state": "running", "health": "healthy"},
+            {"name": "soc-lab-splunk", "state": "exited", "health": ""},
+        ])
+        command = run.call_args.args[0]
+        self.assertIn("unix:///var/run/docker.sock", command)
+        self.assertNotIn("image", result["containers"][0])
+
+    @mock.patch.object(garage_health.shutil, "which", return_value="/usr/bin/ss")
+    @mock.patch.object(garage_health.subprocess, "run")
+    def test_connection_reader_returns_numeric_tcp_metadata_only(self, run, _which):
+        run.return_value = subprocess.CompletedProcess([], 0,
+            '0 0 10.0.0.2:45000 203.0.113.5:443 users:(("browser",pid=42,fd=7))\n'
+            '0 0 [2001:db8::2]:45001 [2001:db8::9]:443\n'
+            '0 0 10.0.0.2:45002 example.invalid:443 users:(("browser",pid=42,fd=8))\n', "")
+        result = garage_health.read_established_tcp()
+        self.assertTrue(result["available"])
+        self.assertEqual(len(result["flows"]), 2)
+        self.assertEqual(result["flows"][0]["process"], "browser")
+        self.assertEqual(result["flows"][0]["pid"], "42")
+        self.assertEqual(result["flows"][1]["process"], "process unavailable")
+        self.assertEqual(result["flows"][1]["protocol"], "TCP")
+        self.assertEqual(run.call_args.args[0][1:4], ["-Htnp", "state", "established"])
+
+    @mock.patch.object(garage_health.shutil, "which", return_value="/usr/bin/ss")
+    @mock.patch.object(garage_health.subprocess, "run", side_effect=subprocess.TimeoutExpired("ss", 4))
+    def test_connection_timeout_degrades_to_unknown_without_raw_error(self, _run, _which):
+        result = garage_health.read_established_tcp()
+        self.assertFalse(result["available"])
+        self.assertEqual(result["flows"], [])
+        self.assertEqual(result["note"], "socket query timed out")
+
+
 class GarageWorkspaceChecks(unittest.TestCase):
     def test_catalog_sanitizes_labels_and_excludes_unregistered_paths(self):
         view = object.__new__(khaos_panel.GarageView)

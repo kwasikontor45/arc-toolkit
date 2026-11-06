@@ -120,11 +120,13 @@ class Controls(unittest.TestCase):
                                       (True, 'unexpected status output')]:
             states = {}
             fake = NS(alive=lambda: True, refresh_button=Label(),
+                      block_button=NS(set_enabled=lambda value: None),
                       _peer_map=panel.MobileAccessView._peer_map,
+                      _local_posture=panel.MobileAccessView._local_posture,
                       _set=lambda key, text, color: states.update({key: text}))
             panel.MobileAccessView._apply_status(fake,
-                (tailnet_ok, '{"Self":{"Online":true},"Peer":{}}', True,
-                 waydroid, False, '', False, '', False, ''))
+                (tailnet_ok, '{"Self":{"Online":true},"Peer":{}}', True, '{}',
+                 True, waydroid, False, '', False, '', False, ''))
             self.assertIn('Waydroid', states)
             self.assertEqual(fake._busy, False)
 
@@ -182,6 +184,23 @@ class Controls(unittest.TestCase):
             with self.subTest(data=data):
                 import json
                 self.assertEqual(panel.MobileAccessView._peer_map(json.dumps(data)), (None,None))
+
+    def test_mobile_posture_redacts_advertised_routes_and_classifies_safely(self):
+        import json
+        summary, shields, color = panel.MobileAccessView._local_posture(json.dumps({
+            'shields-up': True, 'accept-dns': False, 'accept-routes': False,
+            'ssh': False, 'webclient': False, 'exit-node': '',
+            'advertise-routes': ['192.168.4.0/24'],
+        }))
+        self.assertEqual(shields, True)
+        self.assertNotIn('192.168.4', summary)
+        self.assertIn('INBOUND BLOCKED', summary)
+        self.assertEqual(color, panel.ROSE)  # a route advertisement remains visible as caution
+        self.assertEqual(panel.MobileAccessView._local_posture('invalid')[1], None)
+
+    def test_mobile_admin_link_is_generic_not_device_addressed(self):
+        self.assertEqual(panel.TAILNET_ADMIN_URL, 'https://console.tailscale.com/admin/machines')
+        self.assertNotRegex(panel.TAILNET_ADMIN_URL, r'100\.\d+\.\d+\.\d+')
 
     def test_confirmation_policy_matches_launcher_semantics(self):
         self.assertTrue(panel.ConfirmPolicy.required(panel.Action('change', 'arc vpn disconnect')))

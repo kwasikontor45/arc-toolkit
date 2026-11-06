@@ -4561,7 +4561,7 @@ cmd_help_full() {
   echo -e "  ${D}arc ${C}sop status${N}            ${M}show SOP DB status and last ack${N}"
   echo -e "  ${D}arc ${C}sop violations${N}        ${M}list open unresolved violations${N}"
   echo -e "  ${D}arc ${C}sop resolve ${W}<id|--all>${N}     ${M}mark a violation resolved (or --all to clear the board)${N}"
-  echo -e "  ${D}ambush${N}                  ${M}the focus timer — it waits, then it springs (autostarted)${N}"
+  echo -e "  ${D}pounce${N}                  ${M}the focus timer — it waits, then it springs (autostarted)${N}"
   echo -e "  ${D}arc ${C}sop bundle${N}            ${M}export SOP files to a tarball${N}"
   echo -e "  ${D}arc ${C}sop root-copy${N}         ${M}copy SOP DB to /usr/local/share/arc/sop (DR)${N}"
   echo -e "  ${D}arc ${C}sop recover${N}           ${M}restore SOP DB from /usr/local/share/arc/sop${N}"
@@ -4785,7 +4785,7 @@ cmd_help() {
     echo -e "  ${D}shell${N}       ${M}shell settings and help controls${N}"
     echo -e "\n  ${Y}MOST USED${N}"
     echo -e "  ${D}arc${N} ${C}day · backup · stop${N}     ${M}the daily loop${N}"
-    echo -e "  ${D}arc${N} ${C}ambush${N}              ${M}the focus timer — it waits, then it springs${N}"
+    echo -e "  ${D}arc${N} ${C}pounce${N}              ${M}the focus timer — it waits, then it springs${N}"
     echo -e "  ${D}arc${N} ${C}health · inventory${N}     ${M}machine state · asset register${N}"
     echo -e "  ${D}arc${N} ${C}status · clean${N}         ${M}overview · sweep the decks${N}"
     echo -e "\n  ${Y}LOOKING FOR SOMETHING?${N}"
@@ -4859,7 +4859,7 @@ cmd_help() {
     reference|ref) section="reference" ;;
     fixes|fix|patches) section="fixes & patches" ;;
     shell) section="shell" ;;
-    ambush|timer|timepiece|break-timer) section="daily workflow" ;;
+    pounce|timer|timepiece|break-timer) section="daily workflow" ;;
     inventory|inv) section="system maintenance" ;;
     verify-not-scaffold|scaffold) section="development" ;;
     *)

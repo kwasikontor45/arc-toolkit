@@ -19,3 +19,5 @@ This package bundles three GI introspection typelibs and their Debian copyright 
 Run `./install-user.sh` from this directory for a per-user install. It saves an owner-only timestamped copy of the previous launcher before replacement. Run `./uninstall-user.sh` to remove the package and restore the newest saved launcher. The existing desktop entry and Control Center action keep their established launcher path.
 
 Press Ctrl+R/F5 to reload, Ctrl+Plus/Minus to adjust zoom, and Ctrl+0 to reset zoom. The GTK headerbar refresh button also reloads the local Hub.
+
+The Control Panel opens the same Library directly with `khaos-hub-window --page library`. Only the allow-listed `overview` and `library` pages are accepted; this selects a Hub view and does not add a second catalog or change the local-only service boundary.

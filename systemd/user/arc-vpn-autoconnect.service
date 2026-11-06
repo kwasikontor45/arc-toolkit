@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/arc vpn connect
+ExecStart=%h/.local/bin/arc vpn login
 RemainAfterExit=yes
 
 [Install]

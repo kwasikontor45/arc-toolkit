@@ -27,13 +27,7 @@ shows a compact, color-coded MO index with the canonical source path.
 The Khaos Lab panel checks that same session-scoped gate before running action buttons, opening the
 inventory editor, or clearing logs. Read-only dashboards and document views stay available while
 locked. The SOP workspace can read the latest GAMEPLAN/SOT, run compliance checks, and use
-`arc sop start "<task>"` to log and acknowledge the session. Opening the full GAMEPLAN/SOT/MO
-packet first asks for the sudo password in a masked dialog. The check forces fresh authentication
-while ignoring the cached ticket; it runs no privileged command, stores or logs no password, and
-leaves the normal sudo timestamp unchanged. Cancel, rejection, or timeout prevents the panel from
-opening or reading the packet. This is a Khaos Lab reader gate, not filesystem encryption: the
-signed-in workstation account can still access policy files through ordinary OS tools and
-permissions.
+`arc sop start "<task>"` to log and acknowledge the session.
 
 ## Using it
 
@@ -43,6 +37,19 @@ or open the full legacy reference with `arc help all`. The index stays compact a
 command catalog grows; topic pages reuse the detailed reference entries. See
 [HELP-CHEATSHEET.md](HELP-CHEATSHEET.md) for a quick-start card covering the CLI,
 khaos-lab navigation, and Glow pager.
+
+### VPN reconnect
+
+`arc vpn autoconnect` is enabled on this workstation and runs at user login; the
+60-second `arc-vpn-watch.timer` is the reconnect backstop. The login unit checks
+the saved desired state before connecting, so `arc vpn disconnect` is respected
+at the next login. `arc vpn autoconnect off` pauses login and retry behavior
+without disconnecting a tunnel that is already up; `arc vpn autoconnect on` opts
+back in. ProtonVPN still needs an interactive sign-in and an unlocked desktop
+keyring. On an authentication/keyring error, Arc stops treating it as server
+load and backs off from one minute to a 30-minute ceiling. Check with
+`arc vpn status`; after signing in, run `arc vpn connect` to retry immediately.
+The password or session token is never stored in this repository.
 
 In Khaos Lab, click the current **WORKSPACE / … ▾** label in the lower status rail
 to jump directly to any section while the sidebar is hidden. Click **Full screen · F11**
@@ -142,7 +149,7 @@ The scheduled YARA scanner uses its installed ruleset snapshot at `~/.local/shar
 
 Khaos Lab → **Cloud** now groups the read-only AWS guardrail audit (`arc aws-guardrails`), current-egress versus SSH allowlist check (`arc aws-ip-check`), inventory drift, CloudTrail, and start/stop/status/dashboard controls for GVM, Splunk, and Wazuh. The IP check compares two public-IP services with SSH rules on the configured lab security groups, flags tunnel/unknown routing, and never repairs or changes AWS. Every cloud start/stop remains behind the same-session SOP gate and explicit confirmation; GVM and Splunk stop actions back up before stopping. Cloudflare Workers usage, Git mirror status, SSH-agent fingerprints, and public-key inventory are alongside them. The optional `arc aws-keep <box> <on|off>` tag is available through the confirmed Commands workspace; it bypasses only Arc's six-hour backstop, while CloudWatch idle-stop alarms remain active. **Dev** has Git/source-of-truth audits plus confirmed Cloudflare Pages deploy actions for Athena and Kontor Studio/Kataleya.
 
-`arc deploy` now refuses a dirty checkout, a branch other than `main`, a failed fresh `origin/main` fetch, or a local commit that does not exactly match that remote. It never deploys uncommitted files. Phoenix deployment is blocked to preserve its completed retirement. See [`cloud-management-operator-guide-2026-10-09.md`](../refs/cloud-management-operator-guide-2026-10-09.md) for current guardrail evidence and the map for credentials, SSH keys, and operator references. Credentials remain outside this repository.
+`arc deploy` now refuses a dirty checkout, a branch other than `main`, a failed fresh `origin/main` fetch, or a local commit that does not exactly match that remote. It never deploys uncommitted files. Phoenix deployment is blocked to preserve its completed retirement. See [`cloud-management-operator-guide-2026-10-09.md`](../../../local-cloud-hub/personal-cabinet/reference/refs/cloud-management-operator-guide-2026-10-09.md) for current guardrail evidence and the map for credentials, SSH keys, and operator references. Credentials remain outside this repository.
 
 The old `arc aws` SSH/status/push route for py-bite's terminated EC2 instance now fails closed; it no longer reads its leftover local config or attempts SSH.
 

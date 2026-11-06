@@ -1,9 +1,12 @@
 import importlib.machinery
 import importlib.util
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import date, timedelta
+import hashlib
 from pathlib import Path
 
 
@@ -25,6 +28,13 @@ class LibraryTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_water_glass_visual_asset_uses_exact_static_route(self):
+        root, name, media_type = self.hub.static_assets()["/still-water-glass.webp"]
+        self.assertEqual(root, self.hub.WEB)
+        self.assertEqual(name, "still-water-glass.webp")
+        self.assertEqual(media_type, "image/webp")
+        self.assertTrue((root / name).is_file())
+
     def test_save_update_delete_and_private_database(self):
         first=self.hub.library_save({"title":"IR field guide","url":"https://example.org/ir","kind":"research","tags":"ir","note":"triage"})
         self.assertEqual(len(first["items"]),1)
@@ -45,14 +55,51 @@ class LibraryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.hub.library_save({"title":"x"*181})
 
+    def test_file_checkin_checkout_return_and_delete_are_private(self):
+        payload=b"private library note\n"
+        due=(date.today()+timedelta(days=7)).isoformat()
+        result=self.hub.library_file_checkin(payload,"field note.txt","Field note","temporary",due)
+        item=result["items"][0]
+        self.assertEqual(item["status"],"checked_in")
+        self.assertEqual(item["sha256"],hashlib.sha256(payload).hexdigest())
+        stored=self.hub.STATE/"library-files"/f"{item['id']}.blob"
+        self.assertEqual(stored.read_bytes(),payload)
+        self.assertEqual(stored.stat().st_mode & 0o777,0o600)
+        self.assertEqual((self.hub.STATE/"library-files").stat().st_mode & 0o777,0o700)
+        checked=self.hub.library_file_transition({"id":item["id"]},"checkout")
+        self.assertEqual(checked["items"][0]["status"],"checked_out")
+        returned=self.hub.library_file_transition({"id":item["id"]},"return")
+        self.assertEqual(returned["items"][0]["status"],"checked_in")
+        renewed=self.hub.library_file_transition({"id":item["id"],"days":30},"renew")
+        self.assertEqual(renewed["items"][0]["due"],(date.today()+timedelta(days=30)).isoformat())
+        removed=self.hub.library_file_remove({"id":item["id"]})
+        self.assertEqual(removed["items"],[])
+        self.assertFalse(stored.exists())
+
+    def test_file_checkin_rejects_unsafe_names_and_dates_and_keeps_long_term_open_ended(self):
+        for filename in ("../secret.txt","folder\\secret.txt","", "bad\nname"):
+            with self.assertRaises(ValueError):
+                self.hub.library_file_checkin(b"x",filename,"Sample","long-term","")
+        with self.assertRaises(ValueError):
+            self.hub.library_file_checkin(b"x","note.txt","Sample","temporary",date.today().isoformat())
+        result=self.hub.library_file_checkin(b"x","note.txt","Long-term note","long-term","")
+        self.assertEqual(result["items"][0]["due"],"")
+        self.assertFalse(result["items"][0]["overdue"])
+
     def test_source_routes_and_local_boundary(self):
         source=(self.root/"apps/khaos-hub/web/index.html").read_text()
         self.assertIn('data-page="library"',source)
         self.assertIn('id="library-list"',source)
+        self.assertIn('id="library-file-form"',source)
+        self.assertIn('id="library-files"',source)
         js=(self.root/"apps/khaos-hub/web/app.js").read_text()
         self.assertIn('title.textContent = item.title',js)
         self.assertIn('/api/library/save',js)
         self.assertIn('/api/library/browser-import',js)
+        self.assertIn('/api/library/files/check-in',js)
+        self.assertIn('/api/library/files/checkout',js)
+        self.assertIn('/api/library/files/return',js)
+        self.assertIn('no preview or execution',source)
         self.assertIn('rows.slice(0, libraryVisibleLimit)',js)
         self.assertIn('library-load-more',js)
         self.assertIn('prefers-reduced-motion: reduce',js)

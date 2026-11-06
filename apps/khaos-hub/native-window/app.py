@@ -11,7 +11,12 @@ from pathlib import Path
 
 APP_ID = "studio.khaos.KhaosHub"
 WM_CLASS = "KhaosHub"
-APP_URL = "http://127.0.0.1:8766/"
+def hub_url_for_page(page: str) -> str:
+    """Build a local Hub URL for one of the two supported native entry points."""
+    return "http://127.0.0.1:8766/" + ("?page=library" if page == "library" else "")
+
+
+APP_URL = hub_url_for_page(os.environ.get("KHAOS_HUB_PAGE", "overview"))
 APP_ORIGIN = ("http", "127.0.0.1", 8766)
 PACKAGE_DIR = Path(__file__).resolve().parent
 RUNTIME_DIR = PACKAGE_DIR / "runtime" / "girepository-1.0"

@@ -520,6 +520,35 @@ body { background:radial-gradient(ellipse at 72% 2%,rgba(var(--phase-rgb),.07),t
 .library-source ul{margin:6px 0;padding-left:18px}
 .library-source li{margin:4px 0;overflow-wrap:anywhere}
 .library-load-more{grid-column:1/-1;justify-self:center;min-height:38px;padding:8px 15px;border:1px solid var(--line-bright);border-radius:999px;background:rgba(var(--surface-rgb),.75);color:var(--paper);font:inherit;cursor:pointer}
+
+/* The Library file desk folds away until called; the shelf remains a quiet second plane. */
+.library-circulation{margin:14px 0;padding:0;border:1px solid var(--line-bright);border-radius:16px;background:linear-gradient(140deg,rgba(var(--surface-rgb),.62),rgba(var(--ink-rgb),.56));overflow:hidden;box-shadow:inset 0 1px rgba(255,255,255,.035)}
+.library-circulation>summary{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:56px;padding:10px 14px;cursor:pointer;list-style:none}
+.library-circulation>summary::-webkit-details-marker,.library-file-intake>summary::-webkit-details-marker{display:none}
+.library-circulation>summary:before,.library-file-intake>summary:before{content:"";width:7px;height:7px;flex:none;border-right:1px solid var(--phase);border-bottom:1px solid var(--phase);transform:rotate(-45deg);transition:transform .18s ease}
+.library-circulation[open]>summary:before,.library-file-intake[open]>summary:before{transform:rotate(45deg)}
+.library-circulation>summary>span:first-of-type{display:grid;gap:3px;margin-right:auto}
+.library-circulation>summary strong{font-size:15px;color:var(--paper)}
+.library-circulation .library-boundary{margin:0 14px 12px}
+.library-file-intake{margin:0 12px 12px;border:1px solid var(--line);border-radius:12px;background:rgba(var(--ink-rgb),.42)}
+.library-file-intake>summary{display:flex;align-items:center;gap:10px;min-height:44px;padding:9px 12px;cursor:pointer;list-style:none;color:var(--paper);font-size:13px}
+.library-file-intake>summary span{margin-left:auto;color:var(--muted);font-size:11px}
+.library-file-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:10px;padding:12px;border-top:1px solid var(--line)}
+.library-file-form label{display:grid;gap:6px;color:var(--muted);font-size:12px;min-width:0}
+.library-file-form input:not([type=checkbox]),.library-file-form select{width:100%;min-width:0;padding:9px 10px;border:1px solid var(--line-bright);border-radius:9px;background:rgba(var(--ink-rgb),.8);color:var(--paper);font:inherit}
+.library-file-copy{grid-column:1/-1;display:flex!important;align-items:center;gap:9px!important;color:var(--paper)!important}
+.library-file-copy input{width:18px;height:18px;accent-color:var(--phase)}
+.library-file-form .library-boundary,.library-file-form .library-actions{grid-column:1/-1}
+.library-files{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:9px;padding:0 12px 12px}
+.library-file-card{min-width:0;padding:12px;border:1px solid var(--line);border-radius:12px;background:rgba(var(--surface-rgb),.46);overflow-wrap:anywhere}
+.library-file-card h3{margin:0 0 7px;color:var(--paper);font-size:14px}
+.library-file-status{margin:0 0 6px;color:var(--phase);font-size:11px;font-weight:700;letter-spacing:.04em}
+.library-file-status.is-overdue,.library-card-actions button.is-danger{color:var(--warning,#f6c177)}
+.library-file-card .library-card-meta{margin:0 0 9px}
+.library-file-card .library-card-actions button{min-height:34px;padding:6px 9px;font-size:12px}
+#library-files-state{padding:0 14px 12px}
+.library-circulation summary:focus-visible,.library-file-intake summary:focus-visible,.library-file-form :focus-visible,.library-file-card button:focus-visible{outline:2px solid var(--phase);outline-offset:2px}
+@media(prefers-reduced-motion:reduce){.library-circulation>summary:before,.library-file-intake>summary:before{transition:none}}
 @media (prefers-reduced-motion: no-preference) {
   .rail-link,.mobile-link,.scenario,.library-card { transition: color .16s ease,border-color .16s ease,background .16s ease,transform .16s ease; }
   .rail-link:hover,.mobile-link:hover { border-color: var(--line); transform: translateY(-1px); }

@@ -7,6 +7,20 @@ readonly data_root="${XDG_DATA_HOME:-$HOME/.local/share}/khaos-hub-native"
 readonly cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/khaos-hub-native"
 readonly unit="khaos-hub-native-${BASHPID}"
 download_root="$(xdg-user-dir DOWNLOAD 2>/dev/null || printf '%s' "$HOME/Downloads")"
+page="overview"
+while (($#)); do
+  case "$1" in
+    --page)
+      [[ $# -ge 2 ]] || { echo 'Usage: khaos-hub-window [--page overview|library]' >&2; exit 2; }
+      case "$2" in
+        overview|library) page="$2" ;;
+        *) echo 'Khaos Hub page must be overview or library.' >&2; exit 2 ;;
+      esac
+      shift 2
+      ;;
+    *) echo 'Usage: khaos-hub-window [--page overview|library]' >&2; exit 2 ;;
+  esac
+done
 
 umask 077
 install -d -m 700 "$data_root/profile" "$cache_root"
@@ -45,6 +59,7 @@ if /usr/bin/systemd-run --user --quiet --collect --service-type=exec --unit="$un
   --property=IPAddressAllow=::1/128 \
   --setenv=GSETTINGS_BACKEND=memory \
   --setenv=GIO_USE_VFS=local \
+  --setenv="KHAOS_HUB_PAGE=$page" \
   --setenv="XDG_CACHE_HOME=$cache_root" \
   -- "$package_dir/app.py" 2>"$launch_log"; then
   rm -f -- "$launch_log"

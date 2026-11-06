@@ -14,7 +14,7 @@ Links are matched after normalizing scheme/host case, default ports, and an empt
 
 JSON export/import is available for moving this local index. Imports are size-limited, validated as `http`/`https` references, and applied in one transaction. Never place credentials or private access URLs in the Library.
 
-The Library renders references in small batches so a large collection does not turn into a long, heavy page. Search and type filters start at the first batch; **Show next** reveals more without losing the current filter.
+The Library renders eight references at a time so a large collection stays quick to scan on a phone. Search and type filters return to the first batch; **Show next 8** reveals more without losing the current filter.
 
 ## Dewey study shelf
 

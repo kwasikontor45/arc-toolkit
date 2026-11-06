@@ -1,5 +1,20 @@
 # Garage · Khaos Control Panel
 
+## Standalone Operations Room
+
+The separate owner-local Garage Operations Room is in
+`local-cloud-hub/operations/current/projects/garage-operations/`. It opens as its
+own on-demand desktop window, uses a private SQLite work-order journal, and reads
+Project Ledger records through a read-only adapter. It does not open the browser,
+listen on a port, call an AI service, execute shell commands, or perform repairs.
+The Khaos Lab panel remains a separate overview; removing the Operations Room does
+not affect that panel or its existing health/report producers.
+
+This is the single-operator workflow contract: one clear next action, one
+evidence-backed work order, explicit authorization and verification gates, and a
+concise learning path. The crew roles are prompts for the operator's own review;
+they are not background agents.
+
 The primary Garage is now a first-class workspace in **Khaos Lab Control Panel**. It brings the registered app/project catalog, Arc Heal health summary, and inventory drift/ledger summary into one place. The panel's **Calendar** workspace is the Hub calendar, so desktop operations use one application surface.
 
 The data owners stay independent: Arc Heal produces its health report; `arc inv` owns desired/observed resource state and its tamper-evident ledger; Khaos Hub owns shared calendar check marks. Garage reads those existing reports and links to their current views. It does not keep duplicate status or calendar data.

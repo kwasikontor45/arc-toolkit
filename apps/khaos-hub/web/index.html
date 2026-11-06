@@ -72,10 +72,28 @@
       </section>
 
       <section class="page page-library" data-view="library" aria-labelledby="library-title" hidden>
-        <div class="page-heading"><div><p class="eyebrow">PRIVATE INDEX <span>/</span> LOCAL ONLY</p><h1 id="library-title">Your personal library.</h1><p class="lede">A Dewey-sorted study shelf beside your saved web references. Source files stay in their project homes.</p></div></div>
+        <div class="page-heading"><div><p class="eyebrow">PRIVATE INDEX <span>/</span> LOCAL ONLY</p><h1 id="library-title">Your personal library.</h1><p class="lede">Study and reference files organized with Dewey Decimal classes, beside your saved web references. Source files stay in their project homes.</p></div></div>
         <div class="library-tools"><label>Search saved items <input id="library-search" type="search" placeholder="Title, note, tag, URL, source"></label><label>Show <select id="library-filter"><option value="all">Everything</option><option value="bookmark">Bookmarks</option><option value="reading">Reading list</option><option value="tutorial">Tutorials</option><option value="research">Research</option><option value="incident">Incident references</option></select></label></div>
         <div id="library-stats" class="library-stats" aria-label="Library totals"></div>
         <p id="library-state" class="library-state" role="status" aria-live="polite">Saved locally on this computer.</p>
+        <details class="library-circulation" id="library-circulation">
+          <summary><span><span class="eyebrow">PRIVATE FILE DESK</span><strong>File shelf</strong></span><span id="library-file-count" class="library-stat">Loading…</span></summary>
+          <p class="library-boundary">Check in a copy, take it out when needed, then return it to the shelf. Temporary dates remind you; they never trigger automatic deletion.</p>
+          <details class="library-file-intake" id="library-file-intake">
+            <summary>Check in a file <span>Copy stays on this computer</span></summary>
+            <form id="library-file-form" class="library-file-form">
+              <label>Choose a file <input id="library-file-input" type="file" required></label>
+              <label>Shelf name <input id="library-file-title" maxlength="180" required autocomplete="off"></label>
+              <label>Keep on shelf <select id="library-file-retention"><option value="temporary">Temporary · set a reminder</option><option value="long-term">Long-term · keep until I remove it</option></select></label>
+              <label id="library-file-term-label">Reminder after <select id="library-file-term"><option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option></select></label>
+              <label class="library-file-copy"><input id="library-file-copy" type="checkbox" required> Check in a private copy. The file I selected stays where it is.</label>
+              <p class="library-boundary">Up to 10 MiB per file · private local storage · no preview or execution · downloads always leave as attachments.</p>
+              <div class="library-actions"><button class="library-save" type="submit">Check in copy</button></div>
+            </form>
+          </details>
+          <div id="library-files" class="library-files" aria-live="polite"></div>
+          <p id="library-files-state" class="library-state" role="status" aria-live="polite"></p>
+        </details>
         <details class="library-editor" id="library-editor">
           <summary><span id="library-editor-label">Add a reference</span><span class="library-summary-note">PRIVATE · LOCAL</span></summary>
           <form id="library-form" class="library-form">
@@ -96,7 +114,7 @@
           <p id="library-import-preview" class="library-import-preview" role="status" aria-live="polite" hidden></p>
         </details>
         <details class="dewey-shelf" id="dewey-shelf">
-          <summary><span><span class="eyebrow">STUDY SHELF</span><strong>Dewey browse</strong></span><span id="dewey-count" class="library-stat">Loading…</span></summary>
+          <summary><span><span class="eyebrow">STUDY SHELF</span><strong>Browse subjects</strong></span><span id="dewey-count" class="library-stat">Loading…</span></summary>
           <p class="library-boundary">Curated local index · no files moved or copied · select a path to copy it for Thunar or your editor.</p>
           <label class="dewey-search-label">Find a tutorial or study item <input id="dewey-search" type="search" placeholder="Title, subject, Dewey number"></label>
           <div id="dewey-state" role="status" aria-live="polite">Loading the local study catalog…</div>

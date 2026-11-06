@@ -66,3 +66,4 @@ The hub may present carefully selected summaries and references. It must not cre
 - Verification: 13 focused health/workspace checks, Python and Bash syntax checks, and `git diff --check` passed. The full Khaos Lab Xvfb self-test could not create a display (`TclError: couldn't connect to display :113`), so direct GUI rendering and click-through remain unverified.
 - Release uses the existing local source link for Khaos Lab; Garage adds no server, network route, live repair action, or provider access. Exact commit and publication evidence are recorded in the session GAMEPLAN.
 - No source checkout was physically moved. Kataleya remains in `android-mobile-ios/apps`; Py-Bite has no canonical local checkout. The next milestone is app-owned self-checks with bounded outputs; repair actions remain gated by explicit scope, preview, approval, audit, and tested recovery.
+

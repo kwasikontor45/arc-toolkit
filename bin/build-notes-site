@@ -376,7 +376,16 @@ def slug_for(path: Path) -> str:
 
 
 def render_markdown(text: str) -> str:
-    return _markdown.markdown(text, extensions=["fenced_code", "tables"])
+    import re as _re
+    body = _markdown.markdown(text, extensions=["fenced_code", "tables"])
+    # converted notes render under notes/: climb out for root-relative links;
+    # bare .md targets land on the browse index
+    body = _re.sub(r'href="(?!https?:|mailto:|tel:|sms:|#|\.\./|notes/)([^"]+)"',
+                   lambda m: f'href="../{m.group(1)}"', body)
+    body = _re.sub(r'href="\.\./([^"]+)\.md"', 'href="../browse.html"', body)
+    # sources that wrote notes/<root-page> get climbed out too
+    body = _re.sub(r'href="notes/(index|browse|blueprint)\.html"', r'href="../\1.html"', body)
+    return body
 
 
 def page_shell(system_label: str, body: str, active: str, extra_script: str = "", relative_prefix: str = "") -> str:
@@ -401,9 +410,9 @@ def page_shell(system_label: str, body: str, active: str, extra_script: str = ""
   </div>
 
   <nav class="uplinks" style="padding:14px 0;">
-    <a href="index.html"{home_cls}>dashboard</a>
-    <a href="browse.html"{browse_cls}>browse // search</a>
-    <a href="blueprint.html"{blueprint_cls}>blueprint</a>
+    <a href="{relative_prefix}index.html"{home_cls}>dashboard</a>
+    <a href="{relative_prefix}browse.html"{browse_cls}>browse // search</a>
+    <a href="{relative_prefix}blueprint.html"{blueprint_cls}>blueprint</a>
     <a href="{relative_prefix}studio-course.html"{studio_cls}>studio course</a>
     <a href="{relative_prefix}personal-card.html" class="uplink-btn">personal card</a>
   </nav>
@@ -412,7 +421,7 @@ def page_shell(system_label: str, body: str, active: str, extra_script: str = ""
 
   <div class="close-bar">
     <div class="signature">..: :..</div>
-    <div style="margin-top:6px;">notes-site &middot; vault-local &middot; <a href="index.html">home</a></div>
+    <div style="margin-top:6px;">notes-site &middot; vault-local &middot; <a href="{relative_prefix}index.html">home</a></div>
   </div>
 </div>
 <script>{PHASE_SCRIPT}</script>
@@ -526,7 +535,7 @@ def inventory_blueprint_body():
                         ("cloud management, release, and SSH guide", REFS_DIR / "cloud-management-operator-guide-2026-10-09.md"),
                         ("inventory procedures (README)", HOME / "dev-notes" / "intel-ops" / "inventory" / "README.md")):
         if path.exists():
-            links.append(f'<p><a href="notes/{slug_for(path)}">{label}</a></p>')
+            links.append(f'<p><a href="refs/{path.name}">{label}</a></p>')
     out.append('<div class="panel"><span class="tag">paper trail</span>' + "".join(links) + '<p><a href="browse.html">browse // search</a> &mdash; full-text search across every note.</p></div>')
     return "\n".join(out)
 
@@ -539,7 +548,7 @@ def kataleya_flow_map():
     use the live project's state model and canonical Circadian palette.
     """
     ref = REFS_DIR / "kat-state-engine-flow-map.md"
-    ref_link = f'<a href="notes/{slug_for(ref)}">Read the state map and Kanban fit audit</a>' if ref.exists() else ""
+    ref_link = f'<a href="refs/{ref.name}">Read the state map and Kanban fit audit</a>' if ref.exists() else ""
     nodes = [
         ("onboarding", "Onboarding", "A person's first setup and entry", "#5ec8ed"),
         ("room", "Room", "Home space and living orb", "#f6c177"),

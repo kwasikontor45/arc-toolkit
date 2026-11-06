@@ -141,6 +141,11 @@ document.querySelectorAll("[data-page]").forEach((button) => {
   });
 });
 
+// The native Control Panel doorway may select only a known Hub workspace.
+if (new URLSearchParams(window.location.search).get("page") === "library") {
+  document.querySelector('[data-page="library"]')?.click();
+}
+
 document.querySelector(".detail-dialog").addEventListener("click", (event) => {
   if (event.target === event.currentTarget) event.currentTarget.close();
 });
@@ -279,7 +284,8 @@ refreshCalendar();
 let libraryToken = "";
 let libraryItems = [];
 let browserScan = null;
-let libraryVisibleLimit = 36;
+const libraryBatchSize = 8;
+let libraryVisibleLimit = libraryBatchSize;
 const libraryKinds = {
   bookmark: "Bookmark", reading: "Reading list", tutorial: "Tutorial",
   research: "Research", incident: "Incident reference"
@@ -366,7 +372,7 @@ function renderLibrary() {
       try {
         const data = await libraryPost("/api/library/delete", { id: item.id });
         libraryItems = data.items;
-        libraryVisibleLimit = 36;
+        libraryVisibleLimit = libraryBatchSize;
         renderLibrary();
         document.querySelector("#library-state").textContent = "Reference removed from this computer.";
       } catch (error) { document.querySelector("#library-state").textContent = error.message; }
@@ -394,8 +400,8 @@ function renderLibrary() {
     const more = document.createElement("button");
     more.type = "button";
     more.className = "library-load-more";
-    more.textContent = `Show next 36 · ${rows.length - libraryVisibleLimit} remaining`;
-    more.addEventListener("click", () => { libraryVisibleLimit += 36; renderLibrary(); });
+    more.textContent = `Show next ${libraryBatchSize} · ${rows.length - libraryVisibleLimit} remaining`;
+    more.addEventListener("click", () => { libraryVisibleLimit += libraryBatchSize; renderLibrary(); });
     list.append(more);
   }
   if (!rows.length) {
@@ -408,15 +414,16 @@ function renderLibrary() {
 async function loadLibrary() {
   try {
     libraryItems = (await libraryRequest("/api/library")).items;
-    libraryVisibleLimit = 36;
+    libraryVisibleLimit = libraryBatchSize;
     renderLibrary();
     document.querySelector("#library-state").textContent = `${libraryItems.length} saved locally on this computer.`;
   } catch (error) { document.querySelector("#library-state").textContent = error.message; }
+  loadLibraryFiles();
 }
 async function saveLibrary(path, payload) {
   const data = await libraryPost(path, payload);
   libraryItems = data.items;
-  libraryVisibleLimit = 36;
+  libraryVisibleLimit = libraryBatchSize;
   renderLibrary();
   document.querySelector("#library-state").textContent = `${libraryItems.length} saved locally on this computer.`;
 }
@@ -446,8 +453,8 @@ document.querySelector("#library-cancel").addEventListener("click", () => {
   document.querySelector("#library-editor").open = false;
   document.querySelector("#library-editor-label").textContent = "Add a reference";
 });
-document.querySelector("#library-search").addEventListener("input", () => { libraryVisibleLimit = 36; renderLibrary(); });
-document.querySelector("#library-filter").addEventListener("change", () => { libraryVisibleLimit = 36; renderLibrary(); });
+document.querySelector("#library-search").addEventListener("input", () => { libraryVisibleLimit = libraryBatchSize; renderLibrary(); });
+document.querySelector("#library-filter").addEventListener("change", () => { libraryVisibleLimit = libraryBatchSize; renderLibrary(); });
 document.querySelector("#library-export").addEventListener("click", () => {
   const blob = new Blob([JSON.stringify({ version: 1, items: libraryItems }, null, 2)], { type: "application/json" });
   const anchor = document.createElement("a");
@@ -467,7 +474,7 @@ document.querySelector("#library-import-file").addEventListener("change", async 
     if (!confirm(`Import ${imported.items.length} references into this computer's local library?`)) return;
     const result = await libraryPost("/api/library/import", { items: imported.items });
     libraryItems = result.items;
-    libraryVisibleLimit = 36;
+    libraryVisibleLimit = libraryBatchSize;
     renderLibrary();
     document.querySelector("#library-state").textContent =
       `Imported: ${result.added} new · ${result.merged} matched and merged · ${result.duplicates_in_batch} duplicates consolidated.`;
@@ -501,7 +508,7 @@ function showBrowserPreview(preview) {
     try {
       const result = await libraryPost("/api/library/browser-import", { scan_id: browserScan, confirmed: true });
       libraryItems = result.items;
-      libraryVisibleLimit = 36;
+      libraryVisibleLimit = libraryBatchSize;
       renderLibrary();
       document.querySelector("#library-state").textContent =
         `Added ${result.added} · merged ${result.merged} existing links · consolidated ${result.duplicates_in_batch} repeats. Local backup created: ${result.backup_created ? "yes" : "not needed"}.`;
@@ -527,6 +534,136 @@ document.querySelector("#library-browser-scan").addEventListener("click", async 
     showBrowserPreview(preview);
     document.querySelector("#library-state").textContent = preview.message;
   } catch (error) { document.querySelector("#library-state").textContent = error.message; }
+  finally { button.disabled = false; }
+});
+
+let libraryFiles = [];
+function formatLibrarySize(size) {
+  return size < 1024 * 1024 ? `${Math.max(1, Math.ceil(size / 1024))} KiB` : `${(size / (1024 * 1024)).toFixed(1)} MiB`;
+}
+async function loadLibraryFiles() {
+  const state = document.querySelector("#library-files-state");
+  try {
+    const result = await libraryRequest("/api/library/files");
+    libraryFiles = result.items;
+    document.querySelector("#library-file-count").textContent = `${result.stats.checked_in} on shelf · ${result.stats.checked_out} out`;
+    renderLibraryFiles();
+  } catch (error) { state.textContent = `File shelf unavailable: ${error.message}`; }
+}
+function renderLibraryFiles() {
+  const list = document.querySelector("#library-files");
+  const fragment = document.createDocumentFragment();
+  libraryFiles.forEach(item => {
+    const card = document.createElement("article");
+    card.className = "library-file-card";
+    const title = document.createElement("h3");
+    title.textContent = item.title;
+    const status = document.createElement("p");
+    status.className = `library-file-status${item.overdue ? " is-overdue" : ""}`;
+    status.textContent = item.overdue ? `OVERDUE · reminder was ${item.due}` :
+      `${item.status === "checked_out" ? "OUT WITH YOU" : "ON SHELF"} · ${item.retention === "temporary" ? `return reminder ${item.due}` : "long-term"}`;
+    const meta = document.createElement("p");
+    meta.className = "library-card-meta";
+    meta.textContent = `${item.filename} · ${formatLibrarySize(item.size)} · SHA-256 ${item.sha256.slice(0, 12)}…`;
+    const actions = document.createElement("div");
+    actions.className = "library-card-actions";
+    const act = (label, path, payload, danger = false) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      if (danger) button.classList.add("is-danger");
+      button.addEventListener("click", async () => {
+        if (danger && !confirm(`Remove “${item.title}” and its private stored copy? This cannot be undone.`)) return;
+        button.disabled = true;
+        try {
+          await libraryPost(path, payload);
+          await loadLibraryFiles();
+          document.querySelector("#library-files-state").textContent = danger ? "File and stored copy removed." : "Shelf updated.";
+        } catch (error) { document.querySelector("#library-files-state").textContent = error.message; button.disabled = false; }
+      });
+      actions.append(button);
+    };
+    if (item.status === "checked_out") {
+      act("Return to shelf", "/api/library/files/return", { id: item.id });
+    } else {
+      const checkout = document.createElement("button");
+      checkout.type = "button";
+      checkout.textContent = "Check out · download";
+      checkout.addEventListener("click", async () => {
+        checkout.disabled = true;
+        try {
+          if (!libraryToken) libraryToken = (await libraryRequest("/api/session")).token;
+          await libraryPost("/api/library/files/checkout", { id: item.id });
+          const response = await fetch(`/api/library/files/${item.id}/download`, { headers: { "X-Hub-Token": libraryToken }, cache: "no-store" });
+          if (!response.ok) throw new Error("Download did not complete; the item was returned to the shelf.");
+          const blob = await response.blob();
+          const anchor = document.createElement("a");
+          anchor.href = URL.createObjectURL(blob);
+          anchor.download = item.filename;
+          anchor.click();
+          setTimeout(() => URL.revokeObjectURL(anchor.href), 30000);
+          await loadLibraryFiles();
+          document.querySelector("#library-files-state").textContent = "Checked out. Your downloaded copy is ready; return this shelf item when finished.";
+        } catch (error) {
+          try { await libraryPost("/api/library/files/return", { id: item.id }); } catch (_) {}
+          document.querySelector("#library-files-state").textContent = error.message;
+          await loadLibraryFiles();
+        } finally { checkout.disabled = false; }
+      });
+      actions.append(checkout);
+    }
+    if (item.retention === "temporary") act("Renew 30 days", "/api/library/files/renew", { id: item.id, days: 30 });
+    act("Remove", "/api/library/files/delete", { id: item.id }, true);
+    card.append(title, status, meta, actions);
+    fragment.append(card);
+  });
+  if (!libraryFiles.length) {
+    const empty = document.createElement("p");
+    empty.className = "library-empty";
+    empty.textContent = "The file shelf is empty. Check in a private copy when you want to keep something here.";
+    fragment.append(empty);
+  }
+  list.replaceChildren(fragment);
+}
+const fileRetention = document.querySelector("#library-file-retention");
+const fileTermLabel = document.querySelector("#library-file-term-label");
+fileRetention.addEventListener("change", () => { fileTermLabel.hidden = fileRetention.value !== "temporary"; });
+document.querySelector("#library-file-input").addEventListener("change", event => {
+  const file = event.target.files?.[0];
+  if (file && !document.querySelector("#library-file-title").value) document.querySelector("#library-file-title").value = file.name;
+});
+document.querySelector("#library-file-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const file = document.querySelector("#library-file-input").files?.[0];
+  const state = document.querySelector("#library-files-state");
+  if (!file) { state.textContent = "Choose one file first."; return; }
+  if (file.size > 10 * 1024 * 1024) { state.textContent = "That file is over the 10 MiB limit."; return; }
+  const button = form.querySelector("button[type=submit]");
+  button.disabled = true;
+  state.textContent = "Checking in a private copy…";
+  try {
+    if (!libraryToken) libraryToken = (await libraryRequest("/api/session")).token;
+    const retention = fileRetention.value;
+    const due = retention === "temporary" ? new Date(Date.now() + Number(document.querySelector("#library-file-term").value * 86400000)).toISOString().slice(0, 10) : "";
+    const response = await fetch("/api/library/files/check-in", {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream", "X-Hub-Token": libraryToken,
+        "X-Hub-File-Name": encodeURIComponent(file.name),
+        "X-Hub-Title": encodeURIComponent(document.querySelector("#library-file-title").value),
+        "X-Hub-Retention": retention, "X-Hub-Due": due },
+      body: file,
+      cache: "no-store"
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Check-in did not complete.");
+    libraryFiles = result.items;
+    renderLibraryFiles();
+    state.textContent = "Checked in. The selected original file was left where it is.";
+    form.reset();
+    fileTermLabel.hidden = false;
+    document.querySelector("#library-file-intake").open = false;
+  } catch (error) { state.textContent = error.message; }
   finally { button.disabled = false; }
 });
 loadLibrary();

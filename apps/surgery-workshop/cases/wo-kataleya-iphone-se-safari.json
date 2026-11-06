@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "id": "WO-KATALYEYA-IPHONE-SE",
+  "openedAt": "2026-10-17T16:16:00-07:00",
+  "title": "Kataleya iPhone SE Safari acceptance",
+  "assetRef": "repo.kontor-studio",
+  "priority": "p2",
+  "status": "triage",
+  "owner": "L1 + architect-of-chaos",
+  "nextStep": "Install the existing Kataleya demo from Safari using the companion checklist, then report any visible or interaction issue by screen name.",
+  "approval": {
+    "state": "not-requested",
+    "scope": "Manual testing of the existing public demo only. No code, policy, network, or account changes."
+  },
+  "verification": {
+    "state": "pending",
+    "summary": "Desktop and Chromium mobile previews passed. Physical iPhone SE Safari and Home Screen behavior remain unverified."
+  },
+  "evidenceRefs": [
+    "kontor-studio commit a3fc2a5; deployed demo route /kataleya-demo/",
+    "cases/wo-kataleya-iphone-se-safari.md",
+    "https://support.apple.com/guide/iphone/open-as-web-app-iphea86e5236/27/ios/27"
+  ],
+  "events": [
+    {
+      "eventId": "2026-10-17-opened",
+      "at": "2026-10-17T16:16:00-07:00",
+      "actor": "L1",
+      "type": "opened",
+      "summary": "Opened a real-device acceptance case for the existing Kataleya web demo on the owner's iPhone SE (3rd generation)."
+    },
+    {
+      "eventId": "2026-10-17-triaged",
+      "at": "2026-10-17T16:16:00-07:00",
+      "actor": "L1",
+      "type": "updated",
+      "summary": "Confirmed the safe immediate install path is Safari Add to Home Screen. This tests the deployed demo; it is not a native iOS package or an isolated pre-release build."
+    }
+  ]
+}

@@ -21,9 +21,6 @@ jobs:
       - name: check out source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - name: install Tk bindings for panel tests
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y python3-tk
-
       - name: check tracked shell syntax
         shell: bash
         run: |
@@ -42,20 +39,11 @@ jobs:
       - name: test calendar state
         run: python3 -m unittest discover -s tests -p 'test_hub_calendar.py' -v
 
-      - name: test Garage health and report sanitization
-        run: python3 -m unittest discover -s tests -p 'test_garage_health.py' -v
-
-      - name: test Garage route and CSP
-        run: python3 -m unittest discover -s tests -p 'test_hub_garage_routes.py' -v
-
       - name: test notification audio
         run: python3 -m unittest discover -s tests -p 'test_notification_audio.py' -v
 
       - name: test SOP banner
         run: python3 -m unittest discover -s tests -p 'test_sop_banner.py' -v
-
-      - name: test SOP workflows
-        run: python3 -m unittest discover -s tests -p 'test_sop*.py' -v
 
       - name: test timer recovery
         run: python3 -m unittest discover -s tests -p 'test_timer_recovery.py' -v

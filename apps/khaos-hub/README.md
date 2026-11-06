@@ -38,11 +38,23 @@ python-dateutil. The service binds only 127.0.0.1:8766. Exact Host, Origin,
 Fetch Metadata and a random per-process write token prevent cross-origin writes.
 The service's data files use owner-only permissions.
 
-The Library stores references you explicitly save in
-~/.local/share/khaos-hub/library.sqlite3, separate from calendar check marks.
-It supports search, type filters, notes, JSON export/import, and runs locally
-without a browser account. It does not scrape browser history, fetch page
-contents, or provide offline copies. Review imported JSON before importing it.
+The Library stores saved references separately from calendar check marks. It
+supports search, notes, JSON import/export, and a curated Dewey shelf. The
+fold-away **File shelf** lets you explicitly check in a private copy (up to
+10 MiB each / 250 MiB total), check it out as a download, return it, renew a
+temporary reminder, or remove the stored copy. Originals stay in place;
+temporary due dates never auto-delete files. Stored files live in the
+owner-only `~/.local/share/khaos-hub/library-files/` directory, are never
+previewed or executed, and download only as attachments. The feature does not
+scan folders, sync to cloud, version edits, or virus-scan content. Keep highly
+sensitive files in the encrypted vault instead. The reference catalog remains
+metadata-only and does not read source file contents.
+
+Open it from Khaos Hub → **Library**, or from Khaos Lab Control Panel →
+**Reference** → **Personal library: open shelf**. Both routes open the same
+local catalog; the Control Panel shortcut opens the native Hub directly to
+Library. The list shows eight saved references at a time to keep phone browsing
+compact; search and filters work across the full catalog.
 
 Stop/remove: disable `khaos-hub.service`, remove the unit and command link.
 Khaos Lab then shows an unavailable calendar message; its other views and Orage

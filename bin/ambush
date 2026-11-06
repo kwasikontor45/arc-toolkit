@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""
+ambush — the focus timer that waits, then springs.
+
+One file. One autostart entry. One instance (flock).
+A quiet glass dial: tooth-tip numerals on the rim, the hour's tint,
+the remaining time breathing in the center. Left-click starts/pauses,
+Esc hides, Alt-drag moves, the dot low on the face drops the menu.
+When focus ends, the ambush: lilah-rise bursts the break bubble with
+its languid voice. Right-click is retired — the dot is the remote.
+
+state: ~/.local/share/ambush/state.json (work/break minutes, phase)
+"""
+
+import cairo
+import fcntl
+import json
+import math
+import os
+import subprocess
+import tempfile
+import sys
+import time
+from pathlib import Path
+
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import GLib, Gtk, Gdk
+
+APP = "ambush"
+SIZE = 320
+STATE = Path.home() / ".local/share/ambush/state.json"
+RISE = Path.home() / ".local/bin/lilah-rise"
+
+TINTS = {"dawn": "#e6a57f", "day": "#f6c177", "dusk": "#5ec9b4", "night": "#b8a8d0"}
+NAMES = {"dawn": "dawn", "day": "day", "dusk": "dusk", "night": "nyx"}
+
+
+def phase_now():
+    h = time.localtime().tm_hour
+    if 5 <= h < 9:
+        return "dawn"
+    if 9 <= h < 17:
+        return "day"
+    if 17 <= h < 21:
+        return "dusk"
+    return "night"
+
+
+def rgba(hexs, a=1.0):
+    v = hexs.lstrip("#")
+    return (int(v[0:2], 16) / 255, int(v[2:4], 16) / 255, int(v[4:6], 16) / 255, a)
+
+
+class Dial(Gtk.DrawingArea):
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+        self.set_size_request(SIZE, SIZE)
+        self.connect("draw", self._draw)
+
+    def _draw(self, _w, cr):
+        s = SIZE
+        c = s / 2.0
+        R = c - 8
+        tint = TINTS[self.app.tint_key]
+        phase = self.app.tint_key
+        frac = self.app.progress_frac()   # 0..1 of the current phase
+        paused = self.app.paused
+
+        # glass body
+        pat = cairo.RadialGradient(c * 0.8, c * 0.75, s * 0.1, c, c, R)
+        pat.add_color_stop_rgba(0, *rgba("#1a2126", .92))
+        pat.add_color_stop_rgba(1, *rgba("#070a0c", .96))
+        cr.arc(c, c, R, 0, 6.2832)
+        cr.set_source(pat)
+        cr.fill_preserve()
+        cr.set_source_rgba(*rgba("#ffffff", .08))
+        cr.set_line_width(1)
+        cr.stroke()
+
+        # rim hairline in the hour's tint
+        cr.arc(c, c, R - 1.5, 0, 6.2832)
+        cr.set_source_rgba(*rgba(tint, .55))
+        cr.set_line_width(1.2)
+        cr.stroke()
+
+        # tooth-tip numerals: 12 ticks own the rim
+        for i in range(60):
+            ang = -math.pi / 2 + i * (6.2832 / 60)
+            major = (i % 5 == 0)
+            inner = R - (18 if major else 10)
+            cr.move_to(c + math.cos(ang) * inner, c + math.sin(ang) * inner)
+            cr.line_to(c + math.cos(ang) * (R - 4), c + math.sin(ang) * (R - 4))
+            cr.set_source_rgba(*rgba(tint if major else "#8a94a6", .9 if major else .35))
+            cr.set_line_width(2.4 if major else 1.1)
+            cr.stroke()
+
+        # progress arc, rim-hugging
+        if frac > 0:
+            cr.arc(c, c, R - 26, -math.pi / 2, -math.pi / 2 + frac * 6.2832)
+            cr.set_source_rgba(*rgba(tint, .95))
+            cr.set_line_width(4.5)
+            cr.stroke()
+
+        # center: time + phase
+        remaining = self.app.remaining_text()
+        col = rgba("#dfe5ea", .95) if not paused else rgba("#8a94a6", .8)
+        cr.set_source_rgba(*col)
+        cr.select_font_face("Sans", 0, 0)
+        cr.set_font_size(40 if len(remaining) <= 5 else 32)
+        tb = cr.text_extents(remaining)
+        cr.move_to(c - tb.width / 2 - tb.x_bearing, c + 8)
+        cr.show_text(remaining)
+
+        cr.set_font_size(12)
+        label = self.app.phase_label()
+        tb = cr.text_extents(label)
+        cr.set_source_rgba(*rgba(tint, .9))
+        cr.move_to(c - tb.width / 2 - tb.x_bearing, c + 34)
+        cr.show_text(label)
+
+
+class Ambush(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="studio.kontor.ambush")
+        self.tint_key = phase_now()
+        self.phase = "idle"          # idle | focus | break
+        self.paused = False
+        self.deadline = 0.0
+        self.left = 0
+        self.work_min, self.break_min = self._load()
+        self.window = None
+        self._dot_hover = False
+
+    # ── state ──────────────────────────────────────────────
+    def _load(self):
+        try:
+            d = json.loads(STATE.read_text())
+            return int(d.get("work", 25)), int(d.get("break", 5))
+        except Exception:
+            return 25, 5
+
+    def _save(self):
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        STATE.write_text(json.dumps({"work": self.work_min, "break": self.break_min}))
+
+    # ── timing ─────────────────────────────────────────────
+    def progress_frac(self):
+        if self.phase == "idle":
+            return 0
+        total = (self.work_min if self.phase == "focus" else self.break_min) * 60
+        return max(0.0, min(1.0, 1 - self.left / total))
+
+    def remaining_text(self):
+        if self.phase == "idle":
+            return "· · ·"
+        m, s = divmod(max(0, self.left), 60)
+        return f"{m}:{s:02d}"
+
+    def phase_label(self):
+        if self.phase == "idle":
+            return f"ambush · {NAMES[self.tint_key]}"
+        if self.phase == "focus":
+            return "in focus" + (" · paused" if self.paused else "")
+        return "break — breathe"
+
+    def _tick(self):
+        if not self.paused and self.phase != "idle":
+            self.left = int(self.deadline - time.time())
+            if self.left <= 0:
+                self._turn()
+        self.dial.queue_draw()
+        return GLib.SOURCE_CONTINUE
+
+    def _turn(self):
+        if self.phase == "focus":
+            self.phase = "break"
+            self.left = self.break_min * 60
+            self.deadline = time.time() + self.left
+            self._spring("break time", f"step away — {self.break_min} minutes")
+        elif self.phase == "break":
+            self.phase = "focus"
+            self.left = self.work_min * 60
+            self.deadline = time.time() + self.left
+            self._spring("back to work", f"{self.work_min} minutes on the clock")
+
+    def _spring(self, title, body):
+        if RISE.exists():
+            subprocess.Popen([str(RISE), title, body],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+
+    # ── controls ───────────────────────────────────────────
+    def toggle(self):
+        if self.phase == "idle":
+            self.phase = "focus"
+            self.left = self.work_min * 60
+            self.deadline = time.time() + self.left
+            self.paused = False
+        else:
+            self.paused = not self.paused
+            if not self.paused:
+                self.deadline = time.time() + self.left
+        self.dial.queue_draw()
+
+    def stop(self):
+        self.phase, self.paused = "idle", False
+        self.left = 0
+        self.dial.queue_draw()
+
+    def skip(self):
+        if self.phase != "idle":
+            self._turn()
+
+    # ── window ─────────────────────────────────────────────
+    def do_activate(self):
+        if self.window:
+            self.window.present()
+            return
+        win = Gtk.ApplicationWindow(application=self, title="Ambush")
+        self.window = win
+        win.set_default_size(SIZE, SIZE)
+        win.set_resizable(False)
+        win.set_decorated(False)
+        win.set_position(Gtk.WindowPosition.CENTER)
+        win.set_keep_above(True)
+        win.set_skip_taskbar_hint(True)
+        win.set_app_paintable(True)
+        visual = win.get_screen().get_rgba_visual()
+        if visual:
+            win.set_visual(visual)
+        win.get_style_context().add_class("ambush")
+
+        self.dial = Dial(self)
+        self.dial.set_tooltip_text("ambush · left-click starts/pauses · Esc hides · Alt+drag moves")
+        self.dial.connect("button-press-event", self._press)
+        self.dial.connect("motion-notify-event", self._motion)
+        win.add(self.dial)
+        win.connect("key-press-event", self._key)
+        win.connect("delete-event", self._close)
+        win.show_all()
+        GLib.timeout_add(500, self._tick)
+        GLib.timeout_add(60_000, self._retint)
+
+    def _retint(self):
+        k = phase_now()
+        if k != self.tint_key:
+            self.tint_key = k
+            self.dial.queue_draw()
+        return GLib.SOURCE_CONTINUE
+
+    def _key(self, _w, e):
+        if e.keyval == Gdk.KEY_Escape:
+            self.window.hide()
+            return True
+        return False
+
+    def _close(self, *_a):
+        self.window.hide()
+        return True
+
+    def _press(self, _w, e):
+        if e.button == 1:
+            if e.state & Gdk.ModifierType.MOD1_MASK:
+                self.window.begin_move_drag(e.button, int(e.x_root), int(e.y_root), e.time)
+            elif self._dot_hit(e.x, e.y):
+                self._menu(e)
+            else:
+                self.toggle()
+        return True
+
+    def _motion(self, _w, e):
+        hit = self._dot_hit(e.x, e.y)
+        if hit != self._dot_hover:
+            self._dot_hover = hit
+            self.dial.get_window().set_cursor(
+                Gdk.Cursor.new_from_name(self.dial.get_display(), "pointer" if hit else "default"))
+            self.dial.queue_draw()
+        return True
+
+    def _dot_hit(self, x, y):
+        # quiet dot low on the face
+        cx, cy = SIZE / 2, SIZE * 0.82
+        return (x - cx) ** 2 + (y - cy) ** 2 <= 144
+
+    def _menu(self, e):
+        menu = Gtk.Menu()
+        for label, fn in (("Hide  ·  Esc", lambda *_: self.window.hide()),
+                          ("Skip", lambda *_: self.skip()),
+                          ("Stop", lambda *_: self.stop()),
+                          ("Exit ambush", lambda *_: self.quit())):
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", fn)
+            menu.append(item)
+        menu.show_all()
+        menu.popup_at_pointer(e)
+
+
+def main():
+    lock = Path(tempfile.gettempdir()) / f"ambush-{os.getuid()}.lock"
+    fh = open(lock, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit(0)   # already lurking
+    Ambush().run(sys.argv)
+
+
+if __name__ == "__main__":
+    main()

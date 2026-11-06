@@ -1423,112 +1423,6 @@ cmd_stop() {
   echo -e "\n$HR"
 }
 
-# ── Break ──────────────────────────────────────────────────────────────────────
-BREAK_BIN="$HOME/.local/bin/lilah-break"
-BREAK_PID="$HOME/.local/share/lilah-break/lilah-break.pid"
-
-cmd_break() {
-  local sub="${1:-status}"
-  shift 2>/dev/null
-
-  case "$sub" in
-    start)
-      echo -e "$HR"
-      echo -e "  ${C}${B}arc lilah start${N}"
-      echo -e "$HR\n"
-      if [[ -f "$BREAK_PID" ]] && kill -0 "$(cat "$BREAK_PID")" 2>/dev/null; then
-        echo -e "  ${Y}!${N}  lilah-break already running  —  PID $(cat "$BREAK_PID")"
-        echo -e "$HR"; return 0
-      fi
-      # Runs as a systemd --user unit (not nohup/disown) so it survives the
-      # terminal closing -- nohup only blocks SIGHUP, it doesn't detach from
-      # the terminal's session, and desktop/terminal-emulator session teardown
-      # can still reap it. A user service is supervised independently of any
-      # terminal's lifecycle.
-      systemctl --user start lilah-break.service
-      sleep 0.3
-      local pid
-      pid=$(cat "$BREAK_PID" 2>/dev/null || echo "?")
-      echo -e "  ${G}✓${N}  lilah-break started  —  PID ${pid}  (survives closing this terminal)"
-      echo -e "  ${D}arc lilah status  ·  arc lilah stop  ·  arc lilah snooze${N}"
-      echo -e "$HR"
-      ;;
-
-    stop)
-      echo -e "$HR"
-      echo -e "  ${C}${B}arc lilah stop${N}"
-      echo -e "$HR\n"
-      if [[ -f "$BREAK_PID" ]] && kill -0 "$(cat "$BREAK_PID")" 2>/dev/null; then
-        systemctl --user stop arc-break.service 2>/dev/null
-        echo -e "  ${G}✓${N}  arc-break stopped"
-      else
-        echo -e "  ${D}·${N}  not running"
-      fi
-      echo -e "$HR"
-      ;;
-
-    status)
-      echo -e "$HR"
-      echo -e "  ${C}${B}arc lilah status${N}"
-      echo -e "$HR\n"
-      if [[ ! -f "$BREAK_PID" ]] || ! kill -0 "$(cat "$BREAK_PID")" 2>/dev/null; then
-        echo -e "  ${D}·${N}  not running  —  ${C}arc lilah start${N} to begin"
-        echo -e "$HR"; return 0
-      fi
-      local info
-      info=$(python3 "$BREAK_BIN" status 2>/dev/null)
-      echo -e "  ${G}●${N}  ${M}${info}${N}"
-      echo -e "$HR"
-      ;;
-
-    snooze)
-      local mins="${1:-5}"
-      python3 "$BREAK_BIN" snooze "$mins" 2>/dev/null \
-        && echo -e "  ${G}✓${N}  break snoozed ${mins} min" \
-        || echo -e "  ${R}✗${N}  arc-break not running"
-      ;;
-
-    skip)
-      python3 "$BREAK_BIN" skip 2>/dev/null \
-        && echo -e "  ${G}✓${N}  break skipped — work timer reset" \
-        || echo -e "  ${R}✗${N}  arc-break not running"
-      ;;
-
-    config)
-      echo -e "$HR"
-      echo -e "  ${C}${B}arc break config${N}"
-      echo -e "$HR\n"
-      python3 "$BREAK_BIN" config 2>/dev/null | while IFS= read -r line; do
-        echo -e "  ${D}·${N}  ${M}${line}${N}"
-      done
-      echo -e "$HR"
-      ;;
-
-    gui)
-      if pgrep -f "arc-break gui" &>/dev/null; then
-        echo -e "  ${Y}!${N}  arc-break gui already open"
-      else
-        nohup python3 "$BREAK_BIN" gui &>/dev/null &
-        disown
-        echo -e "  ${G}✓${N}  arc-break gui launched"
-      fi
-      ;;
-
-    *)
-      echo -e "  usage: arc break [start|stop|status|snooze [N]|skip|config|gui]"
-      ;;
-  esac
-}
-
-# ── Eero ───────────────────────────────────────────────────────────────────────
-EERO_DIR="$HOME/dev-notes/surgery-tools/eero"
-EERO_MGR="$EERO_DIR/eero-mgr.py"
-EERO_WATCH="$EERO_DIR/eero-watch.py"
-EERO_LOG="$EERO_DIR/eero-watch.log"
-# aiohttp + the local eero/ package live in a venv -- system python3's pip is
-# blocked on this machine (Debian ensurepip restriction), and there's no
-# equivalent apt package for the hand-written eero/client.py module.
-EERO_PY="$EERO_DIR/.venv/bin/python"
 
 cmd_eero() {
   echo -e "$HR"
@@ -4658,8 +4552,7 @@ cmd_help_full() {
   echo -e "  ${D}arc ${C}safe-reboot${N}           ${M}backup → unmount USB → sudo reboot${N}"
   echo -e "  ${D}arc ${C}stop${N}                  ${M}end-of-day: kill servers, backup, unmount USB${N}"
   echo -e "  ${D}arc ${C}notify${N}                ${M}open notification history (or: status, tts-on, tts-off)${N}"
-  echo -e "  ${D}arc ${C}break${N}                 ${M}lilah-break timer — start · stop · status · snooze [N] · skip · config · gui${N}"
-  echo -e "  ${D}arc ${C}lilah${N}                  ${M}the timepiece — focus dial window (daemon: arc break)${N}"
+  echo -e "  ${D}arc ${C}break${N}                 ${M}break timer daemon — start · stop · status · snooze [N] · skip · config · gui${N}"
   echo -e "  ${D}stoic${N}                  ${M}the waterline walk — morning sort · evening glass · stoic review${N}"
   echo -e "  ${D}arc ${C}word${N}                  ${M}offline word of the day  ·  --json for panel integration${N}"
   echo -e "  ${D}arc ${C}sop ack${N}               ${M}acknowledge SOPs for this session${N}"
@@ -4880,7 +4773,7 @@ cmd_help() {
     echo -e "  ${D}You don't navigate a command center — you ask it.${N}"
     echo -e "$HR"
     echo -e "\n  ${Y}WORKSPACES${N}"
-    echo -e "  ${D}daily${N}       ${M}backup, startup, notifications, lilah-break timer${N}"
+    echo -e "  ${D}daily${N}       ${M}backup, startup, notifications, break timer daemon${N}"
     echo -e "  ${D}dev${N}         ${M}repos, deploys, cloud labs, containers${N}"
     echo -e "  ${D}system${N}      ${M}health, storage, updates, cleanup${N}"
     echo -e "  ${D}security${N}    ${M}accounts, audits, firewall, SOPs${N}"
@@ -4892,7 +4785,7 @@ cmd_help() {
     echo -e "  ${D}shell${N}       ${M}shell settings and help controls${N}"
     echo -e "\n  ${Y}MOST USED${N}"
     echo -e "  ${D}arc${N} ${C}day · backup · stop${N}     ${M}the daily loop${N}"
-    echo -e "  ${D}arc${N} ${C}break · lilah${N}          ${M}rest timer daemon · the timepiece${N}"
+    echo -e "  ${D}arc${N} ${C}ambush${N}              ${M}the focus timer — it waits, then it springs${N}"
     echo -e "  ${D}arc${N} ${C}health · inventory${N}     ${M}machine state · asset register${N}"
     echo -e "  ${D}arc${N} ${C}status · clean${N}         ${M}overview · sweep the decks${N}"
     echo -e "\n  ${Y}LOOKING FOR SOMETHING?${N}"
@@ -4966,7 +4859,7 @@ cmd_help() {
     reference|ref) section="reference" ;;
     fixes|fix|patches) section="fixes & patches" ;;
     shell) section="shell" ;;
-    lilah|timer|timepiece|break-timer) section="daily workflow" ;;
+    ambush|timer|timepiece|break-timer) section="daily workflow" ;;
     inventory|inv) section="system maintenance" ;;
     verify-not-scaffold|scaffold) section="development" ;;
     *)
@@ -7133,7 +7026,6 @@ case "${1:-}" in
   desktop)        cmd_desktop "${@:2}" ;;
   cf-watch)       cmd_cf_watch "${@:2}" ;;
   heal)           cmd_heal "${@:2}" ;;
-  lilah)         cmd_break "${@:2}" ;;
   break)          cmd_break "${@:2}" ;;  # legacy alias
   eero)           cmd_eero ;;
   eero-summary)   cmd_eero_summary ;;
